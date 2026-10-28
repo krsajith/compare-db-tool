@@ -13,10 +13,16 @@ import javax.xml.stream.XMLStreamReader;
 import tools.jackson.dataformat.xml.XmlFactory;
 import tools.jackson.dataformat.xml.XmlMapper;
 import tools.jackson.databind.DeserializationFeature;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public final class RuleLoader {
+    private static final Logger LOG = LoggerFactory.getLogger(RuleLoader.class);
     private RuleLoader() {}
     public static Rules load(Path path) {
+        String section = "document";
+        int line = -1, column = -1;
+        LOG.info("Reading XML rules from {}", path.toAbsolutePath().normalize());
         try {
             XMLInputFactory input = XMLInputFactory.newFactory();
             input.setProperty(XMLInputFactory.SUPPORT_DTD, false);
@@ -31,6 +37,8 @@ public final class RuleLoader {
                 .disable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
                 .enable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
                 .build();
+            LOG.debug("XML provider={} Jackson XML version={}", input.getClass().getName(),
+                XmlMapper.class.getPackage().getImplementationVersion());
             // Bind one subtree at a time. Binding the entire root to unwrapped Lists can
             // replace earlier entries when sql/compare groups are interleaved.
             try (var stream = Files.newInputStream(path)) {
@@ -46,6 +54,11 @@ public final class RuleLoader {
                     }
                     boolean parametersSeen = false;
                     while (nextTag(reader) == XMLStreamConstants.START_ELEMENT) {
+                        section = reader.getLocalName();
+                        line = reader.getLocation().getLineNumber();
+                        column = reader.getLocation().getColumnNumber();
+                        LOG.debug("Reading XML element={} id={} line={} column={}", section,
+                            reader.getAttributeValue(null, "id"), line, column);
                         switch (reader.getLocalName()) {
                             case "sql" -> rules.queries.add(mapper.readValue(reader, Rules.Sql.class));
                             case "compare" -> rules.comparisons.add(mapper.readValue(reader, Rules.Compare.class));
@@ -54,6 +67,11 @@ public final class RuleLoader {
                                 if (parametersSeen) throw new ToolException("Use only one <parameters> block.");
                                 parametersSeen = true;
                                 while (nextTag(reader) == XMLStreamConstants.START_ELEMENT) {
+                                    section = reader.getLocalName();
+                                    line = reader.getLocation().getLineNumber();
+                                    column = reader.getLocation().getColumnNumber();
+                                    LOG.debug("Reading XML parameter name={} line={} column={}",
+                                        reader.getAttributeValue(null, "name"), line, column);
                                     if (!reader.getLocalName().equals("param"))
                                         throw new ToolException("Only <param> elements are allowed inside <parameters>.");
                                     rules.parameters.add(mapper.readValue(reader, Rules.Param.class));
@@ -70,13 +88,18 @@ public final class RuleLoader {
                             || (event == XMLStreamConstants.CHARACTERS && !reader.isWhiteSpace()))
                             throw new ToolException("Unexpected content after </rules>.");
                     }
+                    LOG.info("Loaded XML: queries={} comparisons={} ZIPs={} parameters={}", rules.queries.size(),
+                        rules.comparisons.size(), rules.compressions.size(), rules.parameters.size());
+                    LOG.debug("SQL ids={} comparison ids={}", rules.queries.stream().map(q -> q.id).toList(),
+                        rules.comparisons.stream().map(c -> c.id).toList());
                     return rules;
                 } finally { reader.close(); }
             }
         } catch (ToolException e) { throw e;
         } catch (Exception e) {
             throw new ToolException("Cannot read rules XML: " + path + " (" + e.getClass().getSimpleName()
-                + "). Check XML syntax and supported elements.");
+                + ") while reading <" + section + "> near line " + line + ", column " + column
+                + ". See the log for the complete parser error.", e);
         }
     }
 
@@ -93,18 +116,23 @@ public final class RuleLoader {
     }
 
     public static void validate(Rules rules, DatasourceSettings settings) {
+        validate(rules, settings, true);
+    }
+
+    public static void validate(Rules rules, DatasourceSettings settings, boolean checkQueries) {
         if (rules.queries == null || rules.queries.isEmpty()) throw new ToolException("Rules need at least one <sql>.");
         Set<String> ids = new HashSet<>();
         Map<String, Rules.Sql> queries = new HashMap<>();
         for (Rules.Sql sql : rules.queries) {
             id(sql.id, ids);
-            if (sql.db == null || !settings.getDatasources().containsKey(sql.db))
+            if (sql.db == null || sql.db.isBlank()) throw new ToolException("Query " + sql.id + " needs a datasource name.");
+            if (checkQueries && !settings.getDatasources().containsKey(sql.db))
                 throw new ToolException("Unknown datasource for query " + sql.id + ": " + sql.db);
             if (sql.timeout <= 0 || sql.fetchSize <= 0 || sql.maxRows < 0)
                 throw new ToolException("Invalid timeout, fetchSize or maxRows for " + sql.id);
-            if (!settings.getDatasources().get(sql.db).isReadOnly())
+            if (checkQueries && !settings.getDatasources().get(sql.db).isReadOnly())
                 throw new ToolException("Datasource " + sql.db + " must have read-only=true.");
-            SqlGuard.validate(sql.text);
+            if (checkQueries) SqlGuard.validate(sql.text);
             queries.put(sql.id, sql);
         }
         if (rules.comparisons == null) rules.comparisons = new ArrayList<>();
@@ -142,13 +170,13 @@ public final class RuleLoader {
                 throw new ToolException("Compression '" + zip.id + "' references unknown SQL/comparison id '"
                     + include.ref + "'. Available ids: " + new TreeSet<>(includable));
         }
-        Set<String> outputs = new HashSet<>(Set.of("summary.md", "parameters.csv", "rules.xml", "error.md", ".work"));
+        Set<String> outputs = new HashSet<>(Set.of("summary.md", "parameters.csv", "rules.xml", "error.md", "manual_actions.md", "manual", ".work"));
         for (Rules.Sql query : rules.queries) for (String suffix : List.of(".csv", ".sql", ".md"))
             outputName(query.id + suffix, outputs);
         for (Rules.Compare compare : rules.comparisons) outputName(compare.id, outputs);
         for (Rules.Compress zip : rules.compressions) outputName(zip.file, outputs);
         Map<String, Object> values = parameters(rules, Map.of());
-        rules.queries.forEach(q -> QueryRunner.validateParameters(q, values));
+        if (checkQueries) rules.queries.forEach(q -> QueryRunner.validateParameters(q, values));
     }
 
     public static List<String> keys(Rules.Compare compare) {

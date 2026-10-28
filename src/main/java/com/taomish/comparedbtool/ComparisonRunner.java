@@ -4,9 +4,12 @@ import java.io.IOException;
 import java.nio.file.*;
 import java.util.*;
 import org.apache.commons.csv.*;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /** Disk-partitioned matching. Only one partition's distinct keys is held in memory. */
 public final class ComparisonRunner {
+    private static final Logger LOG = LoggerFactory.getLogger(ComparisonRunner.class);
     record Binding(String name, int source, int target, Rules.Column rule, boolean numeric) {}
     record Group(String column, String classification, boolean accepted) {}
     record Key(List<String> values) {
@@ -30,6 +33,7 @@ public final class ComparisonRunner {
     public ComparisonRunner(int partitions) { this.partitions = partitions; }
 
     public Result run(Rules.Compare rule, QueryRunner.Result source, QueryRunner.Result target, Path root) throws IOException {
+        LOG.debug("Comparison={} sourceRows={} targetRows={} partitions={}", rule.id, source.rows(), target.rows(), partitions);
         List<String> keyNames = RuleLoader.keys(rule);
         List<Binding> bindings = bindings(rule, source, target);
         List<Binding> keyBindings = keyNames.stream().map(name -> bindings.stream()
@@ -57,7 +61,9 @@ public final class ComparisonRunner {
         Map<Group, Long> groups = new TreeMap<>(Comparator.comparing(Group::column)
             .thenComparing(Group::classification).thenComparing(Group::accepted));
         try {
+            LOG.debug("Partitioning source CSV for comparison {}", rule.id);
             partition(source, keyBindings, true, work.resolve("source"));
+            LOG.debug("Partitioning target CSV for comparison {}", rule.id);
             partition(target, keyBindings, false, work.resolve("target"));
             try (CSVPrinter diff = CsvFiles.writer(cells, concat(keyHeader, List.of("column", "source", "target", "classification", "accepted", "absolute_difference", "relative_difference")));
                  CSVPrinter left = CsvFiles.writer(onlySource, source.columns().stream().map(QueryRunner.Column::name).toList());
@@ -66,6 +72,8 @@ public final class ComparisonRunner {
                 for (int part = 0; part < partitions; part++) {
                     Map<Key, Bucket> a = load(work.resolve("source").resolve(part + ".csv"), keyBindings, true);
                     Map<Key, Bucket> b = load(work.resolve("target").resolve(part + ".csv"), keyBindings, false);
+                    LOG.debug("Comparison {} partition {}/{} sourceKeys={} targetKeys={}",
+                        rule.id, part + 1, partitions, a.size(), b.size());
                     Set<Key> keys = new LinkedHashSet<>(a.keySet()); keys.addAll(b.keySet());
                     for (Key key : keys) {
                         Bucket x = a.get(key), y = b.get(key);
@@ -95,7 +103,10 @@ public final class ComparisonRunner {
                     }
                 }
             }
-        } finally { CsvFiles.deleteTree(work); }
+        } finally {
+            try { CsvFiles.deleteTree(work); }
+            catch (IOException cleanup) { LOG.warn("Could not remove comparison temporary files at {}", work, cleanup); }
+        }
         boolean partial = source.partial() || target.partial();
         String headline = (partial ? "PARTIAL; " : "") + "matched=" + totals[0] + ", equal=" + totals[1]
             + ", different=" + totals[2] + ", only-source=" + totals[3] + ", only-target=" + totals[4]

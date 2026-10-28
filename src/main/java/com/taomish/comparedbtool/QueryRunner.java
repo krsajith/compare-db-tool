@@ -10,8 +10,12 @@ import org.apache.commons.csv.CSVPrinter;
 import org.springframework.jdbc.core.PreparedStatementCallback;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.jdbc.core.namedparam.NamedParameterUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import com.taomish.comparedbtool.logging.SecretRedactor;
 
 public final class QueryRunner implements AutoCloseable {
+    private static final Logger LOG = LoggerFactory.getLogger(QueryRunner.class);
     public record Column(String name, int jdbcType) {
         public boolean numeric() {
             return switch (jdbcType) {
@@ -28,12 +32,15 @@ public final class QueryRunner implements AutoCloseable {
             NamedParameterUtils.buildValueArray(NamedParameterUtils.parseSqlStatement(SqlGuard.validate(rule.text)),
                 new org.springframework.jdbc.core.namedparam.MapSqlParameterSource(parameters), null);
         } catch (ToolException e) { throw e; }
-        catch (Exception e) { throw new ToolException("Missing/invalid bind parameters for query " + rule.id + "."); }
+        catch (Exception e) { throw new ToolException("Missing/invalid bind parameters for query " + rule.id + ".", e); }
     }
     private final DatasourceSettings settings;
     private final boolean allowProd;
     private final Map<String, HikariDataSource> pools = new LinkedHashMap<>();
-    public QueryRunner(DatasourceSettings settings, boolean allowProd) { this.settings = settings; this.allowProd = allowProd; }
+    public QueryRunner(DatasourceSettings settings, boolean allowProd) {
+        this.settings = settings; this.allowProd = allowProd;
+        settings.getDatasources().values().forEach(d -> SecretRedactor.register(d.getPassword()));
+    }
 
     public static boolean production(String name, DatasourceSettings.Definition definition) {
         return definition.isProd() || name.toLowerCase(Locale.ROOT).contains("prod");
@@ -70,6 +77,8 @@ public final class QueryRunner implements AutoCloseable {
                 config.addDataSourceProperty("useCursorFetch", "true");
                 config.addDataSourceProperty("useServerPrepStmts", "true");
             }
+            LOG.info("Creating read-only datasource pool name={} driver={} production={}", key,
+                definition.getDriverClassName(), production(key, definition));
             return new HikariDataSource(config);
         });
     }
@@ -81,6 +90,8 @@ public final class QueryRunner implements AutoCloseable {
         long cap = rule.maxRows;
         if (globalLimit > 0) cap = cap == 0 ? globalLimit : Math.min(cap, globalLimit);
         final long limit = cap;
+        LOG.debug("Query={} datasource={} timeoutSeconds={} fetchSize={} rowLimit={} parameterNames={}",
+            rule.id, rule.db, rule.timeout, rule.fetchSize, limit, parameters.keySet());
         Path csv = directory.resolve(rule.id + ".csv");
         Path sqlFile = directory.resolve(rule.id + ".sql");
         Path meta = directory.resolve(rule.id + ".md");
@@ -94,6 +105,7 @@ public final class QueryRunner implements AutoCloseable {
                 (PreparedStatementCallback<Void>) statement -> {
                     statement.setQueryTimeout(rule.timeout);
                     statement.setFetchSize(rule.fetchSize);
+                    LOG.debug("Connected for query {}; executing SELECT", rule.id);
                     try (ResultSet result = statement.executeQuery()) {
                         ResultSetMetaData metadata = result.getMetaData();
                         Set<String> labels = new HashSet<>();
@@ -103,6 +115,7 @@ public final class QueryRunner implements AutoCloseable {
                                 throw new ToolException("Query " + rule.id + " has empty/duplicate column labels; use SQL aliases.");
                             columns.add(new Column(label, metadata.getColumnType(index)));
                         }
+                        LOG.debug("Query {} returned column labels={}", rule.id, columns.stream().map(Column::name).toList());
                         try (CSVPrinter out = CsvFiles.writer(csv, columns.stream().map(Column::name).toList())) {
                             while (result.next()) {
                                 if (limit > 0 && rows[0] >= limit) { partial[0] = true; break; }
@@ -110,8 +123,9 @@ public final class QueryRunner implements AutoCloseable {
                                 for (int index = 1; index <= columns.size(); index++) values.add(value(result, index, columns.get(index - 1).jdbcType()));
                                 out.printRecord(values);
                                 rows[0]++;
+                                if (rows[0] % 100_000 == 0) LOG.info("Query {} exported {} rows so far", rule.id, rows[0]);
                             }
-                        } catch (IOException e) { throw new ToolException("Cannot write CSV for query " + rule.id + "."); }
+                        } catch (IOException e) { throw new ToolException("Cannot write CSV for query " + rule.id + ".", e); }
                     } finally {
                         // No source data is committed, even for drivers with advisory read-only flags.
                         statement.getConnection().rollback();
@@ -124,9 +138,11 @@ public final class QueryRunner implements AutoCloseable {
             for (Throwable cause = e; cause != null; cause = cause.getCause())
                 if (cause instanceof SQLException se) { state = Objects.toString(se.getSQLState(), "unknown"); break; }
             throw new ToolException("Query " + rule.id + " failed on datasource " + rule.db + " (SQLState " + state
-                + "). Check connection settings, permissions and SQL. Any CSV from this query is incomplete.");
+                + "). Check connection settings, permissions and SQL. Any CSV from this query is incomplete.", e);
         }
         long millis = (System.nanoTime() - start) / 1_000_000;
+        if (partial[0]) LOG.warn("Query {} hit its row cap after {} rows; results are PARTIAL", rule.id, rows[0]);
+        LOG.info("Query {} export complete: rows={} elapsedMs={} CSV={}", rule.id, rows[0], millis, csv);
         StringBuilder description = new StringBuilder("# Query " + rule.id + "\n\nDatasource: `" + rule.db + "`\n\nRows: "
             + rows[0] + "\n\nStatus: " + (partial[0] ? "PARTIAL: row cap exceeded" : "COMPLETE")
             + "\n\nElapsed: " + millis + " ms\n\n| Column | JDBC type |\n|---|---|\n");
@@ -144,5 +160,8 @@ public final class QueryRunner implements AutoCloseable {
         // JDBC getString preserves DECIMAL precision; no conversion through double.
         return result.getString(index);
     }
-    @Override public void close() { pools.values().forEach(HikariDataSource::close); }
+    @Override public void close() {
+        LOG.debug("Closing {} datasource pool(s)", pools.size());
+        pools.values().forEach(HikariDataSource::close);
+    }
 }

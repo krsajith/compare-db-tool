@@ -147,4 +147,33 @@ class WorkflowTests {
         compare.columns.removeIf(c -> c.ignore);
         assertTrue(new ComparisonRunner(4).run(compare, a, b, temp).schemaDifferent());
     }
+
+    @Test void failedQueryDoesNotStopOtherExportsComparisonsOrZipPackaging() throws Exception {
+        Path xml = temp.resolve("continue.xml");
+        Files.writeString(xml, """
+            <rules name="continue-on-error">
+              <sql id="bad-query" db="test-ds">SELECT id FROM missing_test_table</sql>
+              <sql id="good-query" db="test-ds">SELECT 1 AS id</sql>
+              <compare id="skipped" source="bad-query" target="good-query"><key columns="id"/></compare>
+              <compare id="completed" source="good-query" target="good-query"><key columns="id"/></compare>
+              <compress id="bundle" file="results.zip">
+                <include ref="bad-query"/><include ref="good-query"/><include ref="skipped"/><include ref="completed"/>
+              </compress>
+            </rules>
+            """);
+        var options = new Cli.Options(); options.rules = xml; options.out = temp.resolve("continued"); options.partitions = 2;
+        assertEquals(2, new Cli(settings(seed())).execute(options));
+        Path run;
+        try (var dirs = Files.list(options.out)) { run = dirs.findFirst().orElseThrow(); }
+        assertTrue(Files.exists(run.resolve("good-query.csv")));
+        assertTrue(Files.exists(run.resolve("completed/SUMMARY.md")));
+        String actions = Files.readString(run.resolve("MANUAL_ACTIONS.md"));
+        assertTrue(actions.contains("bad-query.sql"));
+        assertTrue(actions.contains("Comparison skipped"));
+        try (ZipFile zip = new ZipFile(run.resolve("results.zip").toFile())) {
+            assertNotNull(zip.getEntry("good-query.csv"));
+            assertNotNull(zip.getEntry("bad-query.sql"));
+            assertNotNull(zip.getEntry("MANUAL_ACTIONS.md"));
+        }
+    }
 }

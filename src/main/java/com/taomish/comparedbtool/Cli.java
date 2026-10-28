@@ -7,8 +7,12 @@ import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.zip.*;
 import org.apache.commons.csv.CSVPrinter;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import com.taomish.comparedbtool.logging.SecretRedactor;
 
 public final class Cli {
+    private static final Logger LOG = LoggerFactory.getLogger(Cli.class);
     static final String HELP = """
         compare-db-tool: XML-driven JDBC export, comparison and ZIP packaging
 
@@ -25,7 +29,9 @@ public final class Cli {
         --help                Show this help
 
         External configuration: config/datasources.properties, relative to working directory.
+        Logging settings: config/logging.properties; logs/compare-db-tool.log and compare-db-tool-error.log.
         Override with --spring.config.additional-location=file:/path/to/datasources.properties
+        One-run logging override: --logging.level.com.taomish.comparedbtool=DEBUG
         Exit codes: 0 equal/export complete/validated; 1 differences; 2 error or PARTIAL.
         """;
     public static final class Options {
@@ -44,8 +50,8 @@ public final class Cli {
         if (args.length == 0) { options.help = true; return options; }
         for (int i = 0; i < args.length; i++) {
             String argument = args[i];
-            if (argument.startsWith("--spring.")) {
-                if (!argument.contains("=")) throw new ToolException("Spring options must use --spring.name=value syntax.");
+            if (argument.startsWith("--spring.") || argument.startsWith("--logging.")) {
+                if (!argument.contains("=")) throw new ToolException("Spring/logging options must use --name=value syntax.");
                 continue;
             }
             int equal = argument.indexOf('=');
@@ -95,86 +101,173 @@ public final class Cli {
                 + " [read-only=" + definition.isReadOnly() + ", prod=" + QueryRunner.production(name, definition) + "]"));
             return 0;
         }
-        System.out.println("Loading rules: " + options.rules.toAbsolutePath().normalize());
+        LOG.info("Loading rules: {}", options.rules.toAbsolutePath().normalize());
         Rules rules = RuleLoader.load(options.rules);
-        RuleLoader.validate(rules, settings);
+        RuleLoader.validate(rules, settings, options.validate);
         Map<String, Object> parameters = RuleLoader.parameters(rules, options.parameters);
         if (options.validate) {
-            System.out.println("VALID: " + rules.queries.size() + " queries, " + rules.comparisons.size()
-                + " comparisons, " + rules.compressions.size() + " ZIP packages. No connections opened.");
+            LOG.info("VALID: {} queries, {} comparisons, {} ZIP packages. No connections opened.",
+                rules.queries.size(), rules.comparisons.size(), rules.compressions.size());
             return 0;
-        }
-        // Check every referenced datasource before opening any connection.
-        for (Rules.Sql sql : rules.queries) {
-            var definition = settings.getDatasources().get(sql.db);
-            if (QueryRunner.production(sql.db, definition) && !options.allowProd)
-                throw new ToolException("Datasource " + sql.db + " requires --allow-prod.");
-            if (definition.getUrl() == null || !definition.getUrl().startsWith("jdbc:")
-                || definition.getUrl().contains("${") || (definition.getUsername() != null && definition.getUsername().contains("${"))
-                || (definition.getPassword() != null && definition.getPassword().contains("${")))
-                throw new ToolException("Datasource " + sql.db + " has missing connection settings/environment variables.");
-            QueryRunner.validateParameters(sql, parameters);
         }
         Path base = options.out.toAbsolutePath().normalize();
         Files.createDirectories(base);
         String name = Objects.toString(rules.name, "comparison").replaceAll("[^A-Za-z0-9_.-]", "_");
         if (name.length() > 60) name = name.substring(0, 60);
         Path directory = Files.createTempDirectory(base, name + "-" + LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss")) + "-");
-        System.out.println("Output: " + directory);
+        LOG.info("Output: {}", directory);
         Map<String, List<Path>> artifacts = new LinkedHashMap<>();
         Map<String, QueryRunner.Result> queries = new LinkedHashMap<>();
         List<ComparisonRunner.Result> comparisons = new ArrayList<>();
+        Map<String, String> failures = new LinkedHashMap<>();
+        Path manualDirectory = directory.resolve("manual");
+        Files.createDirectory(manualDirectory);
         try (QueryRunner runner = new QueryRunner(settings, options.allowProd)) {
             Files.copy(options.rules, directory.resolve("RULES.xml"));
             try (CSVPrinter params = CsvFiles.writer(directory.resolve("PARAMETERS.csv"), List.of("name", "value"))) {
                 for (var entry : parameters.entrySet()) params.printRecord(Arrays.asList(entry.getKey(), entry.getValue()));
             }
             for (Rules.Sql query : rules.queries) {
-                System.out.println("Starting query " + query.id + " on " + query.db + " (timeout " + query.timeout + " s)...");
-                System.out.flush();
-                QueryRunner.Result result = runner.run(query, parameters, options.limit, directory);
-                queries.put(query.id, result); artifacts.put(query.id, result.files());
-                System.out.println("Query " + query.id + ": " + result.rows() + " rows, " + result.millis() + " ms"
-                    + (result.partial() ? " [PARTIAL]" : ""));
+                LOG.info("Starting query {} on {} (timeout {} s)...", query.id, query.db, query.timeout);
+                Path sqlFile = directory.resolve(query.id + ".sql");
+                Files.writeString(sqlFile, Objects.toString(query.text, ""));
+                boolean permitted = false;
+                try {
+                    checkQuery(query, parameters, options.allowProd);
+                    permitted = true;
+                    QueryRunner.Result result = runner.run(query, parameters, options.limit, directory);
+                    queries.put(query.id, result); artifacts.put(query.id, result.files());
+                    if (result.partial()) failures.put(query.id, "PARTIAL query on " + query.db
+                        + ". Rerun without the row cap; do not compare this incomplete extract.");
+                } catch (Exception e) {
+                    LOG.error("Query {} on {} failed; continuing with the remaining queries", query.id, query.db, e);
+                    String reason = failureReason(e);
+                    String action = permitted ? "Open " + query.id + ".sql in your database client connected to " + query.db
+                        + ", supply the parameters from PARAMETERS.csv, and check the SELECT manually."
+                        : "Correct the rule, datasource settings or authorization reported below, then rerun; do not bypass safety checks manually.";
+                    String detail = "Query " + query.id + " on " + query.db + " " + (permitted ? "FAILED" : "BLOCKED")
+                        + ".\n\n" + reason + "\n\n" + action;
+                    failures.put(query.id, detail);
+                    Path note = manualDirectory.resolve(query.id + ".md");
+                    Files.writeString(note, "# " + query.id + "\n\n" + detail + "\n");
+                    List<Path> saved = new ArrayList<>(List.of(sqlFile, note));
+                    Path csv = directory.resolve(query.id + ".csv");
+                    if (Files.exists(csv)) {
+                        Path incomplete = manualDirectory.resolve(query.id + ".incomplete.csv");
+                        Files.move(csv, incomplete); saved.add(incomplete);
+                    }
+                    artifacts.put(query.id, saved);
+                }
             }
             ComparisonRunner comparator = new ComparisonRunner(options.partitions);
             for (Rules.Compare compare : rules.comparisons) {
-                System.out.println("Starting comparison " + compare.id + "...");
-                var result = comparator.run(compare, queries.get(compare.source), queries.get(compare.target), directory);
-                comparisons.add(result); artifacts.put(compare.id, result.files());
-                System.out.println("Compare " + compare.id + ": " + result.headline());
+                LOG.info("Starting comparison {}...", compare.id);
+                try {
+                    var source = queries.get(compare.source); var target = queries.get(compare.target);
+                    if (source == null || target == null || source.partial() || target.partial())
+                        throw new ToolException("Comparison skipped: source " + compare.source + " or target " + compare.target
+                            + " failed, was blocked, or is PARTIAL. Resolve those queries and rerun this comparison.");
+                    var result = comparator.run(compare, source, target, directory);
+                    comparisons.add(result); artifacts.put(compare.id, result.files());
+                    LOG.info("Compare {}: {}", compare.id, result.headline());
+                } catch (Exception e) {
+                    LOG.error("Comparison {} did not complete; continuing", compare.id, e);
+                    String detail = failureReason(e);
+                    failures.put(compare.id, "Comparison " + compare.id + ": " + detail);
+                    Path note = manualDirectory.resolve(compare.id + ".md");
+                    Files.writeString(note, "# Comparison " + compare.id + " not completed\n\n" + detail
+                        + "\n\nAny files in the comparison directory are incomplete and must not be treated as parity results.\n");
+                    artifacts.put(compare.id, List.of(note));
+                }
             }
             boolean partial = queries.values().stream().anyMatch(QueryRunner.Result::partial);
             boolean differs = comparisons.stream().anyMatch(ComparisonRunner.Result::differs);
-            int exit = partial ? 2 : differs ? 1 : 0;
+            int exit = partial || !failures.isEmpty() ? 2 : differs ? 1 : 0;
             StringBuilder summary = new StringBuilder("# " + rules.name + "\n\nStatus: "
-                + (partial ? "PARTIAL" : differs ? "DIFFERENCES" : "COMPLETE / EQUAL") + "; exit code: " + exit
+                + (!failures.isEmpty() ? "INCOMPLETE / MANUAL ACTIONS REQUIRED" : partial ? "PARTIAL" : differs ? "DIFFERENCES" : "COMPLETE / EQUAL") + "; exit code: " + exit
                 + "\n\nQuery files are UTF-8 CSV with headers. Unquoted \\N means NULL. SQL templates and supplied parameters are included; datasource credentials are excluded.\n\n"
                 + "| Query | Datasource | Rows | Time ms | Status |\n|---|---|---|---|---|\n");
             for (Rules.Sql query : rules.queries) {
                 var r = queries.get(query.id);
+                if (r == null) {
+                    summary.append("| ").append(query.id).append(" | ").append(query.db).append(" | - | - | FAILED / BLOCKED |\n");
+                    continue;
+                }
                 summary.append("| ").append(query.id).append(" | ").append(query.db).append(" | ").append(r.rows())
                     .append(" | ").append(r.millis()).append(" | ").append(r.partial() ? "PARTIAL" : "COMPLETE").append(" |\n");
             }
             summary.append("\n");
+            summary.append("Manual actions: ").append(failures.size()).append(". See MANUAL_ACTIONS.md for failed queries and skipped comparisons.\n\n");
             for (var result : comparisons) summary.append("- ").append(result.id()).append(": ").append(result.headline()).append("\n");
             summary.append("\nQueries run sequentially in separate read-only transactions. Results are not a synchronized cross-database snapshot.\n");
             ComparisonRunner.writeSmallSummary(directory.resolve("SUMMARY.md"), summary.toString());
+            writeManualActions(directory, failures);
             for (Rules.Compress compression : rules.compressions) {
                 LinkedHashSet<Path> included = new LinkedHashSet<>(List.of(directory.resolve("SUMMARY.md"),
-                    directory.resolve("RULES.xml"), directory.resolve("PARAMETERS.csv")));
+                    directory.resolve("RULES.xml"), directory.resolve("PARAMETERS.csv"), directory.resolve("MANUAL_ACTIONS.md")));
+                for (Rules.Sql query : rules.queries) if (failures.containsKey(query.id))
+                    included.add(directory.resolve(query.id + ".sql"));
                 for (Rules.Include include : compression.includes) included.addAll(artifacts.get(include.ref));
-                zip(directory, directory.resolve(compression.file), included);
-                System.out.println("ZIP: " + compression.file);
+                LOG.info("Creating ZIP {} with {} files", compression.file, included.size());
+                try {
+                    zip(directory, directory.resolve(compression.file), included);
+                    LOG.info("ZIP: {}", directory.resolve(compression.file));
+                } catch (IOException e) {
+                    LOG.error("ZIP {} failed; exported files remain available", compression.file, e);
+                    failures.put(compression.id, "ZIP " + compression.file + " failed: " + failureReason(e)
+                        + ". Check disk space/permissions or compress the saved files manually; successful queries need not be rerun.");
+                    exit = 2;
+                    writeManualActions(directory, failures);
+                    ComparisonRunner.writeSmallSummary(directory.resolve("SUMMARY.md"), summary
+                        + "\nZIP creation failed; final exit code 2. See MANUAL_ACTIONS.md.\n");
+                }
             }
-            System.out.println("Summary: " + directory.resolve("SUMMARY.md"));
+            LOG.info("Summary: {}", directory.resolve("SUMMARY.md"));
+            LOG.info("Manual actions: {} ({} issue(s))", directory.resolve("MANUAL_ACTIONS.md"), failures.size());
             return exit;
         } catch (Exception e) {
             String message = e instanceof ToolException ? e.getMessage() : "File processing failed. Check paths, free disk space and permissions.";
-            Files.writeString(directory.resolve("ERROR.md"), "# INCOMPLETE RUN\n\n" + message
-                + "\n\nDo not treat any exported or partially compared files as proof of equality.\n");
-            throw new ToolException(message + " See " + directory.resolve("ERROR.md"));
-        } finally { CsvFiles.deleteTree(directory.resolve(".work")); }
+            try {
+                Files.writeString(directory.resolve("ERROR.md"), "# INCOMPLETE RUN\n\n" + message
+                    + "\n\nDo not treat any exported or partially compared files as proof of equality.\n");
+            } catch (IOException reportingFailure) { e.addSuppressed(reportingFailure); }
+            throw new ToolException(message + " See " + directory.resolve("ERROR.md"), e);
+        } finally {
+            try { CsvFiles.deleteTree(directory.resolve(".work")); }
+            catch (IOException cleanup) { LOG.warn("Could not remove temporary files under {}", directory.resolve(".work"), cleanup); }
+        }
+    }
+
+    private void checkQuery(Rules.Sql query, Map<String, Object> parameters, boolean allowProd) {
+        SqlGuard.validate(query.text);
+        QueryRunner.validateParameters(query, parameters);
+        var definition = settings.getDatasources().get(query.db);
+        if (definition == null) throw new ToolException("Unknown datasource: " + query.db);
+        if (!definition.isReadOnly()) throw new ToolException("Datasource " + query.db + " must have read-only=true.");
+        if (QueryRunner.production(query.db, definition) && !allowProd)
+            throw new ToolException("Datasource " + query.db + " requires --allow-prod if production access is intended.");
+        if (definition.getUrl() == null || !definition.getUrl().startsWith("jdbc:") || definition.getUrl().contains("${")
+            || (definition.getUsername() != null && definition.getUsername().contains("${"))
+            || (definition.getPassword() != null && definition.getPassword().contains("${")))
+            throw new ToolException("Datasource " + query.db + " has missing connection settings/environment variables.");
+    }
+
+    private static String failureReason(Throwable error) {
+        Throwable root = error;
+        Set<Throwable> seen = Collections.newSetFromMap(new IdentityHashMap<>());
+        while (root.getCause() != null && seen.add(root)) root = root.getCause();
+        String detail = SecretRedactor.clean(root.getClass().getSimpleName() + ": " + Objects.toString(root.getMessage(), "No message"));
+        return detail.length() > 4000 ? detail.substring(0, 4000) + " (see log for full details)" : detail;
+    }
+
+    private static void writeManualActions(Path directory, Map<String, String> failures) throws IOException {
+        StringBuilder report = new StringBuilder("# Manual actions\n\nSuccessful query CSVs are retained. Failed-query partial CSVs, if any, are under manual/ and must not be used as complete extracts.\n\n");
+        if (failures.isEmpty()) report.append("No failed queries or skipped comparisons. No manual SQL execution required.\n");
+        else for (var failure : failures.entrySet()) report.append("## ").append(failure.getKey())
+            .append("\n\n").append(failure.getValue()).append("\n\n");
+        report.append("\nSQL templates use named parameters; see PARAMETERS.csv for this run's values. Use the configured datasource in your database client. "
+            + "After corrections, rerun the XML rule file. Final reports in the output folder include any ZIP failures discovered after earlier ZIPs were created.\n");
+        Files.writeString(directory.resolve("MANUAL_ACTIONS.md"), SecretRedactor.clean(report.toString()));
     }
 
     private static void zip(Path directory, Path target, Set<Path> included) throws IOException {

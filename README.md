@@ -4,6 +4,9 @@ Java 21 / Spring Boot CLI for XML-driven SQL execution, CSV export, key-based co
 Each `<sql db="...">` references an independently configured JDBC datasource. Queries can use the same database,
 two instances of the same database type, or different database types. MySQL and PostgreSQL drivers are included.
 
+The Spring Boot version is 4.1.2. Java source/bytecode targets 21; the launcher uses your JAVA_HOME or PATH and can
+run on a newer JDK, including Java 27. The runtime Java and Spring Boot versions are recorded in the log at startup.
+
 ## Build and start
 
 From PowerShell:
@@ -29,7 +32,7 @@ Remote connectivity, JDBC streaming and real query results remain unverified.
 The launcher uses `JAVA_HOME\bin\java.exe` if JAVA_HOME is set, otherwise `java.exe` from PATH. Set JAVA_HOME to the
 installed JDK 21 directory on each machine; the launcher does not replace it with a developer-specific path.
 
-The application imports `config/datasources.properties`, relative to its working directory. The PowerShell wrapper
+The application imports `config/datasources.properties` and `config/logging.properties`, relative to its working directory. The PowerShell wrapper
 uses the project directory. The actual local file is gitignored, as is `out/`.
 `config/datasources.example.properties` is a portable example.
 
@@ -255,7 +258,7 @@ enforcement for every database. The tool never deliberately issues data-changing
 
 Datasources with `prod=true` or 'prod' in their name require explicit `--allow-prod` during execution. Validation and
 listing never connect. The supplied PROD datasource is marked accordingly. Confirm environment flags for any other
-datasources you add. Console errors omit raw driver exception details and secrets.
+datasources you add. Console and file diagnostics include exception details and cause stacks with credential redaction.
 
 Exit codes:
 
@@ -270,6 +273,73 @@ Exit codes:
 Spring Boot 4.1.2, Spring JDBC/HikariCP, Jackson XML 3 (Boot-managed), Commons CSV 1.14.1, MySQL and PostgreSQL JDBC
 drivers. Tests use Spring Boot test support and H2. ZIP creation, decimal/date handling, partitioning and comparisons
 use Java 21 APIs. No ORM, PDF/Excel libraries, embedded comparison database or CLI framework is needed.
+
+## Diagnostic logs
+
+### Continue after query failures
+
+Execution attempts every eligible SQL rule even if an earlier query fails. Successful CSVs are retained. Each
+query still passes the SQL/read-only/production checks before connecting; blocked queries are reported and skipped.
+Comparisons run only when both source queries completed without row caps. Failed/skipped comparisons do not stop
+independent comparisons or ZIP packaging. Any failure, blocked query, skipped comparison or capped result returns 2.
+
+Read `MANUAL_ACTIONS.md` in the output directory: it lists each failed query, its datasource, the underlying reason,
+saved SQL filename, and the action to take. SQL templates use named parameters whose values are in `PARAMETERS.csv`.
+Review failed SELECTs in your database client. Correct blocked configurations/safety issues instead of bypassing them.
+Incomplete failed-query CSVs move under `manual/`; they are never presented as complete query exports.
+Every ZIP includes the manual-actions report and failed-query SQL templates. If a selected comparison cannot run,
+its ZIP entry is a diagnostic note. Final reports outside the ZIP also include any later packaging failures.
+
+`--validate` remains strict and never connects. Invalid XML, invalid IDs/references, invalid shared parameter values
+or conflicting output filenames are fatal structural errors; correct them before execution can start.
+
+Spring Boot manages the SLF4J/Logback dependencies. `src/main/resources/logback-spring.xml` keeps the standard Boot
+console format and adds two synchronous rolling files:
+
+| File | Contents |
+|---|---|
+| `logs/compare-db-tool.log` | All enabled log levels, including application progress and exception details |
+| `logs/compare-db-tool-error.log` | ERROR events with full exception/cause stacks |
+| `logs/archive/*.log.gz` | Rotated daily/size-based archives |
+
+Rotation defaults: 10 MB per file, seven days of history, 100 MB archive cap per appender. Logs append across runs.
+The directory resolves from the working directory; the launcher sets that to the project directory. The logs folder
+and `.log` files are gitignored and never included in result ZIPs.
+
+The original exception cause is retained for XML, parameter, JDBC and file-processing errors. XML logs identify the
+element and its starting line/column, and stack traces include the parser's detailed message and nested cause.
+DEBUG logs show loaded IDs, rule counts, parameter names, datasource names, query settings and comparison partitions.
+Query progress is reported every 100,000 rows. Parameter values and result rows are not intentionally logged.
+Hikari lifecycle events are enabled; the previous blanket OFF setting has been removed.
+
+Edit external `config/logging.properties` and rerun without rebuilding to change levels, retention or directory:
+
+```properties
+logging.file.path=logs
+logging.level.root=INFO
+logging.level.com.taomish.comparedbtool=DEBUG
+logging.level.com.zaxxer.hikari=INFO
+logging.level.org.springframework.jdbc=WARN
+logging.logback.rollingpolicy.max-file-size=10MB
+logging.logback.rollingpolicy.max-history=7
+logging.logback.rollingpolicy.total-size-cap=100MB
+```
+
+For a one-run override:
+
+```powershell
+.\compare.ps1 --rules rules\grasa-inputs-cfs.xml --validate --logging.level.com.taomish.comparedbtool=DEBUG
+Get-Content .\logs\compare-db-tool-error.log -Tail 120
+```
+
+The console and both file appenders redact configured datasource passwords, sensitive environment/property values,
+JDBC URLs and common password/token assignments from messages and nested stack traces. No datasource configuration
+is intentionally dumped. Use this supplied logging configuration to retain the redaction encoder; replacing it with
+an arbitrary external Logback configuration bypasses that protection. Review logs before sharing them.
+
+JVM/JAR launch failures before Spring initializes logging still appear on the console and may produce no log file.
+After pulling Java/logback resource changes, rebuild the JAR once; subsequent external logging-property changes need
+only a rerun. The added logging code and tests have not been built or executed here.
 
 ## Troubleshooting missing console output
 

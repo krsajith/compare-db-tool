@@ -1,6 +1,7 @@
 package com.taomish.comparedbtool;
 
-/** User-facing errors must not contain connection passwords or raw JDBC exceptions. */
+/** Keep user-facing messages concise; preserve causes for redacted diagnostic logging. */
 public class ToolException extends RuntimeException {
     public ToolException(String message) { super(message); }
+    public ToolException(String message, Throwable cause) { super(message, cause); }
 }

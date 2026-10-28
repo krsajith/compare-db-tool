@@ -1,6 +1,8 @@
 HELP.md
 /config/datasources.properties
 /out/
+/logs/
+*.log
 target/
 .mvn/wrapper/maven-wrapper.jar
 !**/src/main/**/target/

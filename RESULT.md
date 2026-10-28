@@ -1,5 +1,21 @@
 # Coding handoff
 
+## Logging update
+
+Execution now continues after per-query/comparison failures, retains successful CSVs, and produces MANUAL_ACTIONS.md
+with datasource/reason/SQL/manual follow-up. Partial query files are marked and skipped comparisons are reported.
+ZIP packaging continues using available artifacts/diagnostic notes. Any such issue returns exit 2. Added an isolated
+H2 workflow regression test for failure continuation; it has not been run.
+
+Added Spring Boot Logback configuration with Boot console patterns, rolling application/error files, external
+config/logging.properties, SLF4J stage/progress logs and full retained exception cause chains. XML logs identify the
+element/line/column and runtime logs identify Java/Spring versions. Encoders redact registered secrets and JDBC URLs.
+Added logging/redaction tests. Logging code, configuration initialization and tests have NOT been executed.
+
+The project is published to the configured GitHub remote; the original handoff below predates publication.
+
+## Original coding handoff
+
 Status: IMPLEMENTED; NOT BUILT OR TESTED, at the user's explicit request.
 
 Implemented XML rules, external named JDBC datasources, typed bind parameters, SELECT/WITH guard, lazy read-only

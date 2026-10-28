@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+    <!-- Spring extensions require logback-spring.xml; do not enable Logback scanning. -->
+    <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
+    <springProperty scope="context" name="TOOL_LOG_DIR" source="logging.file.path" defaultValue="logs"/>
+    <springProperty scope="context" name="TOOL_MAX_FILE_SIZE" source="logging.logback.rollingpolicy.max-file-size" defaultValue="10MB"/>
+    <springProperty scope="context" name="TOOL_MAX_HISTORY" source="logging.logback.rollingpolicy.max-history" defaultValue="7"/>
+    <springProperty scope="context" name="TOOL_TOTAL_SIZE_CAP" source="logging.logback.rollingpolicy.total-size-cap" defaultValue="100MB"/>
+
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder class="com.taomish.comparedbtool.logging.RedactingPatternLayoutEncoder">
+            <pattern>${CONSOLE_LOG_PATTERN}</pattern>
+            <charset>${CONSOLE_LOG_CHARSET}</charset>
+        </encoder>
+    </appender>
+    <appender name="APPLICATION" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>${TOOL_LOG_DIR}/compare-db-tool.log</file>
+        <append>true</append>
+        <immediateFlush>true</immediateFlush>
+        <encoder class="com.taomish.comparedbtool.logging.RedactingPatternLayoutEncoder">
+            <pattern>${FILE_LOG_PATTERN}</pattern>
+            <charset>UTF-8</charset>
+        </encoder>
+        <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+            <fileNamePattern>${TOOL_LOG_DIR}/archive/compare-db-tool.%d{yyyy-MM-dd}.%i.log.gz</fileNamePattern>
+            <maxFileSize>${TOOL_MAX_FILE_SIZE}</maxFileSize>
+            <maxHistory>${TOOL_MAX_HISTORY}</maxHistory>
+            <totalSizeCap>${TOOL_TOTAL_SIZE_CAP}</totalSizeCap>
+        </rollingPolicy>
+    </appender>
+    <appender name="ERRORS" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>${TOOL_LOG_DIR}/compare-db-tool-error.log</file>
+        <append>true</append>
+        <immediateFlush>true</immediateFlush>
+        <filter class="ch.qos.logback.classic.filter.ThresholdFilter"><level>ERROR</level></filter>
+        <encoder class="com.taomish.comparedbtool.logging.RedactingPatternLayoutEncoder">
+            <pattern>${FILE_LOG_PATTERN}</pattern>
+            <charset>UTF-8</charset>
+        </encoder>
+        <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+            <fileNamePattern>${TOOL_LOG_DIR}/archive/compare-db-tool-error.%d{yyyy-MM-dd}.%i.log.gz</fileNamePattern>
+            <maxFileSize>${TOOL_MAX_FILE_SIZE}</maxFileSize>
+            <maxHistory>${TOOL_MAX_HISTORY}</maxHistory>
+            <totalSizeCap>${TOOL_TOTAL_SIZE_CAP}</totalSizeCap>
+        </rollingPolicy>
+    </appender>
+    <!-- Spring Boot applies logging.level.* settings from application/external properties. -->
+    <root level="INFO">
+        <appender-ref ref="CONSOLE"/>
+        <appender-ref ref="APPLICATION"/>
+        <appender-ref ref="ERRORS"/>
+    </root>
+</configuration>
