@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Edit the SQL/table names and parameters to match your actual schema before running.
+     The named datasources below exist in config/datasources.properties from your screenshots. -->
+<rules name="trade-comparison">
+    <parameters>
+        <param name="businessUnit" type="string" value="CFS"/>
+        <param name="reportDate" type="date" value="2026-10-01"/>
+    </parameters>
+
+    <sql id="legacy-trades" db="mysql-oprdb02" timeout="120" fetchSize="1000">
+        <![CDATA[
+            SELECT trade_id, amount, trade_date
+            FROM YOUR_DATABASE.YOUR_TRADE_TABLE
+            WHERE business_unit = :businessUnit
+              AND trade_date = :reportDate
+        ]]>
+    </sql>
+
+    <sql id="new-trades" db="postgres-dev" timeout="120" fetchSize="1000">
+        <![CDATA[
+            SELECT trade_id, amount, trade_date
+            FROM opera.YOUR_TRADE_TABLE
+            WHERE business_unit = :businessUnit
+              AND trade_date = :reportDate
+        ]]>
+    </sql>
+
+    <!-- Compare all common columns; these column elements override their default rules. -->
+    <compare id="trade-comparison" source="legacy-trades" target="new-trades">
+        <key columns="trade_id"/>
+        <column name="amount" absTol="0.01"/>
+        <column name="trade_date" dateOnly="true"/>
+    </compare>
+
+    <compress id="trade-package" file="trade-comparison.zip">
+        <include ref="legacy-trades"/>
+        <include ref="new-trades"/>
+        <include ref="trade-comparison"/>
+    </compress>
+</rules>

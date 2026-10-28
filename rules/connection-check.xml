@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- This performs real SELECT queries when run. It is not a dry run. -->
+<rules name="connection-check">
+    <sql id="mysql-check" db="mysql-oprdb02"><![CDATA[SELECT 1 AS check_value]]></sql>
+    <sql id="postgres-check" db="postgres-dev"><![CDATA[SELECT 1 AS check_value]]></sql>
+    <compare id="check-comparison" source="mysql-check" target="postgres-check">
+        <key columns="check_value"/>
+    </compare>
+    <compress id="check-package" file="connection-check.zip">
+        <include ref="mysql-check"/>
+        <include ref="postgres-check"/>
+        <include ref="check-comparison"/>
+    </compress>
+</rules>
