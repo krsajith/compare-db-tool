@@ -48,16 +48,16 @@
                 ('CM SM','K27.K27'),
                 ('CM SM','Z26.Z26'),
                 ('CM W','Z26.Z26')),
-            vd AS (SELECT value_date FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1),
+            vd AS (SELECT tenant_id, value_date FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1),
             v AS (
                 SELECT pm.product, pm.contract_month, m.vol1_id, COUNT(*) AS securities
                 FROM pm
                 LEFT JOIN opera.cloned_security_info_table m
-                       ON upper(trim(m.product_code)) = upper(trim(pm.product)) AND m.contract_month = pm.contract_month
+                       ON m.tenant_id = (SELECT tenant_id FROM vd) AND upper(trim(m.product_code)) = upper(trim(pm.product)) AND m.contract_month = pm.contract_month
                       AND upper(m.business_unit) = :bu AND m.status = 'Active' AND m.vol1_id IS NOT NULL
                 GROUP BY pm.product, pm.contract_month, m.vol1_id)
             SELECT v.product, v.contract_month, v.vol1_id, v.securities,
-                   (SELECT COUNT(*) FROM opera.settlement_vol_surf_table sv WHERE sv.vol_id = v.vol1_id AND sv.value_date = (SELECT value_date FROM vd)) AS surface_rows
+                   (SELECT COUNT(*) FROM opera.settlement_vol_surf_table sv WHERE sv.tenant_id = (SELECT tenant_id FROM vd) AND sv.vol_id = v.vol1_id AND sv.value_date = (SELECT value_date FROM vd)) AS surface_rows
             FROM v ORDER BY v.product, v.contract_month, v.vol1_id
         ]]>
     </sql>

@@ -23,7 +23,7 @@
             SELECT security_id, product_code, derivative_type, contract_month, vol1_id, underlying1_id,
                    strike, strike1, maturity_date, barrier_type, barrier1_level, barrier1_rebate, barrier2_level
             FROM opera.cloned_security_info_table
-            WHERE business_unit = :bu AND status = 'Active'
+            WHERE tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1) AND business_unit = :bu AND status = 'Active'
         ]]>
     </sql>
     <compare id="sec" source="old-sec" target="new-sec">
@@ -52,9 +52,9 @@
             SELECT vol_id, UPPER(call_put_id) AS call_put_id, COUNT(*) AS n_rows,
                    MIN(strike) AS min_strike, MAX(strike) AS max_strike, ROUND(SUM(settle_vol)::numeric, 6) AS sum_vol
             FROM opera.settlement_vol_surf_table
-            WHERE value_date = :cob
+            WHERE tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1) AND value_date = :cob
               AND vol_id IN (SELECT DISTINCT vol1_id FROM opera.cloned_security_info_table
-                             WHERE business_unit = :bu AND status = 'Active')
+                             WHERE tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1) AND business_unit = :bu AND status = 'Active')
             GROUP BY vol_id, UPPER(call_put_id)
         ]]>
     </sql>
@@ -78,9 +78,9 @@
         <![CDATA[
             SELECT underlying_id, settle_value, risk_free_rate, div_yield, settlement_date
             FROM opera.underlying_settle_value_table
-            WHERE value_date = :cob
+            WHERE tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1) AND value_date = :cob
               AND underlying_id IN (SELECT DISTINCT underlying1_id FROM opera.cloned_security_info_table
-                                    WHERE business_unit = :bu AND status = 'Active')
+                                    WHERE tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1) AND business_unit = :bu AND status = 'Active')
         ]]>
     </sql>
     <compare id="px" source="old-px" target="new-px">

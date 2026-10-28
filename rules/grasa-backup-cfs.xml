@@ -22,25 +22,25 @@
     <sql id="bkp-sec" db="postgres-dev" timeout="300" fetchSize="2000">
         <![CDATA[
             SELECT security_id, product_code, contract_month, vol1_id, underlying1_id
-            FROM opera_backup_04_10.cloned_security_info_table WHERE business_unit = :bu
+            FROM opera_backup_04_10.cloned_security_info_table WHERE tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1) AND business_unit = :bu
         ]]>
     </sql>
     <sql id="now-sec" db="postgres-dev" timeout="300" fetchSize="2000">
         <![CDATA[
             SELECT security_id, product_code, contract_month, vol1_id, underlying1_id
-            FROM opera.cloned_security_info_table WHERE business_unit = :bu
+            FROM opera.cloned_security_info_table WHERE tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1) AND business_unit = :bu
         ]]>
     </sql>
     <sql id="bkp-sec-st" db="postgres-dev" timeout="300" fetchSize="2000">
         <![CDATA[
             SELECT security_id, status, vol1_id, strike, barrier1_level
-            FROM opera_backup_04_10.cloned_security_info_table WHERE business_unit = :bu
+            FROM opera_backup_04_10.cloned_security_info_table WHERE tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1) AND business_unit = :bu
         ]]>
     </sql>
     <sql id="now-sec-st" db="postgres-dev" timeout="300" fetchSize="2000">
         <![CDATA[
             SELECT security_id, status, vol1_id, strike, barrier1_level
-            FROM opera.cloned_security_info_table WHERE business_unit = :bu
+            FROM opera.cloned_security_info_table WHERE tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1) AND business_unit = :bu
         ]]>
     </sql>
     <compare id="sec-legacy-vs-bkp" source="legacy-sec" target="bkp-sec"><key columns="security_id"/></compare>
@@ -61,13 +61,13 @@
     <sql id="bkp-vol" db="postgres-dev" timeout="600">
         <![CDATA[
             SELECT vol_id, UPPER(call_put_id) AS call_put_id, COUNT(*) AS n_rows, ROUND(SUM(settle_vol)::numeric, 6) AS sum_vol
-            FROM opera_backup_04_10.settlement_vol_surf_table WHERE value_date = :cob GROUP BY vol_id, UPPER(call_put_id)
+            FROM opera_backup_04_10.settlement_vol_surf_table WHERE tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1) AND value_date = :cob GROUP BY vol_id, UPPER(call_put_id)
         ]]>
     </sql>
     <sql id="now-vol" db="postgres-dev" timeout="600">
         <![CDATA[
             SELECT vol_id, UPPER(call_put_id) AS call_put_id, COUNT(*) AS n_rows, ROUND(SUM(settle_vol)::numeric, 6) AS sum_vol
-            FROM opera.settlement_vol_surf_table WHERE value_date = :cob GROUP BY vol_id, UPPER(call_put_id)
+            FROM opera.settlement_vol_surf_table WHERE tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1) AND value_date = :cob GROUP BY vol_id, UPPER(call_put_id)
         ]]>
     </sql>
     <compare id="vol-legacy-vs-bkp" source="legacy-vol" target="bkp-vol"><key columns="vol_id,call_put_id"/><column name="sum_vol" absTol="0.0001"/></compare>
@@ -83,13 +83,13 @@
     <sql id="bkp-px" db="postgres-dev" timeout="300">
         <![CDATA[
             SELECT underlying_id, settle_value, settlement_date
-            FROM opera_backup_04_10.underlying_settle_value_table WHERE value_date = :cob
+            FROM opera_backup_04_10.underlying_settle_value_table WHERE tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1) AND value_date = :cob
         ]]>
     </sql>
     <sql id="now-px" db="postgres-dev" timeout="300">
         <![CDATA[
             SELECT underlying_id, settle_value, settlement_date
-            FROM opera.underlying_settle_value_table WHERE value_date = :cob
+            FROM opera.underlying_settle_value_table WHERE tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1) AND value_date = :cob
         ]]>
     </sql>
     <compare id="px-legacy-vs-bkp" source="legacy-px" target="bkp-px"><key columns="underlying_id"/><column name="settle_value" absTol="0.000001"/><column name="settlement_date" dateOnly="true"/></compare>

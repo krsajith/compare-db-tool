@@ -47,12 +47,12 @@
                 ('CM SM','K27.K27'),
                 ('CM SM','Z26.Z26'),
                 ('CM W','Z26.Z26')),
-            vd AS (SELECT value_date FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1)
+            vd AS (SELECT tenant_id, value_date FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1)
             SELECT pm.product, pm.contract_month, sv.vol_id, COUNT(sv.*) AS surface_rows,
                    COUNT(*) FILTER (WHERE upper(sv.call_put_id) = 'C') AS call_rows
             FROM pm
             LEFT JOIN opera.settlement_vol_surf_table sv
-                   ON sv.value_date = (SELECT value_date FROM vd)
+                   ON sv.tenant_id = (SELECT tenant_id FROM vd) AND sv.value_date = (SELECT value_date FROM vd)
                   AND regexp_replace(sv.vol_id, '[[:space:]]+', ' ', 'g') = split_part(pm.product, ' ', 1) || ' ' || split_part(pm.product, ' ', 2) || ' ' || pm.contract_month
             GROUP BY pm.product, pm.contract_month, sv.vol_id
             ORDER BY pm.product, pm.contract_month

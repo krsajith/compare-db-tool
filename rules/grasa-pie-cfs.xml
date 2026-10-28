@@ -20,7 +20,7 @@
             SELECT client_code, regexp_replace(product_code, '^(CM|CR) +', '') AS product_code,
                    positive_bump, negative_bump, pnl_10d_pie, delta_10d_pie
             FROM opera.grasa_10dpie_rrr_table
-            WHERE cob_date = :cob AND upper(business_unit) = :bu
+            WHERE tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1) AND cob_date = :cob AND upper(business_unit) = :bu
         ]]>
     </sql>
     <compare id="pie" source="old-pie" target="new-pie">

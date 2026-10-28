@@ -16,8 +16,8 @@
                    COUNT(DISTINCT c.security_id) FILTER (WHERE s.security_id IS NULL) AS distinct_missing_securities
             FROM opera.helper_sensitivity_report_view_cache_table c
             LEFT JOIN opera.cloned_security_info_table s
-                   ON s.security_id = c.security_id AND s.business_unit = c.business_unit
-            WHERE upper(c.business_unit) = :bu
+                   ON s.tenant_id = c.tenant_id AND s.security_id = c.security_id AND s.business_unit = c.business_unit
+            WHERE c.tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1) AND upper(c.business_unit) = :bu
             GROUP BY 1, 2, 3
             HAVING COUNT(*) FILTER (WHERE s.security_id IS NULL) > 0
             ORDER BY rows_no_security DESC
@@ -30,8 +30,8 @@
                    COUNT(*) FILTER (WHERE s.security_id IS NULL) AS rows_no_security
             FROM opera.helper_sensitivity_report_view_cache_table c
             LEFT JOIN opera_backup_04_10.cloned_security_info_table s
-                   ON s.security_id = c.security_id AND s.business_unit = c.business_unit
-            WHERE upper(c.business_unit) = :bu
+                   ON s.tenant_id = c.tenant_id AND s.security_id = c.security_id AND s.business_unit = c.business_unit
+            WHERE c.tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1) AND upper(c.business_unit) = :bu
             GROUP BY 1, 2, 3
             HAVING COUNT(*) FILTER (WHERE s.security_id IS NULL) > 0
             ORDER BY rows_no_security DESC
