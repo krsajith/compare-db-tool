@@ -53,7 +53,7 @@
             FROM pm
             LEFT JOIN opera.settlement_vol_surf_table sv
                    ON sv.value_date = (SELECT value_date FROM vd)
-                  AND regexp_replace(sv.vol_id, '\s+', ' ', 'g') = split_part(pm.product, ' ', 1) || ' ' || split_part(pm.product, ' ', 2) || ' ' || pm.contract_month
+                  AND regexp_replace(sv.vol_id, '[[:space:]]+', ' ', 'g') = split_part(pm.product, ' ', 1) || ' ' || split_part(pm.product, ' ', 2) || ' ' || pm.contract_month
             GROUP BY pm.product, pm.contract_month, sv.vol_id
             ORDER BY pm.product, pm.contract_month
         ]]>
