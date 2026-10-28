@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Product master parity (all products): legacy cloned_product_master_table vs PG. The GRASA money multiplier comes from
+     lot_mult * curr_mult (* constant_curr_mult for curr_mult_type = 'division' only, MATLAB generate_pricing_views_grasa.m 225-243).
+     SIP / CM OR EUR PnL is ~113.8x legacy although cache lot_mult1 (5) matches and curr_mult1 differs only 1.1125 vs 1.1244. Read-only. -->
+<rules name="grasa-product-master-cfs">
+    <parameters>
+        <param name="bu" type="string" value="CFS"/>
+    </parameters>
+    <sql id="old-pm" db="mysql-oprdb02" timeout="120">
+        <![CDATA[
+            SELECT invenio_product_code, currency, lot_mult, constant_curr_mult, curr_mult_factor, curr_mult_type, constant_nc_factor
+            FROM dbsystemuat.cloned_product_master_table
+        ]]>
+    </sql>
+    <sql id="new-pm" db="postgres-dev" timeout="120">
+        <![CDATA[
+            SELECT invenio_product_code, currency, lot_mult, constant_curr_mult, curr_mult_factor, curr_mult_type, constant_nc_factor
+            FROM opera.cloned_product_master_table
+            WHERE tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1)
+        ]]>
+    </sql>
+    <compare id="pm" source="old-pm" target="new-pm">
+        <key columns="invenio_product_code"/>
+        <column name="lot_mult" absTol="0.000001"/>
+        <column name="constant_curr_mult" absTol="0.000001"/>
+        <column name="constant_nc_factor" absTol="0.000001"/>
+    </compare>
+    <compress id="bundle" file="grasa-product-master-cfs.zip"><include ref="pm"/></compress>
+</rules>
