@@ -1,0 +1,103 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Rule B: when was GRASA input data lost? Three-way: legacy MySQL, PG post-migration backup (opera_backup_04_10),
+     PG now (opera). All on postgres-dev, BU CFS, COB 01-Oct-2026. Read-only.
+     Read the results as:
+       sec-legacy-vs-bkp : only-source  = in legacy, absent in backup  -> lost DURING migration
+       sec-bkp-vs-now    : only-source  = in backup, gone now          -> deleted AFTER migration
+                           differences  = status / vol1_id changed after migration
+       sec-legacy-vs-now : only-source  = in legacy, absent now (any status) -> truly missing in PG
+     Same for vol surface and prices. -->
+<rules name="grasa-backup-cfs">
+    <parameters>
+        <param name="bu" type="string" value="CFS"/>
+        <param name="cob" type="date" value="2026-10-01"/>
+    </parameters>
+
+    <sql id="legacy-sec" db="mysql-oprdb02" timeout="300" fetchSize="2000">
+        <![CDATA[
+            SELECT security_id, product_code, contract_month, vol1_id, underlying1_id
+            FROM dbsystemuat.cloned_security_info_table_cfs
+        ]]>
+    </sql>
+    <sql id="bkp-sec" db="postgres-dev" timeout="300" fetchSize="2000">
+        <![CDATA[
+            SELECT security_id, product_code, contract_month, vol1_id, underlying1_id
+            FROM opera_backup_04_10.cloned_security_info_table WHERE business_unit = :bu
+        ]]>
+    </sql>
+    <sql id="now-sec" db="postgres-dev" timeout="300" fetchSize="2000">
+        <![CDATA[
+            SELECT security_id, product_code, contract_month, vol1_id, underlying1_id
+            FROM opera.cloned_security_info_table WHERE business_unit = :bu
+        ]]>
+    </sql>
+    <sql id="bkp-sec-st" db="postgres-dev" timeout="300" fetchSize="2000">
+        <![CDATA[
+            SELECT security_id, status, vol1_id, strike, barrier1_level
+            FROM opera_backup_04_10.cloned_security_info_table WHERE business_unit = :bu
+        ]]>
+    </sql>
+    <sql id="now-sec-st" db="postgres-dev" timeout="300" fetchSize="2000">
+        <![CDATA[
+            SELECT security_id, status, vol1_id, strike, barrier1_level
+            FROM opera.cloned_security_info_table WHERE business_unit = :bu
+        ]]>
+    </sql>
+    <compare id="sec-legacy-vs-bkp" source="legacy-sec" target="bkp-sec"><key columns="security_id"/></compare>
+    <compare id="sec-legacy-vs-now" source="legacy-sec" target="now-sec"><key columns="security_id"/></compare>
+    <compare id="sec-bkp-vs-now" source="bkp-sec-st" target="now-sec-st">
+        <key columns="security_id"/>
+        <column name="strike" absTol="0.000001"/>
+        <column name="barrier1_level" absTol="0.000001"/>
+    </compare>
+
+    <!-- vol surface on the COB, summarised per vol_id / call-put (all vol ids, not only active securities) -->
+    <sql id="legacy-vol" db="mysql-oprdb02" timeout="600">
+        <![CDATA[
+            SELECT vol_id, UPPER(call_put_id) AS call_put_id, COUNT(*) AS n_rows, ROUND(SUM(settle_vol), 6) AS sum_vol
+            FROM dbsystemuat.settlement_vol_surf_table WHERE value_date = :cob GROUP BY vol_id, UPPER(call_put_id)
+        ]]>
+    </sql>
+    <sql id="bkp-vol" db="postgres-dev" timeout="600">
+        <![CDATA[
+            SELECT vol_id, UPPER(call_put_id) AS call_put_id, COUNT(*) AS n_rows, ROUND(SUM(settle_vol)::numeric, 6) AS sum_vol
+            FROM opera_backup_04_10.settlement_vol_surf_table WHERE value_date = :cob GROUP BY vol_id, UPPER(call_put_id)
+        ]]>
+    </sql>
+    <sql id="now-vol" db="postgres-dev" timeout="600">
+        <![CDATA[
+            SELECT vol_id, UPPER(call_put_id) AS call_put_id, COUNT(*) AS n_rows, ROUND(SUM(settle_vol)::numeric, 6) AS sum_vol
+            FROM opera.settlement_vol_surf_table WHERE value_date = :cob GROUP BY vol_id, UPPER(call_put_id)
+        ]]>
+    </sql>
+    <compare id="vol-legacy-vs-bkp" source="legacy-vol" target="bkp-vol"><key columns="vol_id,call_put_id"/><column name="sum_vol" absTol="0.0001"/></compare>
+    <compare id="vol-bkp-vs-now" source="bkp-vol" target="now-vol"><key columns="vol_id,call_put_id"/><column name="sum_vol" absTol="0.0001"/></compare>
+
+    <!-- settle prices on the COB -->
+    <sql id="legacy-px" db="mysql-oprdb02" timeout="300">
+        <![CDATA[
+            SELECT underlying_id, settle_value, settlement_date
+            FROM dbsystemuat.underlying_settle_value_table WHERE value_date = :cob
+        ]]>
+    </sql>
+    <sql id="bkp-px" db="postgres-dev" timeout="300">
+        <![CDATA[
+            SELECT underlying_id, settle_value, settlement_date
+            FROM opera_backup_04_10.underlying_settle_value_table WHERE value_date = :cob
+        ]]>
+    </sql>
+    <sql id="now-px" db="postgres-dev" timeout="300">
+        <![CDATA[
+            SELECT underlying_id, settle_value, settlement_date
+            FROM opera.underlying_settle_value_table WHERE value_date = :cob
+        ]]>
+    </sql>
+    <compare id="px-legacy-vs-bkp" source="legacy-px" target="bkp-px"><key columns="underlying_id"/><column name="settle_value" absTol="0.000001"/><column name="settlement_date" dateOnly="true"/></compare>
+    <compare id="px-bkp-vs-now" source="bkp-px" target="now-px"><key columns="underlying_id"/><column name="settle_value" absTol="0.000001"/><column name="settlement_date" dateOnly="true"/></compare>
+
+    <compress id="bundle" file="grasa-backup-cfs.zip">
+        <include ref="sec-legacy-vs-bkp"/><include ref="sec-legacy-vs-now"/><include ref="sec-bkp-vs-now"/>
+        <include ref="vol-legacy-vs-bkp"/><include ref="vol-bkp-vs-now"/>
+        <include ref="px-legacy-vs-bkp"/><include ref="px-bkp-vs-now"/>
+    </compress>
+</rules>

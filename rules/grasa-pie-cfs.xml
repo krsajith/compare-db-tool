@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Rule A: stored GRASA 10D PIE, legacy MySQL vs new Postgres, BU CFS, COB 01-Oct-2026. Read-only.
+     Product codes are normalised (leading 'CM '/'CR ' removed) in case the two sides store them differently. -->
+<rules name="grasa-pie-cfs">
+    <parameters>
+        <param name="bu" type="string" value="CFS"/>
+        <param name="cob" type="date" value="2026-10-01"/>
+    </parameters>
+
+    <sql id="old-pie" db="mysql-oprdb02" timeout="120">
+        <![CDATA[
+            SELECT client_code, REGEXP_REPLACE(product_code, '^(CM|CR) +', '') AS product_code,
+                   positive_bump, negative_bump, pnl_10d_pie, delta_10d_pie
+            FROM dbsystemuat.grasa_10dpie_rrr_table_cfs
+            WHERE cob_date = :cob
+        ]]>
+    </sql>
+    <sql id="new-pie" db="postgres-dev" timeout="120">
+        <![CDATA[
+            SELECT client_code, regexp_replace(product_code, '^(CM|CR) +', '') AS product_code,
+                   positive_bump, negative_bump, pnl_10d_pie, delta_10d_pie
+            FROM opera.grasa_10dpie_rrr_table
+            WHERE cob_date = :cob AND upper(business_unit) = :bu
+        ]]>
+    </sql>
+    <compare id="pie" source="old-pie" target="new-pie">
+        <key columns="client_code,product_code"/>
+        <column name="positive_bump" relTol="0.000001"/>
+        <column name="negative_bump" relTol="0.000001"/>
+        <column name="pnl_10d_pie" absTol="1"/>
+        <column name="delta_10d_pie" absTol="0.5"/>
+    </compare>
+
+    <compress id="bundle" file="grasa-pie-cfs.zip">
+        <include ref="pie"/>
+    </compress>
+</rules>
