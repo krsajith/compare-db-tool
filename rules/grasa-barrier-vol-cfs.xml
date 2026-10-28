@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- Rule H: why is sigma NaN/0 for the barrier legs of the 16 failing pairs? Mirrors GrasaPricingRepository.getInputs + interpolateMissingVols:
+<!-- Rule H (tenant_id added to every table predicate so the tenant-leading indexes are used, as GrasaReportService/GrasaPricingRepository do): why is sigma NaN/0 for the barrier legs of the 16 failing pairs? Mirrors GrasaPricingRepository.getInputs + interpolateMissingVols:
      p1_vol = surface vol at strike1 for the leg's call/put side (mapping table), else overlay (calculated_settle_vol_table), else interpolation on that side's curve.
      The barrier pricer needs sigma > 0 (grasa-pricer.js:49-50); a NaN sigma (no vol) throws, legacy masks the leg (Idx_P1_Vol = ~isnan).
      Per pair + derivative_type: legs, strike1 null, no call/put mapping, vol1_id null, surface rows on the leg's side, exact strike hit, overlay, and legs with NO usable vol. Read-only, postgres-dev. -->
@@ -26,36 +26,36 @@
                 ('MAO','CM W'),
                 ('ORM','CM C'),
                 ('SIP','CM OR EUR')),
-            vd AS (SELECT value_date FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1),
-            sec AS (
+            vd AS (SELECT tenant_id, value_date FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1),
+            sec AS MATERIALIZED (
                 SELECT DISTINCT p.client, p.product, c.security_id
                 FROM opera.helper_sensitivity_report_view_cache_table c
                 JOIN pairs p ON upper(substring(c.contract_number, 1, 3)) = upper(p.client)
                             AND upper(trim(c.product_code)) = upper(trim(p.product))
-                WHERE upper(trim(c.business_unit)) = :bu),
-            leg AS (
+                WHERE c.tenant_id = (SELECT tenant_id FROM vd) AND upper(trim(c.business_unit)) = :bu),
+            leg AS MATERIALIZED (
                 SELECT s.client, s.product, m.security_id, m.derivative_type, m.strike1, m.vol1_id,
                        CASE WHEN lower(m.derivative_type) LIKE '%call%' THEN 'C' ELSE 'P' END AS side,
                        (SELECT upper(cpm.call_put_id) FROM opera.derivative_type_call_put_id_mapping_table cpm
                          WHERE upper(cpm.derivative_type) = upper(m.derivative_type) LIMIT 1) AS mapped_side
                 FROM sec s
-                JOIN opera.cloned_security_info_table m ON m.security_id = s.security_id AND upper(m.business_unit) = :bu
+                JOIN opera.cloned_security_info_table m ON m.tenant_id = (SELECT tenant_id FROM vd) AND m.security_id = s.security_id AND upper(m.business_unit) = :bu
                 WHERE m.status = 'Active' AND lower(m.derivative_type) LIKE 'amer%'
                   AND m.maturity_date > (SELECT value_date FROM vd)),
             vids AS (SELECT DISTINCT vol1_id FROM leg WHERE vol1_id IS NOT NULL),
             side_cnt AS (  -- one pass over the day's surface for the vol ids in play
                 SELECT sv.vol_id, upper(sv.call_put_id) AS cp, COUNT(*) AS n
                 FROM opera.settlement_vol_surf_table sv
-                WHERE sv.value_date = (SELECT value_date FROM vd) AND sv.vol_id IN (SELECT vol1_id FROM vids)
+                WHERE sv.tenant_id = (SELECT tenant_id FROM vd) AND sv.value_date = (SELECT value_date FROM vd) AND sv.vol_id IN (SELECT vol1_id FROM vids)
                 GROUP BY sv.vol_id, upper(sv.call_put_id)),
             strikes AS (
                 SELECT DISTINCT sv.vol_id, upper(sv.call_put_id) AS cp, sv.strike
                 FROM opera.settlement_vol_surf_table sv
-                WHERE sv.value_date = (SELECT value_date FROM vd) AND sv.vol_id IN (SELECT vol1_id FROM vids)),
+                WHERE sv.tenant_id = (SELECT tenant_id FROM vd) AND sv.value_date = (SELECT value_date FROM vd) AND sv.vol_id IN (SELECT vol1_id FROM vids)),
             ov AS (
                 SELECT DISTINCT cv.security_id
                 FROM opera.calculated_settle_vol_table cv
-                WHERE upper(cv.business_unit) = :bu AND cv.p1_vol > 0 AND cv.security_id IN (SELECT security_id FROM leg)),
+                WHERE cv.tenant_id = (SELECT tenant_id FROM vd) AND upper(cv.business_unit) = :bu AND cv.p1_vol > 0 AND cv.security_id IN (SELECT security_id FROM leg)),
             chk AS (
                 SELECT l.*,
                        COALESCE((SELECT n FROM side_cnt sc WHERE sc.vol_id = l.vol1_id AND sc.cp = l.side), 0) AS side_rows,
