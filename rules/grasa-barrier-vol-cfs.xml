@@ -42,15 +42,25 @@
                 JOIN opera.cloned_security_info_table m ON m.security_id = s.security_id AND upper(m.business_unit) = :bu
                 WHERE m.status = 'Active' AND lower(m.derivative_type) LIKE 'amer%'
                   AND m.maturity_date > (SELECT value_date FROM vd)),
+            vids AS (SELECT DISTINCT vol1_id FROM leg WHERE vol1_id IS NOT NULL),
+            side_cnt AS (  -- one pass over the day's surface for the vol ids in play
+                SELECT sv.vol_id, upper(sv.call_put_id) AS cp, COUNT(*) AS n
+                FROM opera.settlement_vol_surf_table sv
+                WHERE sv.value_date = (SELECT value_date FROM vd) AND sv.vol_id IN (SELECT vol1_id FROM vids)
+                GROUP BY sv.vol_id, upper(sv.call_put_id)),
+            strikes AS (
+                SELECT DISTINCT sv.vol_id, upper(sv.call_put_id) AS cp, sv.strike
+                FROM opera.settlement_vol_surf_table sv
+                WHERE sv.value_date = (SELECT value_date FROM vd) AND sv.vol_id IN (SELECT vol1_id FROM vids)),
+            ov AS (
+                SELECT DISTINCT cv.security_id
+                FROM opera.calculated_settle_vol_table cv
+                WHERE upper(cv.business_unit) = :bu AND cv.p1_vol > 0 AND cv.security_id IN (SELECT security_id FROM leg)),
             chk AS (
                 SELECT l.*,
-                       (SELECT COUNT(*) FROM opera.settlement_vol_surf_table sv
-                         WHERE sv.vol_id = l.vol1_id AND sv.value_date = (SELECT value_date FROM vd) AND upper(sv.call_put_id) = l.side) AS side_rows,
-                       EXISTS (SELECT 1 FROM opera.settlement_vol_surf_table sv
-                         WHERE sv.vol_id = l.vol1_id AND sv.value_date = (SELECT value_date FROM vd)
-                           AND sv.strike = l.strike1 AND upper(sv.call_put_id) = l.mapped_side) AS exact_hit,
-                       EXISTS (SELECT 1 FROM opera.calculated_settle_vol_table cv
-                         WHERE cv.security_id = l.security_id AND upper(cv.business_unit) = :bu AND cv.p1_vol > 0) AS overlay
+                       COALESCE((SELECT n FROM side_cnt sc WHERE sc.vol_id = l.vol1_id AND sc.cp = l.side), 0) AS side_rows,
+                       EXISTS (SELECT 1 FROM strikes k WHERE k.vol_id = l.vol1_id AND k.cp = l.mapped_side AND k.strike = l.strike1) AS exact_hit,
+                       EXISTS (SELECT 1 FROM ov WHERE ov.security_id = l.security_id) AS overlay
                 FROM leg l)
             SELECT client, product, derivative_type, COUNT(*) AS legs,
                    COUNT(*) FILTER (WHERE strike1 IS NULL) AS strike1_null,
