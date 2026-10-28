@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Rule F: 15 of the 38 futures-only product/months have no option security anywhere in the BU, so a lookup through securities cannot find a vol.
+     Test the naming convention instead: vol_id = product + ' ' + contract_month (whitespace-normalised, e.g. 'CM BO F27.F27').
+     For each of the 38 combos list the vol_id(s) present in settlement_vol_surf_table on the value date. Read-only, postgres-dev. -->
+<rules name="grasa-month-vol-by-name-cfs">
+    <parameters>
+        <param name="bu" type="string" value="CFS"/>
+    </parameters>
+    <sql id="vol-by-name" db="postgres-dev" timeout="600">
+        <![CDATA[
+            WITH pm(product, contract_month) AS (VALUES
+                ('CM BO','F27.F27'),
+                ('CM BO','H27.H27'),
+                ('CM BO','Z26.Z26'),
+                ('CM C','N27.N27'),
+                ('CM C','U27.U27'),
+                ('CM C','Z26.Z26'),
+                ('CM CRD','U27.U27'),
+                ('CM CT','H27.H27'),
+                ('CM CT','K27.K27'),
+                ('CM CT','N27.N27'),
+                ('CM CT','Z26.Z26'),
+                ('CM CT','Z27.Z27'),
+                ('CM KC','Z26.Z26'),
+                ('CM KO','F27.F27'),
+                ('CM MW','Z27.Z27'),
+                ('CM OR','X26.X26'),
+                ('CM OR','Z26.Z26'),
+                ('CM OR EUR','F27.F27'),
+                ('CM OR EUR','G27.G27'),
+                ('CM OR EUR','H27.H27'),
+                ('CM OR EUR','J27.J27'),
+                ('CM OR EUR','K27.K27'),
+                ('CM OR EUR','M27.M27'),
+                ('CM OR EUR','N27.N27'),
+                ('CM OR EUR','Q27.Q27'),
+                ('CM OR EUR','X26.X26'),
+                ('CM OR EUR','Z26.Z26'),
+                ('CM QC','Z26.Z26'),
+                ('CM S','H27.H27'),
+                ('CM S','K27.K27'),
+                ('CM S','N27.N27'),
+                ('CM S','X26.X26'),
+                ('CM SB','H27.H27'),
+                ('CM SM','F27.F27'),
+                ('CM SM','H27.H27'),
+                ('CM SM','K27.K27'),
+                ('CM SM','Z26.Z26'),
+                ('CM W','Z26.Z26')),
+            vd AS (SELECT value_date FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1)
+            SELECT pm.product, pm.contract_month, sv.vol_id, COUNT(sv.*) AS surface_rows,
+                   COUNT(*) FILTER (WHERE upper(sv.call_put_id) = 'C') AS call_rows
+            FROM pm
+            LEFT JOIN opera.settlement_vol_surf_table sv
+                   ON sv.value_date = (SELECT value_date FROM vd)
+                  AND regexp_replace(sv.vol_id, '\s+', ' ', 'g') = pm.product || ' ' || pm.contract_month
+            GROUP BY pm.product, pm.contract_month, sv.vol_id
+            ORDER BY pm.product, pm.contract_month
+        ]]>
+    </sql>
+    <compress id="bundle" file="grasa-month-vol-by-name-cfs.zip"><include ref="vol-by-name"/></compress>
+</rules>
