@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- GRASA parity, levels 2-3: legacy MySQL (OPRDB02, schema dbsystemuat) vs new Postgres (opera), BU CFS, COB 01-Oct-2026.
      Purpose: find why 43 pairs give GRASA_ATM_VOL_MISSING (securities -> vol1_id -> surface rows on the value date)
-     and why 15 barrier pairs fail (strike / barrier / vol). Assumes the same table and column names on both sides;
-     if MySQL differs (BU-specific table names), edit only the MySQL FROM clauses. Read-only SELECTs.
+     and why 15 barrier pairs fail (strike / barrier / vol). MySQL: securities table is BU-specific (_cfs), has no business_unit/status
+     column, so legacy = all securities, Postgres = Active only (extra legacy-only rows may be inactive). Read-only SELECTs.
      Run first with validate. Postgres: postgres-dev, database operadb, schema opera. -->
 <rules name="grasa-inputs-cfs">
     <parameters>
@@ -13,15 +13,14 @@
     <!-- Level 2: security master (Active) -->
     <sql id="old-sec" db="mysql-oprdb02" timeout="300" fetchSize="2000">
         <![CDATA[
-            SELECT security_id, product_code, derivative_type, contract_month, status, vol1_id, underlying1_id,
+            SELECT security_id, product_code, derivative_type, contract_month, vol1_id, underlying1_id,
                    strike, strike1, maturity_date, barrier_type, barrier1_level, barrier1_rebate, barrier2_level
-            FROM dbsystemuat.cloned_security_info_table
-            WHERE business_unit = :bu AND status = 'Active'
+            FROM dbsystemuat.cloned_security_info_table_cfs
         ]]>
     </sql>
     <sql id="new-sec" db="postgres-dev" timeout="300" fetchSize="2000">
         <![CDATA[
-            SELECT security_id, product_code, derivative_type, contract_month, status, vol1_id, underlying1_id,
+            SELECT security_id, product_code, derivative_type, contract_month, vol1_id, underlying1_id,
                    strike, strike1, maturity_date, barrier_type, barrier1_level, barrier1_rebate, barrier2_level
             FROM opera.cloned_security_info_table
             WHERE business_unit = :bu AND status = 'Active'
@@ -35,7 +34,6 @@
         <column name="barrier1_rebate" absTol="0.000001"/>
         <column name="barrier2_level" absTol="0.000001"/>
         <column name="maturity_date" dateOnly="true"/>
-        <column name="status" caseInsensitive="true"/>
     </compare>
 
     <!-- Level 3a: vol surface on the COB, summarised per vol_id and call/put (full table is 20M+ rows) -->
@@ -45,8 +43,7 @@
                    MIN(strike) AS min_strike, MAX(strike) AS max_strike, ROUND(SUM(settle_vol), 6) AS sum_vol
             FROM dbsystemuat.settlement_vol_surf_table
             WHERE value_date = :cob
-              AND vol_id IN (SELECT DISTINCT vol1_id FROM dbsystemuat.cloned_security_info_table
-                             WHERE business_unit = :bu AND status = 'Active')
+              AND vol_id IN (SELECT DISTINCT vol1_id FROM dbsystemuat.cloned_security_info_table_cfs)
             GROUP BY vol_id, UPPER(call_put_id)
         ]]>
     </sql>
@@ -74,8 +71,7 @@
             SELECT underlying_id, settle_value, risk_free_rate, div_yield, settlement_date
             FROM dbsystemuat.underlying_settle_value_table
             WHERE value_date = :cob
-              AND underlying_id IN (SELECT DISTINCT underlying1_id FROM dbsystemuat.cloned_security_info_table
-                                    WHERE business_unit = :bu AND status = 'Active')
+              AND underlying_id IN (SELECT DISTINCT underlying1_id FROM dbsystemuat.cloned_security_info_table_cfs)
         ]]>
     </sql>
     <sql id="new-px" db="postgres-dev" timeout="300" fetchSize="2000">
