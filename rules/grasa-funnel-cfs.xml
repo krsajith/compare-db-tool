@@ -1,0 +1,198 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Rule D (funnel): cumulative per-stage security counts for every pair of the new run (130 pairs, FAIL and OK side by side),
+     per contract month, mirroring GrasaReportService ATM-vol query (lines 747-792). Read each row left to right:
+     the first stage that drops to 0 for a FAIL pair is where the chain breaks; OK pairs show the normal shape.
+       s1_cache      distinct securities in the sensitivity cache for the pair/month
+       s2_deal       ... with a latest-version deal dated before the value date
+       s3_eligible   ... whose deal passes the FY-premium + active-lots checks (FY_PREMIUM_ELIGIBLE)
+       s4_master     ... present in cloned_security_info_table
+       s5_active     ... status Active
+       s6_vol1       ... vol1_id not null
+       s7_surface    ... surface rows exist on the value date (call or put)
+     Export only, read-only, postgres-dev. -->
+<rules name="grasa-funnel-cfs">
+    <parameters>
+        <param name="bu" type="string" value="CFS"/>
+    </parameters>
+    <sql id="funnel" db="postgres-dev" timeout="900">
+        <![CDATA[
+            WITH pairs(client, product, outcome) AS (VALUES
+                ('ACL','CM S','FAIL'),
+                ('ACM','CM CRD','FAIL'),
+                ('ACM','CM CT','FAIL'),
+                ('ACM','CM S','OK'),
+                ('ADP','CM KC','FAIL'),
+                ('ALG','CM CT','FAIL'),
+                ('ALV','CM SB','FAIL'),
+                ('AMC','CM CT','FAIL'),
+                ('AQC','CM CT','OK'),
+                ('ASI','CM CT','FAIL'),
+                ('ASI','CM DF','FAIL'),
+                ('AST','CM C','OK'),
+                ('AST','CM S','OK'),
+                ('AST','CM SM','OK'),
+                ('AST','CM W','OK'),
+                ('AXI','CM KW','OK'),
+                ('BEG','CM CT','OK'),
+                ('BFA','CM CT','FAIL'),
+                ('BFE','CM CT','OK'),
+                ('BFL','CM BO','OK'),
+                ('BFL','CM SM','FAIL'),
+                ('BKP','CM C','FAIL'),
+                ('BOC','CM SM','FAIL'),
+                ('BOV','CM C','FAIL'),
+                ('BOV','CM W','OK'),
+                ('BSB','CM BO','FAIL'),
+                ('BSB','CM SM','FAIL'),
+                ('BUN','CM KW','OK'),
+                ('CAD','CM C','OK'),
+                ('CAD','CM KW','OK'),
+                ('CAD','CM W','OK'),
+                ('CAP','CM CT','OK'),
+                ('CBE','CM CT','OK'),
+                ('CDL','CM CT','OK'),
+                ('CFC','CM CT','OK'),
+                ('CFF','CM CT','OK'),
+                ('CGE','CM S','OK'),
+                ('CGL','CM CT','OK'),
+                ('CPB','CM CT','FAIL'),
+                ('CTL','CM CT','FAIL'),
+                ('CTS','CM CT','OK'),
+                ('CWE','CM CT','OK'),
+                ('DAI','CM S','OK'),
+                ('DFE','CM CT','OK'),
+                ('DFS','CM QC','FAIL'),
+                ('DYE','CM CT','OK'),
+                ('EDF','CM CT','OK'),
+                ('FAB','CM BO','OK'),
+                ('FAB','CM C','OK'),
+                ('FAB','CM S','FAIL'),
+                ('FMP','CM CRD','OK'),
+                ('FMP','CM CT','FAIL'),
+                ('FMP','CM S','FAIL'),
+                ('FSI','CM C','OK'),
+                ('FSI','CM CRD','FAIL'),
+                ('FSI','CM SM','OK'),
+                ('GAE','CM CT','OK'),
+                ('GCB','CM CC','OK'),
+                ('GCB','CM QC','OK'),
+                ('GIL','CM CT','FAIL'),
+                ('HSD','CM C','FAIL'),
+                ('HSD','CM SM','OK'),
+                ('IOL','CM BO','FAIL'),
+                ('IOL','CM RS','FAIL'),
+                ('IVO','CM SM','FAIL'),
+                ('JGE','CM CT','OK'),
+                ('JMU','CM CT','OK'),
+                ('JMU','CM S','OK'),
+                ('JUP','CM C','OK'),
+                ('JUP','CM IJ','OK'),
+                ('JUP','CM KW','OK'),
+                ('JUP','CM SM','OK'),
+                ('JUP','CM W','OK'),
+                ('KMI','CM CT','FAIL'),
+                ('KTE','CM S','FAIL'),
+                ('LCE','CM CT','OK'),
+                ('LIB','CM CT','FAIL'),
+                ('LIT','CM CT','FAIL'),
+                ('LMB','CM S','FAIL'),
+                ('MAE','CM S','OK'),
+                ('MAN','CM CT','OK'),
+                ('MAO','CM W','FAIL'),
+                ('MDA','CM QC','FAIL'),
+                ('MDL','CM CC','OK'),
+                ('MFE','CM CT','OK'),
+                ('MLK','CM C','FAIL'),
+                ('MLK','CM S','FAIL'),
+                ('MLK','CM SM','FAIL'),
+                ('MLK','CM W','FAIL'),
+                ('MOA','CM IJ','OK'),
+                ('MOA','CM S','OK'),
+                ('MOA','CM W','OK'),
+                ('MSF','CM SB','OK'),
+                ('NFO','CM C','OK'),
+                ('NFO','CM SM','OK'),
+                ('OCC','CM CC','OK'),
+                ('OGM','CM MW','OK'),
+                ('OMF','CM KC','FAIL'),
+                ('ORM','CM C','FAIL'),
+                ('ORM','CM MW','FAIL'),
+                ('PBE','CM CT','OK'),
+                ('PGE','CM S','OK'),
+                ('RCC','CM QC','OK'),
+                ('RWF','CM CT','OK'),
+                ('SCE','CM CT','FAIL'),
+                ('SCF','CM CT','OK'),
+                ('SCW','CM CT','FAIL'),
+                ('SEC','CM CT','FAIL'),
+                ('SIC','CM S','FAIL'),
+                ('SIP','CM OR EUR','FAIL'),
+                ('SLC','CM CT','FAIL'),
+                ('SLC','CM S','FAIL'),
+                ('SMH','CM OR','FAIL'),
+                ('SMT','CM CT','FAIL'),
+                ('SND','CM IJ','OK'),
+                ('SND','CM QW','OK'),
+                ('SND','CM SB','OK'),
+                ('SSO','CM BO','OK'),
+                ('TAE','CM S','FAIL'),
+                ('TER','CM SB','FAIL'),
+                ('TFC','CM S','FAIL'),
+                ('TMB','CM CT','OK'),
+                ('TSR','CM CT','OK'),
+                ('TVE','CM S','FAIL'),
+                ('UDA','CM C','FAIL'),
+                ('UNF','CM KO','FAIL'),
+                ('VBN','CM S','OK'),
+                ('VCI','CM OR','FAIL'),
+                ('VZN','CM S','FAIL'),
+                ('WSF','CM CT','OK')),
+            vd AS (SELECT tenant_id, business_unit, value_date FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1),
+            sec AS (
+                SELECT DISTINCT p.client, p.product, p.outcome, c.contract_month, c.tenant_id, c.business_unit, c.security_id
+                FROM opera.helper_sensitivity_report_view_cache_table c
+                JOIN pairs p ON upper(substring(c.contract_number, 1, 3)) = upper(p.client)
+                            AND upper(trim(c.product_code)) = upper(trim(p.product))
+                WHERE upper(trim(c.business_unit)) = :bu),
+            flags AS (
+                SELECT s.client, s.product, s.outcome, s.contract_month, s.security_id,
+                    EXISTS (SELECT 1 FROM opera.cloned_deal_ticket_table dt, vd
+                             WHERE dt.tenant_id = s.tenant_id AND dt.security_id = s.security_id AND dt.business_unit = vd.business_unit
+                               AND dt.is_latest_version = 1 AND dt.transaction_date < vd.value_date) AS f_deal,
+                    EXISTS (SELECT 1 FROM opera.cloned_deal_ticket_table dt, vd
+                             WHERE dt.tenant_id = s.tenant_id AND dt.security_id = s.security_id AND dt.business_unit = vd.business_unit
+                               AND dt.is_latest_version = 1 AND dt.transaction_date < vd.value_date
+                               AND (lower(dt.business_unit) <> all (array['alm','bkr','ebo','gpc','oad','odr','og2','ogp','spc','stg','tsy','usg'])
+                                    OR lower(dt.subportfolio) NOT LIKE 'conso%')
+                               AND EXISTS (SELECT 1 FROM opera.premium_fy_table p
+                                             JOIN opera.valuation_date_table pv ON pv.tenant_id = p.tenant_id AND pv.business_unit = p.business_unit
+                                             JOIN opera.financial_year_table fy ON fy.tenant_id = pv.tenant_id AND fy.financial_year = p.financial_year
+                                              AND fy.start_date <= pv.settlement_date AND fy.end_date >= pv.settlement_date
+                                            WHERE p.tenant_id = dt.tenant_id AND p.business_unit = dt.business_unit AND p.trade_id = dt.trade_id)
+                               AND EXISTS (SELECT 1 FROM opera.deal_active_lots_table a
+                                             JOIN opera.valuation_date_table av ON av.tenant_id = a.tenant_id AND av.business_unit = a.business_unit
+                                            WHERE a.tenant_id = dt.tenant_id AND a.business_unit = dt.business_unit AND a.trade_id = dt.trade_id
+                                              AND a.value_date <= av.value_date)) AS f_elig,
+                    m.security_id IS NOT NULL AS f_master,
+                    coalesce(m.status = 'Active', false) AS f_active,
+                    m.vol1_id IS NOT NULL AS f_vol1,
+                    EXISTS (SELECT 1 FROM opera.settlement_vol_surf_table sv, vd
+                             WHERE sv.vol_id = m.vol1_id AND sv.value_date = vd.value_date) AS f_surface
+                FROM sec s
+                LEFT JOIN opera.cloned_security_info_table m
+                       ON m.tenant_id = s.tenant_id AND m.business_unit = s.business_unit AND m.security_id = s.security_id)
+            SELECT client, product, outcome, contract_month,
+                   COUNT(*) AS s1_cache,
+                   COUNT(*) FILTER (WHERE f_deal) AS s2_deal,
+                   COUNT(*) FILTER (WHERE f_deal AND f_elig) AS s3_eligible,
+                   COUNT(*) FILTER (WHERE f_deal AND f_elig AND f_master) AS s4_master,
+                   COUNT(*) FILTER (WHERE f_deal AND f_elig AND f_master AND f_active) AS s5_active,
+                   COUNT(*) FILTER (WHERE f_deal AND f_elig AND f_master AND f_active AND f_vol1) AS s6_vol1,
+                   COUNT(*) FILTER (WHERE f_deal AND f_elig AND f_master AND f_active AND f_vol1 AND f_surface) AS s7_surface
+            FROM flags
+            GROUP BY client, product, outcome, contract_month
+            ORDER BY outcome DESC, client, product, contract_month
+        ]]>
+    </sql>
+    <compress id="bundle" file="grasa-funnel-cfs.zip"><include ref="funnel"/></compress>
+</rules>
