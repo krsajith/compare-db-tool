@@ -91,6 +91,29 @@ class RuleAndValueTests {
         assertThrows(ToolException.class, () -> QueryRunner.validateParameters(sql, Map.of()));
     }
 
+    @Test void shippedGrasaRuleLoadsAndValidatesEveryBlockWithoutConnecting() {
+        Rules rules = RuleLoader.load(Path.of("rules/grasa-inputs-cfs.xml"));
+        assertEquals(6, rules.queries.size());
+        assertEquals(3, rules.comparisons.size());
+        assertEquals(1, rules.compressions.size());
+        assertEquals(2, rules.parameters.size());
+        assertEquals(List.of("sec", "vol", "px"), rules.comparisons.stream().map(c -> c.id).toList());
+        assertEquals(7, rules.comparisons.getFirst().columns.size());
+        DatasourceSettings settings = new DatasourceSettings();
+        settings.getDatasources().put("mysql-oprdb02", new DatasourceSettings.Definition());
+        settings.getDatasources().put("postgres-dev", new DatasourceSettings.Definition());
+        assertDoesNotThrow(() -> RuleLoader.validate(rules, settings));
+    }
+
+    @Test void unknownRuleAttributesAndTrailingRootContentAreRejected() throws Exception {
+        Path unknown = temp.resolve("unknown.xml");
+        Files.writeString(unknown, "<rules><sql id=\"q\" db=\"ds\" unsupported=\"true\">SELECT 1</sql></rules>");
+        assertThrows(ToolException.class, () -> RuleLoader.load(unknown));
+        Path trailing = temp.resolve("trailing.xml");
+        Files.writeString(trailing, "<rules><sql id=\"q\" db=\"ds\">SELECT 1</sql></rules><extra/>");
+        assertThrows(ToolException.class, () -> RuleLoader.load(trailing));
+    }
+
     @Test void numericPrecisionTolerancesAndSignFlip() {
         Rules.Column rule = new Rules.Column();
         rule.absTol = new BigDecimal("0.01");

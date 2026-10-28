@@ -12,6 +12,7 @@ import javax.xml.stream.XMLStreamException;
 import javax.xml.stream.XMLStreamReader;
 import tools.jackson.dataformat.xml.XmlFactory;
 import tools.jackson.dataformat.xml.XmlMapper;
+import tools.jackson.databind.DeserializationFeature;
 
 public final class RuleLoader {
     private RuleLoader() {}
@@ -24,7 +25,12 @@ public final class RuleLoader {
                 throw new javax.xml.stream.XMLStreamException("External entities disabled");
             });
             XmlFactory factory = XmlFactory.builder().xmlInputFactory(input).build();
-            XmlMapper mapper = XmlMapper.builder(factory).build();
+            XmlMapper mapper = XmlMapper.builder(factory)
+                // Jackson 3 enables this by default. A subtree intentionally has siblings
+                // after it; the outer StAX loop validates the complete document instead.
+                .disable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
+                .enable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
+                .build();
             // Bind one subtree at a time. Binding the entire root to unwrapped Lists can
             // replace earlier entries when sql/compare groups are interleaved.
             try (var stream = Files.newInputStream(path)) {
@@ -69,7 +75,8 @@ public final class RuleLoader {
             }
         } catch (ToolException e) { throw e;
         } catch (Exception e) {
-            throw new ToolException("Cannot read rules XML: " + path + ". Check XML syntax and supported elements.");
+            throw new ToolException("Cannot read rules XML: " + path + " (" + e.getClass().getSimpleName()
+                + "). Check XML syntax and supported elements.");
         }
     }
 
