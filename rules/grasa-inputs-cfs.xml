@@ -3,7 +3,7 @@
      Purpose: find why 43 pairs give GRASA_ATM_VOL_MISSING (securities -> vol1_id -> surface rows on the value date)
      and why 15 barrier pairs fail (strike / barrier / vol). Assumes the same table and column names on both sides;
      if MySQL differs (BU-specific table names), edit only the MySQL FROM clauses. Read-only SELECTs.
-     Run first with -validate. Postgres: postgres-prod (or postgres-dev if it holds the same load). -->
+     Run first with --validate. Postgres: postgres-dev, database operadb, schema opera. -->
 <rules name="grasa-inputs-cfs">
     <parameters>
         <param name="bu" type="string" value="CFS"/>
@@ -19,7 +19,7 @@
             WHERE business_unit = :bu AND status = 'Active'
         ]]>
     </sql>
-    <sql id="new-sec" db="postgres-prod" timeout="300" fetchSize="2000">
+    <sql id="new-sec" db="postgres-dev" timeout="300" fetchSize="2000">
         <![CDATA[
             SELECT security_id, product_code, derivative_type, contract_month, status, vol1_id, underlying1_id,
                    strike, strike1, maturity_date, barrier_type, barrier1_level, barrier1_rebate, barrier2_level
@@ -50,7 +50,7 @@
             GROUP BY vol_id, UPPER(call_put_id)
         ]]>
     </sql>
-    <sql id="new-vol" db="postgres-prod" timeout="600" fetchSize="2000">
+    <sql id="new-vol" db="postgres-dev" timeout="600" fetchSize="2000">
         <![CDATA[
             SELECT vol_id, UPPER(call_put_id) AS call_put_id, COUNT(*) AS n_rows,
                    MIN(strike) AS min_strike, MAX(strike) AS max_strike, ROUND(SUM(settle_vol)::numeric, 6) AS sum_vol
@@ -78,7 +78,7 @@
                                     WHERE business_unit = :bu AND status = 'Active')
         ]]>
     </sql>
-    <sql id="new-px" db="postgres-prod" timeout="300" fetchSize="2000">
+    <sql id="new-px" db="postgres-dev" timeout="300" fetchSize="2000">
         <![CDATA[
             SELECT underlying_id, settle_value, risk_free_rate, div_yield, settlement_date
             FROM opera.underlying_settle_value_table

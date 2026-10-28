@@ -293,5 +293,6 @@ and rebuild after Java source changes. For a captured console log:
 Get-Content .\validation.log
 ```
 
-`rules/grasa-inputs-cfs.xml` references `postgres-prod`. Actual execution requires `--allow-prod`; without it the
-application must report an error and open no database connections. Validation does not require that flag.
+`rules/grasa-inputs-cfs.xml` references `postgres-dev` (database `operadb`, schema `opera`) and MySQL OPRDB02
+(`dbsystemuat`). It needs no production flag. If you intentionally change it to `postgres-prod`, execution then
+requires `--allow-prod`; without it the application must report an error before connecting.

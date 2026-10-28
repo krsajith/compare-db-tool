@@ -55,6 +55,37 @@ class RuleAndValueTests {
         assertThrows(ToolException.class, () -> RuleLoader.load(xml));
     }
 
+    @Test void interleavedSqlAndComparisonGroupsPreserveEveryReferencedId() throws Exception {
+        Path xml = temp.resolve("interleaved.xml");
+        Files.writeString(xml, """
+            <rules name="interleaved">
+              <sql id="old-sec" db="ds">SELECT 1 AS id</sql>
+              <sql id="new-sec" db="ds">SELECT 1 AS id</sql>
+              <compare id="sec" source="old-sec" target="new-sec"><key columns="id"/></compare>
+              <sql id="old-vol" db="ds">SELECT 1 AS id</sql>
+              <sql id="new-vol" db="ds">SELECT 1 AS id</sql>
+              <compare id="vol" source="old-vol" target="new-vol"><key columns="id"/></compare>
+              <sql id="old-px" db="ds">SELECT 1 AS id</sql>
+              <sql id="new-px" db="ds">SELECT 1 AS id</sql>
+              <compare id="px" source="old-px" target="new-px"><key columns="id"/></compare>
+              <compress id="bundle" file="comparison.zip">
+                <include ref="sec"/><include ref="vol"/><include ref="px"/>
+              </compress>
+            </rules>
+            """);
+        Rules rules = RuleLoader.load(xml);
+        assertEquals(List.of("old-sec", "new-sec", "old-vol", "new-vol", "old-px", "new-px"),
+            rules.queries.stream().map(q -> q.id).toList());
+        assertEquals(List.of("sec", "vol", "px"), rules.comparisons.stream().map(c -> c.id).toList());
+        DatasourceSettings settings = new DatasourceSettings();
+        settings.getDatasources().put("ds", new DatasourceSettings.Definition());
+        assertDoesNotThrow(() -> RuleLoader.validate(rules, settings));
+        rules.compressions.getFirst().includes.getFirst().ref = "missing-sec";
+        ToolException error = assertThrows(ToolException.class, () -> RuleLoader.validate(rules, settings));
+        assertTrue(error.getMessage().contains("missing-sec"));
+        assertTrue(error.getMessage().contains("Available ids:"));
+    }
+
     @Test void missingParametersFailBeforeDatabaseAccess() {
         Rules.Sql sql = new Rules.Sql(); sql.id = "q"; sql.text = "SELECT :missing";
         assertThrows(ToolException.class, () -> QueryRunner.validateParameters(sql, Map.of()));

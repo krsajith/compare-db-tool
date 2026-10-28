@@ -1,11 +1,15 @@
 package com.taomish.comparedbtool;
 
 import java.nio.file.Path;
+import java.nio.file.Files;
 import java.math.BigDecimal;
 import java.sql.Timestamp;
 import java.sql.Date;
 import java.util.*;
 import javax.xml.stream.XMLInputFactory;
+import javax.xml.stream.XMLStreamConstants;
+import javax.xml.stream.XMLStreamException;
+import javax.xml.stream.XMLStreamReader;
 import tools.jackson.dataformat.xml.XmlFactory;
 import tools.jackson.dataformat.xml.XmlMapper;
 
@@ -20,10 +24,65 @@ public final class RuleLoader {
                 throw new javax.xml.stream.XMLStreamException("External entities disabled");
             });
             XmlFactory factory = XmlFactory.builder().xmlInputFactory(input).build();
-            return XmlMapper.builder(factory).build().readValue(path.toFile(), Rules.class);
+            XmlMapper mapper = XmlMapper.builder(factory).build();
+            // Bind one subtree at a time. Binding the entire root to unwrapped Lists can
+            // replace earlier entries when sql/compare groups are interleaved.
+            try (var stream = Files.newInputStream(path)) {
+                XMLStreamReader reader = input.createXMLStreamReader(stream);
+                try {
+                    if (nextTag(reader) != XMLStreamConstants.START_ELEMENT || !reader.getLocalName().equals("rules"))
+                        throw new ToolException("Rules XML must have a <rules> root.");
+                    Rules rules = new Rules();
+                    for (int i = 0; i < reader.getAttributeCount(); i++) {
+                        if (!reader.getAttributeLocalName(i).equals("name"))
+                            throw new ToolException("Unknown <rules> attribute: " + reader.getAttributeLocalName(i));
+                        rules.name = reader.getAttributeValue(i);
+                    }
+                    boolean parametersSeen = false;
+                    while (nextTag(reader) == XMLStreamConstants.START_ELEMENT) {
+                        switch (reader.getLocalName()) {
+                            case "sql" -> rules.queries.add(mapper.readValue(reader, Rules.Sql.class));
+                            case "compare" -> rules.comparisons.add(mapper.readValue(reader, Rules.Compare.class));
+                            case "compress" -> rules.compressions.add(mapper.readValue(reader, Rules.Compress.class));
+                            case "parameters" -> {
+                                if (parametersSeen) throw new ToolException("Use only one <parameters> block.");
+                                parametersSeen = true;
+                                while (nextTag(reader) == XMLStreamConstants.START_ELEMENT) {
+                                    if (!reader.getLocalName().equals("param"))
+                                        throw new ToolException("Only <param> elements are allowed inside <parameters>.");
+                                    rules.parameters.add(mapper.readValue(reader, Rules.Param.class));
+                                }
+                            }
+                            default -> throw new ToolException("Unknown rule element: " + reader.getLocalName());
+                        }
+                    }
+                    // Consume the document end too, so trailing malformed content is rejected.
+                    while (reader.hasNext()) {
+                        int event = reader.next();
+                        if (event == XMLStreamConstants.START_ELEMENT || event == XMLStreamConstants.DTD
+                            || event == XMLStreamConstants.ENTITY_REFERENCE
+                            || (event == XMLStreamConstants.CHARACTERS && !reader.isWhiteSpace()))
+                            throw new ToolException("Unexpected content after </rules>.");
+                    }
+                    return rules;
+                } finally { reader.close(); }
+            }
+        } catch (ToolException e) { throw e;
         } catch (Exception e) {
             throw new ToolException("Cannot read rules XML: " + path + ". Check XML syntax and supported elements.");
         }
+    }
+
+    private static int nextTag(XMLStreamReader reader) throws XMLStreamException {
+        while (reader.hasNext()) {
+            int event = reader.next();
+            if (event == XMLStreamConstants.DTD || event == XMLStreamConstants.ENTITY_REFERENCE)
+                throw new ToolException("DTD and entity references are not allowed in rules XML.");
+            if (event == XMLStreamConstants.START_ELEMENT || event == XMLStreamConstants.END_ELEMENT) return event;
+            if ((event == XMLStreamConstants.CHARACTERS || event == XMLStreamConstants.CDATA) && !reader.isWhiteSpace())
+                throw new ToolException("Unexpected text between XML rule elements.");
+        }
+        throw new ToolException("Unexpected end of rules XML.");
     }
 
     public static void validate(Rules rules, DatasourceSettings settings) {
@@ -45,7 +104,8 @@ public final class RuleLoader {
         for (Rules.Compare compare : rules.comparisons) {
             id(compare.id, ids);
             if (!queries.containsKey(compare.source) || !queries.containsKey(compare.target))
-                throw new ToolException("Comparison " + compare.id + " references an unknown SQL id.");
+                throw new ToolException("Comparison '" + compare.id + "' references unknown SQL id(s): source='"
+                    + compare.source + "', target='" + compare.target + "'. Available SQL ids: " + new TreeSet<>(queries.keySet()));
             List<String> keys = keys(compare);
             if (keys.isEmpty() || keys.stream().anyMatch(String::isBlank)
                 || keys.stream().map(k -> k.toLowerCase(Locale.ROOT)).distinct().count() != keys.size())
@@ -72,7 +132,8 @@ public final class RuleLoader {
                 throw new ToolException("Compression needs a unique simple .zip filename: " + zip.id);
             if (zip.includes == null || zip.includes.isEmpty()) throw new ToolException("Compression needs <include ref=\"...\"/>.");
             for (Rules.Include include : zip.includes) if (!includable.contains(include.ref))
-                throw new ToolException("Compression " + zip.id + " references an unknown SQL/comparison id.");
+                throw new ToolException("Compression '" + zip.id + "' references unknown SQL/comparison id '"
+                    + include.ref + "'. Available ids: " + new TreeSet<>(includable));
         }
         Set<String> outputs = new HashSet<>(Set.of("summary.md", "parameters.csv", "rules.xml", "error.md", ".work"));
         for (Rules.Sql query : rules.queries) for (String suffix : List.of(".csv", ".sql", ".md"))
