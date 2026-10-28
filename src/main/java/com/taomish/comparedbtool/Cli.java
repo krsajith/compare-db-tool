@@ -95,6 +95,7 @@ public final class Cli {
                 + " [read-only=" + definition.isReadOnly() + ", prod=" + QueryRunner.production(name, definition) + "]"));
             return 0;
         }
+        System.out.println("Loading rules: " + options.rules.toAbsolutePath().normalize());
         Rules rules = RuleLoader.load(options.rules);
         RuleLoader.validate(rules, settings);
         Map<String, Object> parameters = RuleLoader.parameters(rules, options.parameters);
@@ -129,6 +130,8 @@ public final class Cli {
                 for (var entry : parameters.entrySet()) params.printRecord(Arrays.asList(entry.getKey(), entry.getValue()));
             }
             for (Rules.Sql query : rules.queries) {
+                System.out.println("Starting query " + query.id + " on " + query.db + " (timeout " + query.timeout + " s)...");
+                System.out.flush();
                 QueryRunner.Result result = runner.run(query, parameters, options.limit, directory);
                 queries.put(query.id, result); artifacts.put(query.id, result.files());
                 System.out.println("Query " + query.id + ": " + result.rows() + " rows, " + result.millis() + " ms"
@@ -136,6 +139,7 @@ public final class Cli {
             }
             ComparisonRunner comparator = new ComparisonRunner(options.partitions);
             for (Rules.Compare compare : rules.comparisons) {
+                System.out.println("Starting comparison " + compare.id + "...");
                 var result = comparator.run(compare, queries.get(compare.source), queries.get(compare.target), directory);
                 comparisons.add(result); artifacts.put(compare.id, result.files());
                 System.out.println("Compare " + compare.id + ": " + result.headline());
@@ -163,6 +167,7 @@ public final class Cli {
                 zip(directory, directory.resolve(compression.file), included);
                 System.out.println("ZIP: " + compression.file);
             }
+            System.out.println("Summary: " + directory.resolve("SUMMARY.md"));
             return exit;
         } catch (Exception e) {
             String message = e instanceof ToolException ? e.getMessage() : "File processing failed. Check paths, free disk space and permissions.";

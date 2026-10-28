@@ -15,12 +15,16 @@ public class CompareDbToolApplication {
         try {
             Cli.Options options = Cli.parse(args);
             if (options.help) { System.out.println(Cli.HELP); return; }
+            System.out.println("compare-db-tool: initializing configuration"
+                + (options.validate ? " [validation only; no database connections]" : ""));
+            System.out.flush();
             SpringApplication application = new SpringApplication(CompareDbToolApplication.class);
             application.setWebApplicationType(WebApplicationType.NONE);
             application.setLogStartupInfo(false);
             try (var context = application.run(args)) {
                 code = new Cli(context.getBean(DatasourceSettings.class)).execute(options);
             }
+            System.out.println("compare-db-tool: finished (exit " + code + ").");
         } catch (ToolException e) {
             System.err.println("ERROR: " + e.getMessage());
             code = 2;

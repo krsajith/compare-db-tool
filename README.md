@@ -26,6 +26,9 @@ Remote connectivity, JDBC streaming and real query results remain unverified.
 
 ## External datasource file
 
+The launcher uses `JAVA_HOME\bin\java.exe` if JAVA_HOME is set, otherwise `java.exe` from PATH. Set JAVA_HOME to the
+installed JDK 21 directory on each machine; the launcher does not replace it with a developer-specific path.
+
 The application imports `config/datasources.properties`, relative to its working directory. The PowerShell wrapper
 uses the project directory. The actual local file is gitignored, as is `out/`.
 `config/datasources.example.properties` is a portable example.
@@ -267,3 +270,28 @@ Exit codes:
 Spring Boot 4.1.2, Spring JDBC/HikariCP, Jackson XML 3 (Boot-managed), Commons CSV 1.14.1, MySQL and PostgreSQL JDBC
 drivers. Tests use Spring Boot test support and H2. ZIP creation, decimal/date handling, partitioning and comparisons
 use Java 21 APIs. No ORM, PDF/Excel libraries, embedded comparison database or CLI framework is needed.
+
+## Troubleshooting missing console output
+
+The launcher prints its Java executable, JAR path, working directory, and final exit code. The application prints
+configuration startup, the rules path, validation results, and the start of each query/comparison. Validation creates
+no result folder: success is the `VALID:` console message. Execution prints its output directory and summary path.
+
+If the script still returns without those messages, invoke the JAR directly from the project directory to separate
+the PowerShell launcher from Java/application behavior:
+
+```powershell
+& "$env:JAVA_HOME\bin\java.exe" -jar .\target\compare-db-tool.jar --rules rules\grasa-inputs-cfs.xml --validate
+Write-Host "Exit code: $LASTEXITCODE"
+```
+
+If JAVA_HOME is not set, use `java` instead of the full executable path. Confirm you are using the latest script
+and rebuild after Java source changes. For a captured console log:
+
+```powershell
+.\compare.ps1 --rules rules\grasa-inputs-cfs.xml --validate *> validation.log
+Get-Content .\validation.log
+```
+
+`rules/grasa-inputs-cfs.xml` references `postgres-prod`. Actual execution requires `--allow-prod`; without it the
+application must report an error and open no database connections. Validation does not require that flag.
