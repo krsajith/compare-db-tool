@@ -1,0 +1,98 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Rule D: why does the new ATM-vol query find no surface? One row per failing pair (59 pairs from generation_log.xlsx) and contract month.
+     Mirrors GrasaReportService vol query: cache rows -> security master (status Active) -> vol1_id -> surface rows on the value date.
+     Columns show where the chain breaks: sec_no_master / sec_inactive / sec_no_vol1 / sec_no_surface. Export only, read-only, postgres-dev. -->
+<rules name="grasa-fail-pairs-cfs">
+    <parameters>
+        <param name="bu" type="string" value="CFS"/>
+    </parameters>
+    <sql id="fail-pairs" db="postgres-dev" timeout="600">
+        <![CDATA[
+            WITH pairs(client, product) AS (VALUES
+                ('ACL','CM S'),
+                ('ACM','CM CRD'),
+                ('ACM','CM CT'),
+                ('ADP','CM KC'),
+                ('ALG','CM CT'),
+                ('ALV','CM SB'),
+                ('AMC','CM CT'),
+                ('ASI','CM CT'),
+                ('ASI','CM DF'),
+                ('BFA','CM CT'),
+                ('BFL','CM SM'),
+                ('BKP','CM C'),
+                ('BOC','CM SM'),
+                ('BOV','CM C'),
+                ('BSB','CM BO'),
+                ('BSB','CM SM'),
+                ('CPB','CM CT'),
+                ('CTL','CM CT'),
+                ('DFS','CM QC'),
+                ('FAB','CM S'),
+                ('FMP','CM CT'),
+                ('FMP','CM S'),
+                ('FSI','CM CRD'),
+                ('GIL','CM CT'),
+                ('HSD','CM C'),
+                ('IOL','CM BO'),
+                ('IOL','CM RS'),
+                ('IVO','CM SM'),
+                ('KMI','CM CT'),
+                ('KTE','CM S'),
+                ('LIB','CM CT'),
+                ('LIT','CM CT'),
+                ('LMB','CM S'),
+                ('MAO','CM W'),
+                ('MDA','CM QC'),
+                ('MLK','CM C'),
+                ('MLK','CM S'),
+                ('MLK','CM SM'),
+                ('MLK','CM W'),
+                ('OMF','CM KC'),
+                ('ORM','CM C'),
+                ('ORM','CM MW'),
+                ('SCE','CM CT'),
+                ('SCW','CM CT'),
+                ('SEC','CM CT'),
+                ('SIC','CM S'),
+                ('SIP','CM OR EUR'),
+                ('SLC','CM CT'),
+                ('SLC','CM S'),
+                ('SMH','CM OR'),
+                ('SMT','CM CT'),
+                ('TAE','CM S'),
+                ('TER','CM SB'),
+                ('TFC','CM S'),
+                ('TVE','CM S'),
+                ('UDA','CM C'),
+                ('UNF','CM KO'),
+                ('VCI','CM OR'),
+                ('VZN','CM S')),
+            vd AS (SELECT value_date FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1),
+            sec AS (
+                SELECT DISTINCT p.client, p.product, c.contract_month, c.security_id
+                FROM opera.helper_sensitivity_report_view_cache_table c
+                JOIN pairs p ON upper(substring(c.contract_number, 1, 3)) = upper(p.client)
+                            AND upper(trim(c.product_code)) = upper(trim(p.product))
+                WHERE upper(trim(c.business_unit)) = :bu)
+            SELECT s.client, s.product, s.contract_month, (SELECT value_date FROM vd) AS value_date,
+                   COUNT(*) AS securities,
+                   COUNT(*) FILTER (WHERE m.security_id IS NULL) AS sec_no_master,
+                   COUNT(*) FILTER (WHERE m.security_id IS NOT NULL AND m.status <> 'Active') AS sec_inactive,
+                   COUNT(*) FILTER (WHERE m.status = 'Active' AND m.vol1_id IS NULL) AS sec_no_vol1,
+                   COUNT(*) FILTER (WHERE m.status = 'Active' AND m.vol1_id IS NOT NULL AND NOT EXISTS (
+                         SELECT 1 FROM opera.settlement_vol_surf_table sv
+                         WHERE sv.vol_id = m.vol1_id AND sv.value_date = (SELECT value_date FROM vd))) AS sec_no_surface,
+                   COUNT(*) FILTER (WHERE m.status = 'Active' AND EXISTS (
+                         SELECT 1 FROM opera.settlement_vol_surf_table sv
+                         WHERE sv.vol_id = m.vol1_id AND sv.value_date = (SELECT value_date FROM vd))) AS sec_with_surface,
+                   string_agg(DISTINCT m.derivative_type, ',') AS derivative_types
+            FROM sec s
+            LEFT JOIN opera.cloned_security_info_table m
+                   ON m.security_id = s.security_id AND upper(m.business_unit) = :bu
+            GROUP BY s.client, s.product, s.contract_month
+            ORDER BY s.client, s.product, s.contract_month
+        ]]>
+    </sql>
+    <compress id="bundle" file="grasa-fail-pairs-cfs.zip"><include ref="fail-pairs"/></compress>
+</rules>
