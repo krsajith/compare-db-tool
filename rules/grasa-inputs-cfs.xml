@@ -3,7 +3,7 @@
      Purpose: find why 43 pairs give GRASA_ATM_VOL_MISSING (securities -> vol1_id -> surface rows on the value date)
      and why 15 barrier pairs fail (strike / barrier / vol). Assumes the same table and column names on both sides;
      if MySQL differs (BU-specific table names), edit only the MySQL FROM clauses. Read-only SELECTs.
-     Run first with --validate. Postgres: postgres-dev, database operadb, schema opera. -->
+     Run first with validate. Postgres: postgres-dev, database operadb, schema opera. -->
 <rules name="grasa-inputs-cfs">
     <parameters>
         <param name="bu" type="string" value="CFS"/>
