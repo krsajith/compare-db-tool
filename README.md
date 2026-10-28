@@ -128,7 +128,9 @@ For an external file in another location, use an absolute path:
 ## XML rules
 
 The direct children of `<rules>` are `<parameters>`, `<sql>`, `<compare>`, and `<compress>`.
-All SQL rules execute once, in declaration order, followed by comparisons, then ZIP packaging.
+SQL queries run in bounded datasource lanes; identical SQL/datasource pairs share one execution. Comparisons start
+when both input queries finish. ZIP packaging follows all queries/comparisons. `--parallel 1` serializes queries in
+first-occurrence declaration order.
 Rule IDs are unique across all rule types, case-insensitively, and references use the exact declared spelling.
 IDs must be safe filenames; reserved output names such as `SUMMARY` and Windows device names are rejected.
 
@@ -239,7 +241,7 @@ Example of mapped key and ignored column:
 
 Normalization also applies to keys. Tolerances do not fuzzily match keys; keys must match after deterministic
 normalization. Duplicate keys, including duplicates introduced by normalization, are reported separately. Such keys
-are ambiguous and excluded from matched/only-side counts; they never count as equal. Original rows remain in query CSVs.
+are ambiguous and excluded from matched/only-side counts; they never count as equal. Use full export to retain all original rows.
 
 Cell changes are classified as `CASE_ONLY`, `WHITESPACE_ONLY`, `NULL_VS_EMPTY`, `NULL_VS_ZERO`, `FORMAT_ONLY`,
 `ROUNDING`, `SIGN_FLIP`, `DATE_SHIFT`, or `OTHER`. Accepted normalization/tolerance changes are retained in
@@ -286,6 +288,41 @@ failed queries must not be used as evidence of equality. Capped runs produce art
 
 ## Larger datasets
 
+### Parallel queries and reuse
+
+`--parallel N` bounds query workers; the default is the number of distinct named datasources in the rule file.
+There is at most one active query per datasource even if N is larger. `--parallel 1` provides sequential query
+execution. Comparisons run serially on the coordinator as soon as their inputs are available while other datasource
+queries continue, avoiding multiple large comparison maps in memory. Failures remain isolated and produce manual actions.
+
+Exactly identical SQL text on the same datasource is executed once per run (shared parameters are fixed for the run).
+All original IDs retain their own outputs and metadata. Mixed export settings and different row caps are honored:
+the shared query fetches enough rows for the largest requested cap, or all rows when any alias is uncapped, then
+individual capped aliases remain PARTIAL. A reused group uses the strictest statement timeout and smallest fetch
+size from its members. Metadata identifies shared execution/time rather than reporting another database call.
+Reuse also means volatile expressions are evaluated once for the group; use intentionally distinct SQL when separate
+evaluations are required. This tool does not establish a shared snapshot between databases.
+
+```powershell
+.\compare.ps1 --rules rules\grasa-backup-cfs.xml --parallel 2
+.\compare.ps1 --rules rules\grasa-backup-cfs.xml --parallel 1 --export full
+```
+
+### Comparison memory budget
+
+`--max-partition-mb N` defaults to 256 MB. Conservative accounting covers both current partition maps and retained
+breakdown groups; a clear error stops that comparison when the estimate exceeds the budget. No data or counts are
+silently discarded. Increase `--partitions` (up to 256) to reduce partition sizes; increase the memory budget only
+when the JVM has enough heap. High-cardinality breakdown counters persist across partitions, so reducing the number
+of distinct breakdown groups may be necessary. Top-N output uses a bounded heap rather than sorting/copying all groups.
+This is an estimate for retained comparison structures, not a hard cap on the entire JVM: drivers, file buffers,
+temporary per-row objects and unusually large individual fields also consume memory. Source rows stay on disk and
+are never collected into a full in-memory result list.
+
+```powershell
+java -Xmx2g -jar target\compare-db-tool.jar --rules rules\grasa-backup-cfs.xml --partitions 128 --max-partition-mb 256
+```
+
 Query results are written incrementally. PostgreSQL uses non-autocommit transactions and fetch size; MySQL pools
 enable cursor fetching/server prepared statements. Other JDBC drivers may implement fetching differently.
 Comparisons hash-partition exported rows to temporary CSVs and compare one partition at a time, then remove the
@@ -293,7 +330,7 @@ temporary files. Default: 64 partitions; use `--partitions 128` or `256` for lar
 required in the run directory. Very wide rows or uneven partition sizes may still require more heap or partitions.
 No throughput or fixed-memory target has been benchmarked.
 
-Queries execute sequentially in separate transactions and do not share a synchronized database snapshot. For
+Queries execute in separate transactions and do not share a synchronized database snapshot. For
 repeatable comparisons, use stable source data and the same business cut-off parameters on both sides.
 
 ## Read-only operation
@@ -391,7 +428,7 @@ an arbitrary external Logback configuration bypasses that protection. Review log
 
 JVM/JAR launch failures before Spring initializes logging still appear on the console and may produce no log file.
 After pulling Java/logback resource changes, rebuild the JAR once; subsequent external logging-property changes need
-only a rerun. The added logging code and tests have not been built or executed here.
+only a rerun. Logging/redaction tests are included in the H2-only build verification.
 
 ## Troubleshooting missing console output
 

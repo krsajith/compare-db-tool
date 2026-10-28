@@ -119,4 +119,17 @@ class SmartOutputTests {
         assertEquals(2, rules.comparisons.getFirst().breakdowns.size());
         assertDoesNotThrow(() -> RuleLoader.validate(rules, settings()));
     }
+
+    @Test void breakdownNullAndLiteralNullLabelAreSeparateGroups() {
+        var compare = new Rules.Compare();
+        var rule = new Rules.Breakdown(); rule.columns = "product"; rule.top = 1; compare.breakdowns.add(rule);
+        var result = new QueryRunner.Result("q", temp.resolve("unused"), List.of(new QueryRunner.Column("product", java.sql.Types.VARCHAR)),
+            2, false, 0, List.of());
+        var breakdowns = new Breakdowns(compare, result, result, new MemoryBudget(1));
+        breakdowns.add("only-source", Arrays.asList((String) null), true);
+        breakdowns.add("only-source", List.of("(NULL)"), true);
+        StringBuilder summary = new StringBuilder(); breakdowns.appendTo(summary);
+        assertTrue(summary.toString().contains("| other | 1 |"));
+        assertTrue(summary.toString().contains("Total only-source: 2 rows."));
+    }
 }

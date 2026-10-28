@@ -30,7 +30,9 @@ public final class ComparisonRunner {
         }
     }
     private final int partitions;
-    public ComparisonRunner(int partitions) { this.partitions = partitions; }
+    private final int maxPartitionMb;
+    public ComparisonRunner(int partitions) { this(partitions, 256); }
+    public ComparisonRunner(int partitions, int maxPartitionMb) { this.partitions = partitions; this.maxPartitionMb = maxPartitionMb; }
 
     public Result run(Rules.Compare rule, QueryRunner.Result source, QueryRunner.Result target, Path root) throws IOException {
         return run(rule, source, target, root, ExportMode.FULL, 200);
@@ -56,7 +58,7 @@ public final class ComparisonRunner {
         boolean schemaDifferent = !sourceExtra.isEmpty() || !targetExtra.isEmpty();
         Path directory = root.resolve(rule.id);
         Files.createDirectory(directory);
-        Path work = root.resolve(".work").resolve(rule.id);
+        Path work = root.resolve(".work/comparisons").resolve(rule.id);
         Files.createDirectories(work);
         List<String> keyHeader = keyNames.stream().map(k -> "key." + k).toList();
         Path cells = directory.resolve("differences.csv"), onlySource = directory.resolve("only-source.csv"),
@@ -65,7 +67,8 @@ public final class ComparisonRunner {
         long[] totals = new long[10]; // matched,equal,different,onlySource,onlyTarget,dupSource,dupTarget,ambiguous,badCells,accepted
         Map<Group, Long> groups = new TreeMap<>(Comparator.comparing(Group::column)
             .thenComparing(Group::classification).thenComparing(Group::accepted));
-        Breakdowns breakdowns = new Breakdowns(rule, source, target);
+        MemoryBudget budget = new MemoryBudget(maxPartitionMb);
+        Breakdowns breakdowns = new Breakdowns(rule, source, target, budget);
         Map<String, String> exports = new LinkedHashMap<>();
         try {
             LOG.debug("Partitioning source CSV for comparison {}", rule.id);
@@ -77,8 +80,9 @@ public final class ComparisonRunner {
                  var right = new CsvFiles.LimitedWriter(onlyTarget, target.columns().stream().map(QueryRunner.Column::name).toList(), mode, sampleRows);
                  var dup = new CsvFiles.LimitedWriter(duplicates, concat(keyHeader, List.of("side", "row_count")), mode, sampleRows)) {
                 for (int part = 0; part < partitions; part++) {
-                    Map<Key, Bucket> a = load(work.resolve("source").resolve(part + ".csv"), keyBindings, true);
-                    Map<Key, Bucket> b = load(work.resolve("target").resolve(part + ".csv"), keyBindings, false);
+                    budget.nextPartition();
+                    Map<Key, Bucket> a = load(work.resolve("source").resolve(part + ".csv"), keyBindings, true, budget);
+                    Map<Key, Bucket> b = load(work.resolve("target").resolve(part + ".csv"), keyBindings, false, budget);
                     LOG.debug("Comparison {} partition {}/{} sourceKeys={} targetKeys={}",
                         rule.id, part + 1, partitions, a.size(), b.size());
                     Set<Key> keys = new LinkedHashSet<>(a.keySet()); keys.addAll(b.keySet());
@@ -192,14 +196,14 @@ public final class ComparisonRunner {
             if (failure != null) throw failure;
         }
     }
-    private Map<Key, Bucket> load(Path path, List<Binding> keys, boolean source) throws IOException {
+    private Map<Key, Bucket> load(Path path, List<Binding> keys, boolean source, MemoryBudget budget) throws IOException {
         Map<Key, Bucket> result = new LinkedHashMap<>();
         try (CSVParser rows = CsvFiles.reader(path, false)) {
             for (CSVRecord row : rows) {
                 List<String> values = CsvFiles.values(row);
                 Key key = key(values, keys, source);
                 Bucket bucket = result.get(key);
-                if (bucket == null) result.put(key, new Bucket(values)); else bucket.count++;
+                if (bucket == null) { budget.row(values, key.values()); result.put(key, new Bucket(values)); } else bucket.count++;
             }
         }
         return result;

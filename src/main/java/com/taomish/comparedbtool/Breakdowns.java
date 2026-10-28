@@ -6,11 +6,15 @@ import java.util.*;
 final class Breakdowns {
     private static final List<String> CATEGORIES = List.of("only-source", "only-target", "different");
     private final List<Table> tables = new ArrayList<>();
+    private final MemoryBudget budget;
+    private record Cell(boolean missing, String value) {
+        String display() { return missing ? "(missing column)" : value == null ? "(NULL)" : value.isEmpty() ? "(empty)" : value; }
+    }
     private static final class Table {
         final Rules.Breakdown rule;
         final List<String> names;
         final int[] source, target;
-        final Map<String, Map<List<String>, Long>> counts = new LinkedHashMap<>();
+        final Map<String, Map<List<Cell>, Long>> counts = new LinkedHashMap<>();
         final List<String> missing = new ArrayList<>();
         Table(Rules.Breakdown rule, List<QueryRunner.Column> left, List<QueryRunner.Column> right, List<Rules.Column> mappings) {
             this.rule = rule;
@@ -28,20 +32,21 @@ final class Breakdowns {
             }
             CATEGORIES.forEach(category -> counts.put(category, new HashMap<>()));
         }
-        void add(String category, List<String> row, boolean left) {
-            List<String> values = new ArrayList<>();
+        void add(String category, List<String> row, boolean left, MemoryBudget budget) {
+            List<Cell> values = new ArrayList<>();
             for (int index : left ? source : target) {
-                String value = index < 0 ? "(missing column)" : row.get(index);
-                values.add(value == null ? "(NULL)" : value.isEmpty() ? "(empty)" : value);
+                values.add(new Cell(index < 0, index < 0 ? null : row.get(index)));
             }
+            if (!counts.get(category).containsKey(values)) budget.group(values.stream().map(Cell::value).toList());
             counts.get(category).merge(values, 1L, Long::sum);
         }
     }
-    Breakdowns(Rules.Compare rule, QueryRunner.Result source, QueryRunner.Result target) {
+    Breakdowns(Rules.Compare rule, QueryRunner.Result source, QueryRunner.Result target, MemoryBudget budget) {
+        this.budget = budget;
         if (rule.breakdowns != null) for (Rules.Breakdown breakdown : rule.breakdowns)
             tables.add(new Table(breakdown, source.columns(), target.columns(), rule.columns));
     }
-    void add(String category, List<String> row, boolean source) { tables.forEach(t -> t.add(category, row, source)); }
+    void add(String category, List<String> row, boolean source) { tables.forEach(t -> t.add(category, row, source, budget)); }
     void appendTo(StringBuilder markdown) {
         for (Table table : tables) {
             markdown.append("\n## Breakdown: ").append(escape(table.rule.columns)).append("\n\n");
@@ -54,19 +59,26 @@ final class Breakdowns {
                 markdown.append("**").append(category).append("**\n\n| ")
                     .append(String.join(" | ", table.names.stream().map(Breakdowns::escape).toList())).append(" | Rows |\n|")
                     .append("---|".repeat(table.names.size() + 1)).append("\n");
-                var sorted = counts.entrySet().stream().sorted(Map.Entry.<List<String>, Long>comparingByValue().reversed()
-                    .thenComparing(e -> e.getKey().toString())).toList();
-                long other = 0;
-                for (int i = 0; i < sorted.size(); i++) {
-                    var group = sorted.get(i);
-                    if (i >= table.rule.top) { other += group.getValue(); continue; }
-                    markdown.append("| ").append(String.join(" | ", group.getKey().stream().map(Breakdowns::escape).toList()))
+                Comparator<Map.Entry<List<Cell>, Long>> best = Map.Entry.<List<Cell>, Long>comparingByValue().reversed()
+                    .thenComparing(e -> e.getKey().toString());
+                var top = new PriorityQueue<Map.Entry<List<Cell>, Long>>(best.reversed());
+                long total = 0;
+                for (var group : counts.entrySet()) {
+                    total += group.getValue();
+                    if (top.size() < table.rule.top) top.add(group);
+                    else if (best.compare(group, top.peek()) < 0) { top.remove(); top.add(group); }
+                }
+                long shown = 0;
+                for (var group : top.stream().sorted(best).toList()) {
+                    shown += group.getValue();
+                    markdown.append("| ").append(String.join(" | ", group.getKey().stream().map(c -> escape(c.display())).toList()))
                         .append(" | ").append(group.getValue()).append(" |\n");
                 }
+                long other = total - shown;
                 if (other > 0) markdown.append("| other").append(" |".repeat(table.names.size() - 1))
                     .append(" | ").append(other).append(" |\n");
                 markdown.append("\nTotal ").append(category).append(": ")
-                    .append(counts.values().stream().mapToLong(Long::longValue).sum()).append(" rows.\n\n");
+                    .append(total).append(" rows.\n\n");
             }
         }
     }

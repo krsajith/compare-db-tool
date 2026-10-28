@@ -1,5 +1,16 @@
 # Coding handoff
 
+## Smart output stage 2
+
+Implemented bounded datasource lanes, one active query per datasource, dependency-ready comparisons, identical-SQL
+reuse with per-alias export/cap metadata, and estimated partition/group memory accounting (default 256 MB).
+PASS: JDK 21 clean package, 42 tests, 0 failures/errors; all eight shipped XML files validate using placeholder
+datasources and no source connections. Synthetic default mail ZIP: 4,120 bytes. Stage 2 tests cover concurrent H2
+queries plus failure isolation, early comparison, actual single execution of reused SQL, mixed exports, different
+row caps, sequential ordering and a clear memory-budget failure. Final build results
+and stage commit IDs are recorded in D:/oga/analysis/result-compare-tool-smart-output.md. Optional funnel rule type
+is skipped; the existing single-SQL funnel XML remains supported unchanged. No remote performance/ZIP-size claim.
+
 ## Smart output stage 1
 
 PASS: JDK 21 mvnw clean package, 36 tests, 0 failures/errors. Safe-config validation of grasa-backup-cfs.xml:

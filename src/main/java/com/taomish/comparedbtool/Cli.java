@@ -27,6 +27,8 @@ public final class Cli {
         --partitions N        Disk partitions per comparison (default: 64, range 1..256)
         --export MODE         none, sample (default), or full; XML export overrides this
         --sample-rows N       Maximum records per comparison sample CSV (default: 200)
+        --parallel N          Query workers (default: distinct datasource count; one active per datasource)
+        --max-partition-mb N  Estimated comparison map/group budget (default: 256 MB)
         --allow-prod          Permit datasources marked prod=true or named with 'prod'
         --help                Show this help
 
@@ -43,6 +45,8 @@ public final class Cli {
         public int partitions = 64;
         public ExportMode export = ExportMode.SAMPLE;
         public int sampleRows = 200;
+        public int parallel;
+        public int maxPartitionMb = 256;
         public long limit;
         public boolean validate, datasources, allowProd, help;
     }
@@ -60,7 +64,7 @@ public final class Cli {
             }
             int equal = argument.indexOf('=');
             String name = equal > 0 ? argument.substring(0, equal) : argument;
-            if (Set.of("--rules", "--out", "--param", "--limit", "--partitions", "--export", "--sample-rows").contains(name)) {
+            if (Set.of("--rules", "--out", "--param", "--limit", "--partitions", "--export", "--sample-rows", "--parallel", "--max-partition-mb").contains(name)) {
                 String value;
                 if (equal > 0) value = argument.substring(equal + 1);
                 else {
@@ -75,6 +79,11 @@ public final class Cli {
                         case "--partitions" -> options.partitions = Integer.parseInt(value);
                         case "--export" -> options.export = ExportMode.parse(value);
                         case "--sample-rows" -> options.sampleRows = Integer.parseInt(value);
+                        case "--max-partition-mb" -> options.maxPartitionMb = Integer.parseInt(value);
+                        case "--parallel" -> {
+                            options.parallel = Integer.parseInt(value);
+                            if (options.parallel < 1 || options.parallel > 256) throw new IllegalArgumentException();
+                        }
                         case "--param" -> {
                             int separator = value.indexOf('=');
                             if (separator <= 0) throw new ToolException("Use --param name=value.");
@@ -94,8 +103,8 @@ public final class Cli {
                 }
             }
         }
-        if (options.limit < 0 || options.partitions < 1 || options.partitions > 256 || options.sampleRows < 0)
-            throw new ToolException("limit/sample-rows must be nonnegative and partitions must be between 1 and 256.");
+        if (options.limit < 0 || options.partitions < 1 || options.partitions > 256 || options.sampleRows < 0 || options.maxPartitionMb < 1)
+            throw new ToolException("limit/sample-rows must be nonnegative, max-partition-mb positive, and partitions between 1 and 256.");
         if (!options.help && !options.datasources && options.rules == null) throw new ToolException("Supply --rules FILE.");
         return options;
     }
@@ -133,61 +142,24 @@ public final class Cli {
             try (CSVPrinter params = CsvFiles.writer(directory.resolve("PARAMETERS.csv"), List.of("name", "value"))) {
                 for (var entry : parameters.entrySet()) params.printRecord(Arrays.asList(entry.getKey(), entry.getValue()));
             }
-            for (Rules.Sql query : rules.queries) {
-                LOG.info("Starting query {} on {} (timeout {} s)...", query.id, query.db, query.timeout);
-                Path sqlFile = directory.resolve(query.id + ".sql");
-                if (ExportMode.resolve(query.export, options.export) != ExportMode.NONE)
-                    Files.writeString(sqlFile, Objects.toString(query.text, ""));
-                boolean permitted = false;
-                try {
-                    checkQuery(query, parameters, options.allowProd);
-                    permitted = true;
-                    QueryRunner.Result result = runner.run(query, parameters, options.limit, directory, options.export);
-                    queries.put(query.id, result); artifacts.put(query.id, result.files());
-                    if (result.partial()) failures.put(query.id, "PARTIAL query on " + query.db
-                        + ". Rerun without the row cap; do not compare this incomplete extract.");
-                } catch (Exception e) {
-                    LOG.error("Query {} on {} failed; continuing with the remaining queries", query.id, query.db, e);
-                    String reason = failureReason(e);
-                    String action = permitted ? "Open " + query.id + ".sql in your database client connected to " + query.db
-                        + ", supply the parameters from PARAMETERS.csv, and check the SELECT manually."
-                        : "Correct the rule, datasource settings or authorization reported below, then rerun; do not bypass safety checks manually.";
-                    String detail = "Query " + query.id + " on " + query.db + " " + (permitted ? "FAILED" : "BLOCKED")
-                        + ".\n\n" + reason + "\n\n" + action;
-                    failures.put(query.id, detail);
-                    if (!Files.exists(sqlFile)) Files.writeString(sqlFile, Objects.toString(query.text, ""));
-                    Path note = manualDirectory.resolve(query.id + ".md");
-                    Files.writeString(note, "# " + query.id + "\n\n" + detail + "\n");
-                    List<Path> saved = new ArrayList<>(List.of(sqlFile, note));
-                    Path csv = directory.resolve(query.id + ".csv");
-                    if (Files.exists(csv)) {
-                        Path incomplete = manualDirectory.resolve(query.id + ".incomplete.csv");
-                        Files.move(csv, incomplete); saved.add(incomplete);
+            Set<String> completedQueries = new HashSet<>(), attemptedComparisons = new HashSet<>();
+            ComparisonRunner comparator = new ComparisonRunner(options.partitions, options.maxPartitionMb);
+            LOG.info("Scheduling queries: workers={} one query per datasource; identical SQL is reused",
+                options.parallel == 0 ? rules.queries.stream().map(q -> q.db).distinct().count() : options.parallel);
+            QueryScheduler.run(rules.queries, options.parallel,
+                group -> executeGroup(group, runner, parameters, directory, options),
+                outcomes -> {
+                    for (var outcome : outcomes) {
+                        completedQueries.add(outcome.query().id);
+                        recordQuery(outcome, directory, manualDirectory, queries, artifacts, failures);
                     }
-                    artifacts.put(query.id, saved);
-                }
-            }
-            ComparisonRunner comparator = new ComparisonRunner(options.partitions);
-            for (Rules.Compare compare : rules.comparisons) {
-                LOG.info("Starting comparison {}...", compare.id);
-                try {
-                    var source = queries.get(compare.source); var target = queries.get(compare.target);
-                    if (source == null || target == null || source.partial() || target.partial())
-                        throw new ToolException("Comparison skipped: source " + compare.source + " or target " + compare.target
-                            + " failed, was blocked, or is PARTIAL. Resolve those queries and rerun this comparison.");
-                    var result = comparator.run(compare, source, target, directory, options.export, options.sampleRows);
-                    comparisons.add(result); artifacts.put(compare.id, result.files());
-                    LOG.info("Compare {}: {}", compare.id, result.headline());
-                } catch (Exception e) {
-                    LOG.error("Comparison {} did not complete; continuing", compare.id, e);
-                    String detail = failureReason(e);
-                    failures.put(compare.id, "Comparison " + compare.id + ": " + detail);
-                    Path note = manualDirectory.resolve(compare.id + ".md");
-                    Files.writeString(note, "# Comparison " + compare.id + " not completed\n\n" + detail
-                        + "\n\nAny files in the comparison directory are incomplete and must not be treated as parity results.\n");
-                    artifacts.put(compare.id, List.of(note));
-                }
-            }
+                    for (Rules.Compare compare : rules.comparisons) {
+                        if (attemptedComparisons.contains(compare.id) || !completedQueries.contains(compare.source)
+                            || !completedQueries.contains(compare.target)) continue;
+                        attemptedComparisons.add(compare.id);
+                        compareReady(compare, comparator, directory, manualDirectory, queries, artifacts, failures, comparisons, options);
+                    }
+                });
             boolean partial = queries.values().stream().anyMatch(QueryRunner.Result::partial);
             boolean differs = comparisons.stream().anyMatch(ComparisonRunner.Result::differs);
             int exit = partial || !failures.isEmpty() ? 2 : differs ? 1 : 0;
@@ -208,7 +180,8 @@ public final class Cli {
             summary.append("\n");
             summary.append("Manual actions: ").append(failures.size()).append(". See MANUAL_ACTIONS.md for failed queries and skipped comparisons.\n\n");
             for (var result : comparisons) summary.append("- ").append(result.id()).append(": ").append(result.headline()).append("\n");
-            summary.append("\nQueries run sequentially in separate read-only transactions. Results are not a synchronized cross-database snapshot.\n");
+            summary.append("\nQueries run with bounded concurrency and one active query per datasource; identical SQL is reused. "
+                + "Ready comparisons run while other queries continue. Results are not a synchronized cross-database snapshot.\n");
             ComparisonRunner.writeSmallSummary(directory.resolve("SUMMARY.md"), summary.toString());
             writeManualActions(directory, failures);
             for (Rules.Compress compression : rules.compressions) {
@@ -244,6 +217,101 @@ public final class Cli {
         } finally {
             try { CsvFiles.deleteTree(directory.resolve(".work")); }
             catch (IOException cleanup) { LOG.warn("Could not remove temporary files under {}", directory.resolve(".work"), cleanup); }
+        }
+    }
+
+    private List<QueryScheduler.Outcome> executeGroup(QueryScheduler.Group group, QueryRunner runner,
+            Map<String, Object> parameters, Path directory, Options options) throws IOException {
+        List<QueryScheduler.Outcome> outcomes = new ArrayList<>();
+        List<Rules.Sql> eligible = new ArrayList<>();
+        for (Rules.Sql query : group.rules()) {
+            try {
+                if (ExportMode.resolve(query.export, options.export) != ExportMode.NONE)
+                    Files.writeString(directory.resolve(query.id + ".sql"), Objects.toString(query.text, ""));
+                checkQuery(query, parameters, options.allowProd);
+                eligible.add(query);
+            } catch (Exception error) { outcomes.add(new QueryScheduler.Outcome(query, null, error, false)); }
+        }
+        if (eligible.isEmpty()) return outcomes;
+        if (eligible.size() == 1) {
+            Rules.Sql query = eligible.getFirst();
+            LOG.info("Starting query {} on {} (timeout {} s)...", query.id, query.db, query.timeout);
+            try { outcomes.add(new QueryScheduler.Outcome(query, runner.run(query, parameters, options.limit, directory, options.export), null, true)); }
+            catch (Exception error) { outcomes.add(new QueryScheduler.Outcome(query, null, error, true)); }
+            return outcomes;
+        }
+        Rules.Sql first = eligible.getFirst(), canonical = new Rules.Sql();
+        canonical.id = first.id; canonical.db = first.db; canonical.text = first.text; canonical.export = "none";
+        canonical.timeout = eligible.stream().mapToInt(q -> q.timeout).min().orElseThrow();
+        canonical.fetchSize = eligible.stream().mapToInt(q -> q.fetchSize).min().orElseThrow();
+        List<Long> limits = eligible.stream().map(q -> QueryRunner.effectiveLimit(q, options.limit)).toList();
+        canonical.maxRows = limits.contains(0L) ? 0 : limits.stream().mapToLong(Long::longValue).max().orElseThrow();
+        Path sharedDirectory = directory.resolve(".work/reuse").resolve(first.id);
+        Files.createDirectories(sharedDirectory);
+        LOG.info("Executing identical SQL once on {} for ids={}; strictest timeout={} s", first.db,
+            eligible.stream().map(q -> q.id).toList(), canonical.timeout);
+        QueryRunner.Result shared;
+        try { shared = runner.run(canonical, parameters, 0, sharedDirectory, ExportMode.NONE); }
+        catch (Exception error) {
+            eligible.forEach(q -> outcomes.add(new QueryScheduler.Outcome(q, null, error, true)));
+            return outcomes;
+        }
+        for (Rules.Sql query : eligible) {
+            try { outcomes.add(new QueryScheduler.Outcome(query, runner.reuse(query, shared, options.limit, directory, options.export), null, true)); }
+            catch (Exception error) { outcomes.add(new QueryScheduler.Outcome(query, null, error, true)); }
+        }
+        return outcomes;
+    }
+
+    private static void recordQuery(QueryScheduler.Outcome outcome, Path directory, Path manualDirectory,
+            Map<String, QueryRunner.Result> queries, Map<String, List<Path>> artifacts, Map<String, String> failures) throws IOException {
+        Rules.Sql query = outcome.query();
+        if (outcome.error() == null) {
+            QueryRunner.Result result = outcome.result();
+            queries.put(query.id, result); artifacts.put(query.id, result.files());
+            if (result.partial()) failures.put(query.id, "PARTIAL query on " + query.db
+                + ". Rerun without the row cap; do not compare this incomplete extract.");
+            return;
+        }
+        LOG.error("Query {} on {} failed; continuing with other queries", query.id, query.db, outcome.error());
+        String action = outcome.permitted() ? "Open " + query.id + ".sql in your database client connected to " + query.db
+            + ", supply the parameters from PARAMETERS.csv, and check the SELECT manually."
+            : "Correct the rule, datasource settings or authorization reported below, then rerun; do not bypass safety checks manually.";
+        String detail = "Query " + query.id + " on " + query.db + " " + (outcome.permitted() ? "FAILED" : "BLOCKED")
+            + ".\n\n" + failureReason(outcome.error()) + "\n\n" + action;
+        failures.put(query.id, detail);
+        Path sqlFile = directory.resolve(query.id + ".sql"), note = manualDirectory.resolve(query.id + ".md");
+        if (!Files.exists(sqlFile)) Files.writeString(sqlFile, Objects.toString(query.text, ""));
+        Files.writeString(note, "# " + query.id + "\n\n" + detail + "\n");
+        List<Path> saved = new ArrayList<>(List.of(sqlFile, note));
+        Path csv = directory.resolve(query.id + ".csv");
+        if (Files.exists(csv)) {
+            Path incomplete = manualDirectory.resolve(query.id + ".incomplete.csv");
+            Files.move(csv, incomplete); saved.add(incomplete);
+        }
+        artifacts.put(query.id, saved);
+    }
+
+    private static void compareReady(Rules.Compare compare, ComparisonRunner comparator, Path directory, Path manualDirectory,
+            Map<String, QueryRunner.Result> queries, Map<String, List<Path>> artifacts, Map<String, String> failures,
+            List<ComparisonRunner.Result> comparisons, Options options) throws IOException {
+        LOG.info("Starting ready comparison {}...", compare.id);
+        try {
+            var source = queries.get(compare.source); var target = queries.get(compare.target);
+            if (source == null || target == null || source.partial() || target.partial())
+                throw new ToolException("Comparison skipped: source " + compare.source + " or target " + compare.target
+                    + " failed, was blocked, or is PARTIAL. Resolve those queries and rerun this comparison.");
+            var result = comparator.run(compare, source, target, directory, options.export, options.sampleRows);
+            comparisons.add(result); artifacts.put(compare.id, result.files());
+            LOG.info("Compare {}: {}", compare.id, result.headline());
+        } catch (Exception error) {
+            LOG.error("Comparison {} did not complete; continuing", compare.id, error);
+            String detail = failureReason(error);
+            failures.put(compare.id, "Comparison " + compare.id + ": " + detail);
+            Path note = manualDirectory.resolve(compare.id + ".md");
+            Files.writeString(note, "# Comparison " + compare.id + " not completed\n\n" + detail
+                + "\n\nAny files in the comparison directory are incomplete and must not be treated as parity results.\n");
+            artifacts.put(compare.id, List.of(note));
         }
     }
 
