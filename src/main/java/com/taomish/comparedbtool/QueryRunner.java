@@ -6,6 +6,7 @@ import java.io.IOException;
 import java.nio.file.*;
 import java.sql.*;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 import org.apache.commons.csv.CSVPrinter;
 import org.springframework.jdbc.core.PreparedStatementCallback;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
@@ -36,7 +37,7 @@ public final class QueryRunner implements AutoCloseable {
     }
     private final DatasourceSettings settings;
     private final boolean allowProd;
-    private final Map<String, HikariDataSource> pools = new LinkedHashMap<>();
+    private final Map<String, HikariDataSource> pools = new ConcurrentHashMap<>();
     public QueryRunner(DatasourceSettings settings, boolean allowProd) {
         this.settings = settings; this.allowProd = allowProd;
         settings.getDatasources().values().forEach(d -> SecretRedactor.register(d.getPassword()));
@@ -84,6 +85,10 @@ public final class QueryRunner implements AutoCloseable {
     }
 
     public Result run(Rules.Sql rule, Map<String, Object> parameters, long globalLimit, Path directory) throws IOException {
+        return run(rule, parameters, globalLimit, directory, ExportMode.FULL);
+    }
+    public Result run(Rules.Sql rule, Map<String, Object> parameters, long globalLimit, Path directory, ExportMode defaultMode) throws IOException {
+        ExportMode mode = ExportMode.resolve(rule.export, defaultMode);
         String sql = SqlGuard.validate(rule.text);
         // Resolve all parameters before opening a database connection.
         validateParameters(rule, parameters);
@@ -92,10 +97,11 @@ public final class QueryRunner implements AutoCloseable {
         final long limit = cap;
         LOG.debug("Query={} datasource={} timeoutSeconds={} fetchSize={} rowLimit={} parameterNames={}",
             rule.id, rule.db, rule.timeout, rule.fetchSize, limit, parameters.keySet());
-        Path csv = directory.resolve(rule.id + ".csv");
+        Path csv = mode == ExportMode.FULL ? directory.resolve(rule.id + ".csv")
+            : directory.resolve(".work").resolve("queries").resolve(rule.id + ".csv");
         Path sqlFile = directory.resolve(rule.id + ".sql");
         Path meta = directory.resolve(rule.id + ".md");
-        Files.writeString(sqlFile, rule.text.strip() + System.lineSeparator());
+        if (mode != ExportMode.NONE) Files.writeString(sqlFile, rule.text.strip() + System.lineSeparator());
         long start = System.nanoTime();
         List<Column> columns = new ArrayList<>();
         long[] rows = {0};
@@ -143,14 +149,58 @@ public final class QueryRunner implements AutoCloseable {
         long millis = (System.nanoTime() - start) / 1_000_000;
         if (partial[0]) LOG.warn("Query {} hit its row cap after {} rows; results are PARTIAL", rule.id, rows[0]);
         LOG.info("Query {} export complete: rows={} elapsedMs={} CSV={}", rule.id, rows[0], millis, csv);
+        writeMetadata(rule, rows[0], partial[0], millis, columns, mode, meta, null);
+        List<Path> files = new ArrayList<>();
+        if (mode == ExportMode.FULL) files.add(csv);
+        if (mode != ExportMode.NONE) files.add(sqlFile);
+        files.add(meta);
+        return new Result(rule.id, csv, List.copyOf(columns), rows[0], partial[0], millis, List.copyOf(files));
+    }
+
+    /** Publishes an alias without re-executing the SQL; per-rule row caps and export settings still apply. */
+    public Result reuse(Rules.Sql rule, Result shared, long globalLimit, Path directory, ExportMode defaultMode) throws IOException {
+        ExportMode mode = ExportMode.resolve(rule.export, defaultMode);
+        long limit = effectiveLimit(rule, globalLimit);
+        long rows = limit > 0 ? Math.min(limit, shared.rows()) : shared.rows();
+        boolean partial = shared.partial() || rows < shared.rows();
+        Path csv = shared.csv();
+        if (mode == ExportMode.FULL || rows < shared.rows()) {
+            csv = mode == ExportMode.FULL ? directory.resolve(rule.id + ".csv")
+                : directory.resolve(".work/queries").resolve(rule.id + ".csv");
+            if (rows == shared.rows()) Files.copy(shared.csv(), csv);
+            else try (var input = CsvFiles.reader(shared.csv(), true);
+                      var output = CsvFiles.writer(csv, shared.columns().stream().map(Column::name).toList())) {
+                long copied = 0;
+                for (var row : input) { if (copied++ >= rows) break; output.printRecord(CsvFiles.values(row)); }
+            }
+        }
+        Path sql = directory.resolve(rule.id + ".sql"), metadata = directory.resolve(rule.id + ".md");
+        if (mode != ExportMode.NONE) Files.writeString(sql, rule.text.strip() + System.lineSeparator());
+        writeMetadata(rule, rows, partial, shared.millis(), shared.columns(), mode, metadata, shared.id());
+        List<Path> files = new ArrayList<>();
+        if (mode == ExportMode.FULL) files.add(csv);
+        if (mode != ExportMode.NONE) files.add(sql);
+        files.add(metadata);
+        LOG.info("Query {} reused execution {}: rows={} partial={} export={}", rule.id, shared.id(), rows, partial, mode);
+        return new Result(rule.id, csv, shared.columns(), rows, partial, shared.millis(), List.copyOf(files));
+    }
+
+    static long effectiveLimit(Rules.Sql rule, long globalLimit) {
+        return globalLimit > 0 ? rule.maxRows == 0 ? globalLimit : Math.min(rule.maxRows, globalLimit) : rule.maxRows;
+    }
+    private static void writeMetadata(Rules.Sql rule, long rows, boolean partial, long millis, List<Column> columns,
+                                      ExportMode mode, Path meta, String reusedFrom) throws IOException {
         StringBuilder description = new StringBuilder("# Query " + rule.id + "\n\nDatasource: `" + rule.db + "`\n\nRows: "
-            + rows[0] + "\n\nStatus: " + (partial[0] ? "PARTIAL: row cap exceeded" : "COMPLETE")
-            + "\n\nElapsed: " + millis + " ms\n\n| Column | JDBC type |\n|---|---|\n");
+            + rows + "\n\nStatus: " + (partial ? "PARTIAL: row cap exceeded" : "COMPLETE")
+            + "\n\nElapsed: " + millis + " ms\n\nExport: " + mode.name().toLowerCase(Locale.ROOT)
+            + (mode == ExportMode.FULL ? "; complete query CSV retained." : "; query CSV is temporary comparison input, not exported.")
+            + "\n\nParameters: see PARAMETERS.csv.\n\n| Column | JDBC type |\n|---|---|\n");
         for (Column column : columns) description.append("| ").append(column.name().replace("|", "\\|"))
             .append(" | ").append(column.jdbcType()).append(" |\n");
         description.append("\nCSV: UTF-8, header row; unquoted \\N = NULL, quoted \\\"\\N\\\" = literal text.\n");
+        if (reusedFrom != null) description.append("\nReused execution: ").append(reusedFrom)
+            .append(". Elapsed time is shared query execution time, not an additional database query.\n");
         Files.writeString(meta, description);
-        return new Result(rule.id, csv, List.copyOf(columns), rows[0], partial[0], millis, List.of(csv, sqlFile, meta));
     }
     private static String value(ResultSet result, int index, int type) throws SQLException {
         if (type == Types.BINARY || type == Types.VARBINARY || type == Types.LONGVARBINARY || type == Types.BLOB) {

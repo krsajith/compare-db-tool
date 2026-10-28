@@ -100,7 +100,7 @@ class WorkflowTests {
               </compress>
             </rules>
             """);
-        Cli.Options options = new Cli.Options(); options.rules = xml; options.out = temp.resolve("out"); options.partitions = 4;
+        Cli.Options options = new Cli.Options(); options.rules = xml; options.out = temp.resolve("out"); options.partitions = 4; options.export = ExportMode.FULL;
         assertEquals(1, new Cli(settings).execute(options));
         Path run;
         try (var dirs = Files.list(options.out)) { run = dirs.findFirst().orElseThrow(); }
@@ -161,7 +161,7 @@ class WorkflowTests {
               </compress>
             </rules>
             """);
-        var options = new Cli.Options(); options.rules = xml; options.out = temp.resolve("continued"); options.partitions = 2;
+        var options = new Cli.Options(); options.rules = xml; options.out = temp.resolve("continued"); options.partitions = 2; options.export = ExportMode.FULL;
         assertEquals(2, new Cli(settings(seed())).execute(options));
         Path run;
         try (var dirs = Files.list(options.out)) { run = dirs.findFirst().orElseThrow(); }

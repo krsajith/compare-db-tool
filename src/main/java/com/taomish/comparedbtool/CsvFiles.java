@@ -26,6 +26,21 @@ public final class CsvFiles {
         record.forEach(result::add);
         return result;
     }
+    public static final class LimitedWriter implements AutoCloseable {
+        private final CSVPrinter printer;
+        private final long limit;
+        private long total, written;
+        public LimitedWriter(Path path, List<String> header, ExportMode mode, int sampleRows) throws IOException {
+            printer = mode == ExportMode.NONE ? null : writer(path, header);
+            limit = mode == ExportMode.FULL ? Long.MAX_VALUE : mode == ExportMode.NONE ? 0 : sampleRows;
+        }
+        public void printRecord(List<String> values) throws IOException {
+            total++;
+            if (written < limit) { printer.printRecord(values); written++; }
+        }
+        public String showing() { return "showing " + written + " of " + total; }
+        @Override public void close() throws IOException { if (printer != null) printer.close(); }
+    }
     public static void deleteTree(Path root) throws IOException {
         if (!Files.exists(root)) return;
         try (var paths = Files.walk(root)) {

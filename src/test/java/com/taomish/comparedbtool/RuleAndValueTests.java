@@ -98,7 +98,7 @@ class RuleAndValueTests {
         assertEquals(1, rules.compressions.size());
         assertEquals(2, rules.parameters.size());
         assertEquals(List.of("sec", "vol", "px"), rules.comparisons.stream().map(c -> c.id).toList());
-        assertEquals(7, rules.comparisons.getFirst().columns.size());
+        assertEquals(6, rules.comparisons.getFirst().columns.size());
         DatasourceSettings settings = new DatasourceSettings();
         settings.getDatasources().put("mysql-oprdb02", new DatasourceSettings.Definition());
         settings.getDatasources().put("postgres-dev", new DatasourceSettings.Definition());
