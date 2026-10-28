@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SIP / CM OR EUR parity: new GRASA PnL is ~113.8x legacy (SIP_OR) although lots, prices and vols match. The report money multiplier is
+     lot_mult1 * curr_mult1 (* constant_curr_mult for 'division' products only; MATLAB generate_pricing_views_grasa.m 225-243).
+     Compare legacy cache vs PG cache for the SIP deals: product_code, lots and the three multipliers per trade. Read-only. -->
+<rules name="grasa-sip-mult-cfs">
+    <parameters>
+        <param name="bu" type="string" value="CFS"/>
+        <param name="client" type="string" value="SIP"/>
+    </parameters>
+    <sql id="old-cache" db="mysql-oprdb02" timeout="300" fetchSize="2000">
+        <![CDATA[
+            SELECT trade_id, product_code, security_id, contract_month, active_lots, lot_mult1, curr_mult1, nc_factor1
+            FROM dbsystemuat.helper_sensitivity_report_view_cache_table_cfs
+            WHERE SUBSTRING(contract_number, 1, 3) = :client AND product_code IN ('CM OR', 'CM OR EUR')
+        ]]>
+    </sql>
+    <sql id="new-cache" db="postgres-dev" timeout="300" fetchSize="2000">
+        <![CDATA[
+            SELECT trade_id, product_code, security_id, contract_month, active_lots, lot_mult1, curr_mult1, nc_factor1
+            FROM opera.helper_sensitivity_report_view_cache_table
+            WHERE tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1)
+              AND upper(trim(business_unit)) = :bu
+              AND upper(substring(contract_number, 1, 3)) = :client AND product_code IN ('CM OR', 'CM OR EUR')
+        ]]>
+    </sql>
+    <compare id="cache" source="old-cache" target="new-cache">
+        <key columns="trade_id"/>
+        <column name="active_lots" absTol="0.000001"/>
+        <column name="lot_mult1" absTol="0.000001"/>
+        <column name="curr_mult1" absTol="0.000001"/>
+        <column name="nc_factor1" absTol="0.000001"/>
+        <breakdown columns="product_code,contract_month" top="12"/>
+    </compare>
+    <compress id="bundle" file="grasa-sip-mult-cfs.zip"><include ref="cache"/></compress>
+</rules>
