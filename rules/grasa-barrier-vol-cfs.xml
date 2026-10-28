@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Rule H: why is sigma NaN/0 for the barrier legs of the 16 failing pairs? Mirrors GrasaPricingRepository.getInputs + interpolateMissingVols:
+     p1_vol = surface vol at strike1 for the leg's call/put side (mapping table), else overlay (calculated_settle_vol_table), else interpolation on that side's curve.
+     The barrier pricer needs sigma > 0 (grasa-pricer.js:49-50); a NaN sigma (no vol) throws, legacy masks the leg (Idx_P1_Vol = ~isnan).
+     Per pair + derivative_type: legs, strike1 null, no call/put mapping, vol1_id null, surface rows on the leg's side, exact strike hit, overlay, and legs with NO usable vol. Read-only, postgres-dev. -->
+<rules name="grasa-barrier-vol-cfs">
+    <parameters>
+        <param name="bu" type="string" value="CFS"/>
+    </parameters>
+    <sql id="barrier-vol" db="postgres-dev" timeout="900">
+        <![CDATA[
+            WITH pairs(client, product) AS (VALUES
+                ('ACM','CM CRD'),
+                ('ACM','CM CT'),
+                ('AMC','CM CT'),
+                ('ASI','CM CT'),
+                ('ASI','CM DF'),
+                ('BFA','CM CT'),
+                ('BOV','CM C'),
+                ('CPB','CM CT'),
+                ('FMP','CM CT'),
+                ('HSD','CM C'),
+                ('IOL','CM BO'),
+                ('IOL','CM RS'),
+                ('LIB','CM CT'),
+                ('MAO','CM W'),
+                ('ORM','CM C'),
+                ('SIP','CM OR EUR')),
+            vd AS (SELECT value_date FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1),
+            sec AS (
+                SELECT DISTINCT p.client, p.product, c.security_id
+                FROM opera.helper_sensitivity_report_view_cache_table c
+                JOIN pairs p ON upper(substring(c.contract_number, 1, 3)) = upper(p.client)
+                            AND upper(trim(c.product_code)) = upper(trim(p.product))
+                WHERE upper(trim(c.business_unit)) = :bu),
+            leg AS (
+                SELECT s.client, s.product, m.security_id, m.derivative_type, m.strike1, m.vol1_id,
+                       CASE WHEN lower(m.derivative_type) LIKE '%call%' THEN 'C' ELSE 'P' END AS side,
+                       (SELECT upper(cpm.call_put_id) FROM opera.derivative_type_call_put_id_mapping_table cpm
+                         WHERE upper(cpm.derivative_type) = upper(m.derivative_type) LIMIT 1) AS mapped_side
+                FROM sec s
+                JOIN opera.cloned_security_info_table m ON m.security_id = s.security_id AND upper(m.business_unit) = :bu
+                WHERE m.status = 'Active' AND lower(m.derivative_type) LIKE 'amer%'
+                  AND m.maturity_date > (SELECT value_date FROM vd)),
+            chk AS (
+                SELECT l.*,
+                       (SELECT COUNT(*) FROM opera.settlement_vol_surf_table sv
+                         WHERE sv.vol_id = l.vol1_id AND sv.value_date = (SELECT value_date FROM vd) AND upper(sv.call_put_id) = l.side) AS side_rows,
+                       EXISTS (SELECT 1 FROM opera.settlement_vol_surf_table sv
+                         WHERE sv.vol_id = l.vol1_id AND sv.value_date = (SELECT value_date FROM vd)
+                           AND sv.strike = l.strike1 AND upper(sv.call_put_id) = l.mapped_side) AS exact_hit,
+                       EXISTS (SELECT 1 FROM opera.calculated_settle_vol_table cv
+                         WHERE cv.security_id = l.security_id AND upper(cv.business_unit) = :bu AND cv.p1_vol > 0) AS overlay
+                FROM leg l)
+            SELECT client, product, derivative_type, COUNT(*) AS legs,
+                   COUNT(*) FILTER (WHERE strike1 IS NULL) AS strike1_null,
+                   COUNT(*) FILTER (WHERE mapped_side IS NULL) AS no_cp_mapping,
+                   COUNT(*) FILTER (WHERE vol1_id IS NULL) AS vol1_null,
+                   COUNT(*) FILTER (WHERE side_rows = 0) AS no_rows_on_side,
+                   COUNT(*) FILTER (WHERE exact_hit) AS exact_strike_hit,
+                   COUNT(*) FILTER (WHERE overlay) AS has_overlay,
+                   COUNT(*) FILTER (WHERE NOT exact_hit AND NOT overlay AND (strike1 IS NULL OR vol1_id IS NULL OR side_rows = 0)) AS no_usable_vol,
+                   MIN(security_id) FILTER (WHERE NOT exact_hit AND NOT overlay AND (strike1 IS NULL OR vol1_id IS NULL OR side_rows = 0)) AS sample_bad_security
+            FROM chk
+            GROUP BY client, product, derivative_type
+            ORDER BY no_usable_vol DESC, client, product, derivative_type
+        ]]>
+    </sql>
+    <compress id="bundle" file="grasa-barrier-vol-cfs.zip"><include ref="barrier-vol"/></compress>
+</rules>
