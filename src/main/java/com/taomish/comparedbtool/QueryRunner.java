@@ -84,6 +84,10 @@ public final class QueryRunner implements AutoCloseable {
     }
 
     public Result run(Rules.Sql rule, Map<String, Object> parameters, long globalLimit, Path directory) throws IOException {
+        return run(rule, parameters, globalLimit, directory, ExportMode.FULL);
+    }
+    public Result run(Rules.Sql rule, Map<String, Object> parameters, long globalLimit, Path directory, ExportMode defaultMode) throws IOException {
+        ExportMode mode = ExportMode.resolve(rule.export, defaultMode);
         String sql = SqlGuard.validate(rule.text);
         // Resolve all parameters before opening a database connection.
         validateParameters(rule, parameters);
@@ -92,10 +96,11 @@ public final class QueryRunner implements AutoCloseable {
         final long limit = cap;
         LOG.debug("Query={} datasource={} timeoutSeconds={} fetchSize={} rowLimit={} parameterNames={}",
             rule.id, rule.db, rule.timeout, rule.fetchSize, limit, parameters.keySet());
-        Path csv = directory.resolve(rule.id + ".csv");
+        Path csv = mode == ExportMode.FULL ? directory.resolve(rule.id + ".csv")
+            : directory.resolve(".work").resolve("queries").resolve(rule.id + ".csv");
         Path sqlFile = directory.resolve(rule.id + ".sql");
         Path meta = directory.resolve(rule.id + ".md");
-        Files.writeString(sqlFile, rule.text.strip() + System.lineSeparator());
+        if (mode != ExportMode.NONE) Files.writeString(sqlFile, rule.text.strip() + System.lineSeparator());
         long start = System.nanoTime();
         List<Column> columns = new ArrayList<>();
         long[] rows = {0};
@@ -145,12 +150,18 @@ public final class QueryRunner implements AutoCloseable {
         LOG.info("Query {} export complete: rows={} elapsedMs={} CSV={}", rule.id, rows[0], millis, csv);
         StringBuilder description = new StringBuilder("# Query " + rule.id + "\n\nDatasource: `" + rule.db + "`\n\nRows: "
             + rows[0] + "\n\nStatus: " + (partial[0] ? "PARTIAL: row cap exceeded" : "COMPLETE")
-            + "\n\nElapsed: " + millis + " ms\n\n| Column | JDBC type |\n|---|---|\n");
+            + "\n\nElapsed: " + millis + " ms\n\nExport: " + mode.name().toLowerCase(Locale.ROOT)
+            + (mode == ExportMode.FULL ? "; complete query CSV retained." : "; query CSV is temporary comparison input, not exported.")
+            + "\n\nParameters: see PARAMETERS.csv.\n\n| Column | JDBC type |\n|---|---|\n");
         for (Column column : columns) description.append("| ").append(column.name().replace("|", "\\|"))
             .append(" | ").append(column.jdbcType()).append(" |\n");
         description.append("\nCSV: UTF-8, header row; unquoted \\N = NULL, quoted \\\"\\N\\\" = literal text.\n");
         Files.writeString(meta, description);
-        return new Result(rule.id, csv, List.copyOf(columns), rows[0], partial[0], millis, List.of(csv, sqlFile, meta));
+        List<Path> files = new ArrayList<>();
+        if (mode == ExportMode.FULL) files.add(csv);
+        if (mode != ExportMode.NONE) files.add(sqlFile);
+        files.add(meta);
+        return new Result(rule.id, csv, List.copyOf(columns), rows[0], partial[0], millis, List.copyOf(files));
     }
     private static String value(ResultSet result, int index, int type) throws SQLException {
         if (type == Types.BINARY || type == Types.VARBINARY || type == Types.LONGVARBINARY || type == Types.BLOB) {

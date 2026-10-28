@@ -7,7 +7,59 @@ two instances of the same database type, or different database types. MySQL and 
 The Spring Boot version is 4.1.2. Java source/bytecode targets 21; the launcher uses your JAVA_HOME or PATH and can
 run on a newer JDK, including Java 27. The runtime Java and Spring Boot versions are recorded in the log at startup.
 
-## Build and start
+## Smart exports and mail bundles
+
+The new default is **sample**, changing output size only. Every fetched row is still compared; matched, equal,
+different, missing-row, duplicate and classification counts are not sampled. Existing XML rules remain valid.
+
+| Mode | Published query output | Comparison output |
+|---|---|---|
+| `sample` (default) | SQL + row-count/timing/column metadata; no raw query CSV | At most 200 data records per CSV; exact totals in SUMMARY |
+| `none` | Row-count/timing metadata | Counts, breakdowns and summaries; no comparison CSVs |
+| `full` | Complete query CSV + SQL + metadata | All missing/duplicate records and all changed cells, including accepted changes |
+
+Use `--export none|sample|full` and `--sample-rows N` (default 200). Per-rule `export="..."` on `<sql>` or `<compare>`
+overrides the CLI default. Accepted/tolerated changes remain counted by column/class in every mode, but individual
+accepted cells are exported only in full mode. Sample limits are data records, excluding the CSV header. Each summary
+reports the true total, for example `showing 200 of 9251`. Zero sample rows produces header-only CSVs.
+
+```powershell
+.\compare.ps1 --rules rules\grasa-backup-cfs.xml
+.\compare.ps1 --rules rules\grasa-backup-cfs.xml --export none
+.\compare.ps1 --rules rules\grasa-backup-cfs.xml --export full
+.\compare.ps1 --rules rules\grasa-backup-cfs.xml --sample-rows 50
+```
+
+Comparison inputs are streamed to private temporary CSVs under the run's `.work/` directory, including in none/sample
+mode. These are not published or zipped and are removed when the run finishes. This bounds comparison memory without
+dropping source data. `none` still includes run parameters/rules and failure diagnostics needed to interpret counts.
+Failed-query SQL remains available for manual follow-up regardless of export mode.
+
+ZIP selection continues to use `<include ref="..."/>`, but only the chosen export artifacts are added. The run
+summary/rules/parameters/manual-actions and comparison summaries are included along with the capped samples.
+The CLI prints each ZIP's byte size. Under 1 MB is the target for the normal GRASA backup mail bundle; actual size
+depends on row width, rules and configured samples and cannot be measured here without the remote data.
+
+### Breakdown tables
+
+Add several breakdowns to a comparison without changing its matching key:
+
+```xml
+<compare id="security-check" source="legacy-sec" target="now-sec">
+    <key columns="security_id"/>
+    <breakdown columns="product_code,contract_month" top="15"/>
+    <breakdown columns="product_code" top="10"/>
+</compare>
+```
+
+Tables group only-source rows, only-target rows and matched rows with unaccepted changes. Different rows use source
+values and count once even when several cells differ. Tables show the top N groups plus `other`; their totals cover
+all groups. Missing breakdown columns are explicitly reported and grouped as `(missing column)`, not fatal errors.
+Column mappings are honored. Counts are accumulated during the existing comparison pass, without rereading result
+rows. Breakdown tables appear before classification detail in each comparison's 8 KB summary. Extremely large summaries
+are explicitly truncated; reduce the number of breakdowns/top values when needed.
+
+## Build commands
 
 From PowerShell:
 
@@ -24,8 +76,8 @@ $env:Path = "$env:JAVA_HOME\bin;$env:Path"
 `clean package` runs the tests and builds `target\compare-db-tool.jar`. Tests use only isolated in-memory H2 databases.
 They never use the remote datasource definitions. To run tests separately: `.\mvnw.cmd test`.
 
-The code and tests were written without executing a build/test after the user's instruction to leave execution to them.
-Remote connectivity, JDBC streaming and real query results remain unverified.
+Smart output changes are verified with the isolated H2 test suite and a JDK 21 `clean package` build.
+Remote connectivity, remote JDBC streaming and real query results remain unverified.
 
 ## External datasource file
 

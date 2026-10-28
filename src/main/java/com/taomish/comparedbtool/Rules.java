@@ -3,6 +3,7 @@ package com.taomish.comparedbtool;
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
+import com.fasterxml.jackson.annotation.JsonMerge;
 import tools.jackson.dataformat.xml.annotation.JacksonXmlElementWrapper;
 import tools.jackson.dataformat.xml.annotation.JacksonXmlProperty;
 import tools.jackson.dataformat.xml.annotation.JacksonXmlRootElement;
@@ -33,15 +34,23 @@ public class Rules {
         @JacksonXmlProperty(isAttribute = true) public int timeout = 120;
         @JacksonXmlProperty(isAttribute = true) public int fetchSize = 1000;
         @JacksonXmlProperty(isAttribute = true) public long maxRows;
+        @JacksonXmlProperty(isAttribute = true) public String export;
         @JacksonXmlText public String text;
     }
     public static class Compare {
         @JacksonXmlProperty(isAttribute = true) public String id;
         @JacksonXmlProperty(isAttribute = true) public String source;
         @JacksonXmlProperty(isAttribute = true) public String target;
+        @JacksonXmlProperty(isAttribute = true) public String export;
         public Key key;
         @JacksonXmlElementWrapper(useWrapping = false)
-        @JacksonXmlProperty(localName = "column") public List<Column> columns = new ArrayList<>();
+        @JsonMerge @JacksonXmlProperty(localName = "column") public List<Column> columns = new ArrayList<>();
+        @JacksonXmlElementWrapper(useWrapping = false)
+        @JsonMerge @JacksonXmlProperty(localName = "breakdown") public List<Breakdown> breakdowns = new ArrayList<>();
+    }
+    public static class Breakdown {
+        @JacksonXmlProperty(isAttribute = true) public String columns;
+        @JacksonXmlProperty(isAttribute = true) public int top = 15;
     }
     public static class Key {
         @JacksonXmlProperty(isAttribute = true) public String columns;

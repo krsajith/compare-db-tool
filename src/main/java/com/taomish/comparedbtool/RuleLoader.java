@@ -125,6 +125,7 @@ public final class RuleLoader {
         Map<String, Rules.Sql> queries = new HashMap<>();
         for (Rules.Sql sql : rules.queries) {
             id(sql.id, ids);
+            ExportMode.resolve(sql.export, ExportMode.SAMPLE);
             if (sql.db == null || sql.db.isBlank()) throw new ToolException("Query " + sql.id + " needs a datasource name.");
             if (checkQueries && !settings.getDatasources().containsKey(sql.db))
                 throw new ToolException("Unknown datasource for query " + sql.id + ": " + sql.db);
@@ -138,6 +139,13 @@ public final class RuleLoader {
         if (rules.comparisons == null) rules.comparisons = new ArrayList<>();
         for (Rules.Compare compare : rules.comparisons) {
             id(compare.id, ids);
+            ExportMode.resolve(compare.export, ExportMode.SAMPLE);
+            if (compare.breakdowns == null) compare.breakdowns = new ArrayList<>();
+            for (Rules.Breakdown breakdown : compare.breakdowns) {
+                if (breakdown.columns == null || breakdown.columns.isBlank() || breakdown.top < 1 || breakdown.top > 100
+                    || Arrays.stream(breakdown.columns.split(",", -1)).anyMatch(String::isBlank))
+                    throw new ToolException("Breakdown needs nonempty columns and top between 1 and 100: " + compare.id);
+            }
             if (!queries.containsKey(compare.source) || !queries.containsKey(compare.target))
                 throw new ToolException("Comparison '" + compare.id + "' references unknown SQL id(s): source='"
                     + compare.source + "', target='" + compare.target + "'. Available SQL ids: " + new TreeSet<>(queries.keySet()));

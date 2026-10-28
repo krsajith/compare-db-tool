@@ -25,6 +25,8 @@ public final class Cli {
         --param NAME=VALUE    Override a declared XML parameter; repeat as needed
         --limit N             Optional row cap per query; capped results are PARTIAL
         --partitions N        Disk partitions per comparison (default: 64, range 1..256)
+        --export MODE         none, sample (default), or full; XML export overrides this
+        --sample-rows N       Maximum records per comparison sample CSV (default: 200)
         --allow-prod          Permit datasources marked prod=true or named with 'prod'
         --help                Show this help
 
@@ -39,6 +41,8 @@ public final class Cli {
         public Path out = Path.of("out");
         public Map<String, String> parameters = new LinkedHashMap<>();
         public int partitions = 64;
+        public ExportMode export = ExportMode.SAMPLE;
+        public int sampleRows = 200;
         public long limit;
         public boolean validate, datasources, allowProd, help;
     }
@@ -56,7 +60,7 @@ public final class Cli {
             }
             int equal = argument.indexOf('=');
             String name = equal > 0 ? argument.substring(0, equal) : argument;
-            if (Set.of("--rules", "--out", "--param", "--limit", "--partitions").contains(name)) {
+            if (Set.of("--rules", "--out", "--param", "--limit", "--partitions", "--export", "--sample-rows").contains(name)) {
                 String value;
                 if (equal > 0) value = argument.substring(equal + 1);
                 else {
@@ -69,6 +73,8 @@ public final class Cli {
                         case "--out" -> options.out = Path.of(value);
                         case "--limit" -> options.limit = Long.parseLong(value);
                         case "--partitions" -> options.partitions = Integer.parseInt(value);
+                        case "--export" -> options.export = ExportMode.parse(value);
+                        case "--sample-rows" -> options.sampleRows = Integer.parseInt(value);
                         case "--param" -> {
                             int separator = value.indexOf('=');
                             if (separator <= 0) throw new ToolException("Use --param name=value.");
@@ -88,8 +94,8 @@ public final class Cli {
                 }
             }
         }
-        if (options.limit < 0 || options.partitions < 1 || options.partitions > 256)
-            throw new ToolException("limit must be nonnegative and partitions must be between 1 and 256.");
+        if (options.limit < 0 || options.partitions < 1 || options.partitions > 256 || options.sampleRows < 0)
+            throw new ToolException("limit/sample-rows must be nonnegative and partitions must be between 1 and 256.");
         if (!options.help && !options.datasources && options.rules == null) throw new ToolException("Supply --rules FILE.");
         return options;
     }
@@ -130,12 +136,13 @@ public final class Cli {
             for (Rules.Sql query : rules.queries) {
                 LOG.info("Starting query {} on {} (timeout {} s)...", query.id, query.db, query.timeout);
                 Path sqlFile = directory.resolve(query.id + ".sql");
-                Files.writeString(sqlFile, Objects.toString(query.text, ""));
+                if (ExportMode.resolve(query.export, options.export) != ExportMode.NONE)
+                    Files.writeString(sqlFile, Objects.toString(query.text, ""));
                 boolean permitted = false;
                 try {
                     checkQuery(query, parameters, options.allowProd);
                     permitted = true;
-                    QueryRunner.Result result = runner.run(query, parameters, options.limit, directory);
+                    QueryRunner.Result result = runner.run(query, parameters, options.limit, directory, options.export);
                     queries.put(query.id, result); artifacts.put(query.id, result.files());
                     if (result.partial()) failures.put(query.id, "PARTIAL query on " + query.db
                         + ". Rerun without the row cap; do not compare this incomplete extract.");
@@ -148,6 +155,7 @@ public final class Cli {
                     String detail = "Query " + query.id + " on " + query.db + " " + (permitted ? "FAILED" : "BLOCKED")
                         + ".\n\n" + reason + "\n\n" + action;
                     failures.put(query.id, detail);
+                    if (!Files.exists(sqlFile)) Files.writeString(sqlFile, Objects.toString(query.text, ""));
                     Path note = manualDirectory.resolve(query.id + ".md");
                     Files.writeString(note, "# " + query.id + "\n\n" + detail + "\n");
                     List<Path> saved = new ArrayList<>(List.of(sqlFile, note));
@@ -167,7 +175,7 @@ public final class Cli {
                     if (source == null || target == null || source.partial() || target.partial())
                         throw new ToolException("Comparison skipped: source " + compare.source + " or target " + compare.target
                             + " failed, was blocked, or is PARTIAL. Resolve those queries and rerun this comparison.");
-                    var result = comparator.run(compare, source, target, directory);
+                    var result = comparator.run(compare, source, target, directory, options.export, options.sampleRows);
                     comparisons.add(result); artifacts.put(compare.id, result.files());
                     LOG.info("Compare {}: {}", compare.id, result.headline());
                 } catch (Exception e) {
@@ -185,7 +193,8 @@ public final class Cli {
             int exit = partial || !failures.isEmpty() ? 2 : differs ? 1 : 0;
             StringBuilder summary = new StringBuilder("# " + rules.name + "\n\nStatus: "
                 + (!failures.isEmpty() ? "INCOMPLETE / MANUAL ACTIONS REQUIRED" : partial ? "PARTIAL" : differs ? "DIFFERENCES" : "COMPLETE / EQUAL") + "; exit code: " + exit
-                + "\n\nQuery files are UTF-8 CSV with headers. Unquoted \\N means NULL. SQL templates and supplied parameters are included; datasource credentials are excluded.\n\n"
+                + "\n\nExport default: " + options.export.name().toLowerCase(Locale.ROOT) + "; sample cap: " + options.sampleRows
+                + ". Full counts always include all fetched rows; sampling never limits comparison accuracy. Query CSVs are exported only in full mode.\n\n"
                 + "| Query | Datasource | Rows | Time ms | Status |\n|---|---|---|---|---|\n");
             for (Rules.Sql query : rules.queries) {
                 var r = queries.get(query.id);
@@ -211,7 +220,7 @@ public final class Cli {
                 LOG.info("Creating ZIP {} with {} files", compression.file, included.size());
                 try {
                     zip(directory, directory.resolve(compression.file), included);
-                    LOG.info("ZIP: {}", directory.resolve(compression.file));
+                LOG.info("ZIP: {} ({} bytes)", directory.resolve(compression.file), Files.size(directory.resolve(compression.file)));
                 } catch (IOException e) {
                     LOG.error("ZIP {} failed; exported files remain available", compression.file, e);
                     failures.put(compression.id, "ZIP " + compression.file + " failed: " + failureReason(e)

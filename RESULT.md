@@ -1,5 +1,14 @@
 # Coding handoff
 
+## Smart output stage 1
+
+PASS: JDK 21 mvnw clean package, 36 tests, 0 failures/errors. Safe-config validation of grasa-backup-cfs.xml:
+11 queries, 7 comparisons, 1 ZIP; no source connections or private datasource file inspection.
+Added none/sample/full exports (default sample), capped comparison files with true totals, streaming breakdown counts,
+accepted-change aggregation, compact ZIP selection and byte-size reporting. Fixed a stale six-vs-seven assertion
+after the shipped GRASA rule changed. Full/none fixture counts/classifications match; synthetic mail ZIP is below 1 MB.
+Actual remote GRASA ZIP size remains unmeasured. Stage 2 follows in a separate commit.
+
 ## Logging update
 
 Execution now continues after per-query/comparison failures, retains successful CSVs, and produces MANUAL_ACTIONS.md

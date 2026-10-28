@@ -33,6 +33,11 @@ public final class ComparisonRunner {
     public ComparisonRunner(int partitions) { this.partitions = partitions; }
 
     public Result run(Rules.Compare rule, QueryRunner.Result source, QueryRunner.Result target, Path root) throws IOException {
+        return run(rule, source, target, root, ExportMode.FULL, 200);
+    }
+    public Result run(Rules.Compare rule, QueryRunner.Result source, QueryRunner.Result target, Path root,
+                      ExportMode defaultMode, int sampleRows) throws IOException {
+        ExportMode mode = ExportMode.resolve(rule.export, defaultMode);
         LOG.debug("Comparison={} sourceRows={} targetRows={} partitions={}", rule.id, source.rows(), target.rows(), partitions);
         List<String> keyNames = RuleLoader.keys(rule);
         List<Binding> bindings = bindings(rule, source, target);
@@ -60,15 +65,17 @@ public final class ComparisonRunner {
         long[] totals = new long[10]; // matched,equal,different,onlySource,onlyTarget,dupSource,dupTarget,ambiguous,badCells,accepted
         Map<Group, Long> groups = new TreeMap<>(Comparator.comparing(Group::column)
             .thenComparing(Group::classification).thenComparing(Group::accepted));
+        Breakdowns breakdowns = new Breakdowns(rule, source, target);
+        Map<String, String> exports = new LinkedHashMap<>();
         try {
             LOG.debug("Partitioning source CSV for comparison {}", rule.id);
             partition(source, keyBindings, true, work.resolve("source"));
             LOG.debug("Partitioning target CSV for comparison {}", rule.id);
             partition(target, keyBindings, false, work.resolve("target"));
-            try (CSVPrinter diff = CsvFiles.writer(cells, concat(keyHeader, List.of("column", "source", "target", "classification", "accepted", "absolute_difference", "relative_difference")));
-                 CSVPrinter left = CsvFiles.writer(onlySource, source.columns().stream().map(QueryRunner.Column::name).toList());
-                 CSVPrinter right = CsvFiles.writer(onlyTarget, target.columns().stream().map(QueryRunner.Column::name).toList());
-                 CSVPrinter dup = CsvFiles.writer(duplicates, concat(keyHeader, List.of("side", "row_count")))) {
+            try (var diff = new CsvFiles.LimitedWriter(cells, concat(keyHeader, List.of("column", "source", "target", "classification", "accepted", "absolute_difference", "relative_difference")), mode, sampleRows);
+                 var left = new CsvFiles.LimitedWriter(onlySource, source.columns().stream().map(QueryRunner.Column::name).toList(), mode, sampleRows);
+                 var right = new CsvFiles.LimitedWriter(onlyTarget, target.columns().stream().map(QueryRunner.Column::name).toList(), mode, sampleRows);
+                 var dup = new CsvFiles.LimitedWriter(duplicates, concat(keyHeader, List.of("side", "row_count")), mode, sampleRows)) {
                 for (int part = 0; part < partitions; part++) {
                     Map<Key, Bucket> a = load(work.resolve("source").resolve(part + ".csv"), keyBindings, true);
                     Map<Key, Bucket> b = load(work.resolve("target").resolve(part + ".csv"), keyBindings, false);
@@ -86,8 +93,8 @@ public final class ComparisonRunner {
                         }
                         // Duplicate keys are ambiguous, never silently paired or counted as equal.
                         if (duplicate) { totals[7]++; continue; }
-                        if (x == null) { totals[4]++; right.printRecord(y.first); continue; }
-                        if (y == null) { totals[3]++; left.printRecord(x.first); continue; }
+                        if (x == null) { totals[4]++; right.printRecord(y.first); breakdowns.add("only-target", y.first, false); continue; }
+                        if (y == null) { totals[3]++; left.printRecord(x.first); breakdowns.add("only-source", x.first, true); continue; }
                         totals[0]++;
                         boolean different = false;
                         for (Binding binding : bindings) {
@@ -96,12 +103,15 @@ public final class ComparisonRunner {
                             if (change == null) continue;
                             if (change.accepted()) totals[9]++; else { totals[8]++; different = true; }
                             groups.merge(new Group(binding.name(), change.classification(), change.accepted()), 1L, Long::sum);
-                            diff.printRecord(concat(key.values(), Arrays.asList(binding.name(), lv, rv, change.classification(),
-                                String.valueOf(change.accepted()), change.absoluteDifference(), change.relativeDifference())));
+                            if (mode == ExportMode.FULL || !change.accepted())
+                                diff.printRecord(concat(key.values(), Arrays.asList(binding.name(), lv, rv, change.classification(),
+                                    String.valueOf(change.accepted()), change.absoluteDifference(), change.relativeDifference())));
                         }
-                        if (different) totals[2]++; else totals[1]++;
+                        if (different) { totals[2]++; breakdowns.add("different", x.first, true); } else totals[1]++;
                     }
                 }
+                exports.put("differences.csv", diff.showing()); exports.put("only-source.csv", left.showing());
+                exports.put("only-target.csv", right.showing()); exports.put("duplicates.csv", dup.showing());
             }
         } finally {
             try { CsvFiles.deleteTree(work); }
@@ -115,6 +125,10 @@ public final class ComparisonRunner {
             + "` (" + source.rows() + " rows); target: `" + rule.target + "` (" + target.rows() + " rows).\n\n"
             + "Keys: " + String.join(", ", keyNames) + ". Ambiguous keys excluded from row matching: " + totals[7]
             + ".\n\nDifferent cells: " + totals[8] + "; accepted representation/tolerance changes: " + totals[9] + ".\n\n");
+        breakdowns.appendTo(markdown);
+        markdown.append("\nExport mode: ").append(mode.name().toLowerCase(Locale.ROOT)).append(".\n\n| File | Exported / true total |\n|---|---|\n");
+        exports.forEach((file, showing) -> markdown.append("| ").append(file).append(" | ").append(showing).append(" |\n"));
+        if (mode != ExportMode.FULL) markdown.append("\nAccepted changes are counted by column/class below, not exported as individual cells.\n\n");
         if (schemaDifferent) markdown.append("Columns only in source: ").append(sourceExtra).append("\n\nColumns only in target: ")
             .append(targetExtra).append("\n\n");
         markdown.append("| Column | Class | Accepted | Cells |\n|---|---|---|---|\n");
@@ -125,12 +139,15 @@ public final class ComparisonRunner {
             markdown.append("| ").append(label.column().replace("|", "\\|")).append(" | ").append(label.classification())
                 .append(" | ").append(label.accepted()).append(" | ").append(group.getValue()).append(" |\n");
         }
-        markdown.append("\n`differences.csv` includes accepted changes; only accepted=false cells count as failures. "
+        markdown.append("\nOnly accepted=false cells count as failures. "
             + "Relative difference = abs(source-target) / max(abs(source),abs(target)). "
             + "Duplicate keys are listed separately; their complete rows remain in the original query CSVs.\n");
         writeSmallSummary(summary, markdown.toString());
+        List<Path> files = new ArrayList<>();
+        if (mode != ExportMode.NONE) files.addAll(List.of(cells, onlySource, onlyTarget, duplicates));
+        files.add(summary);
         return new Result(rule.id, totals[0], totals[1], totals[2], totals[3], totals[4], totals[5], totals[6], totals[7],
-            totals[8], totals[9], schemaDifferent, partial, List.of(cells, onlySource, onlyTarget, duplicates, summary), headline);
+            totals[8], totals[9], schemaDifferent, partial, List.copyOf(files), headline);
     }
 
     private List<Binding> bindings(Rules.Compare compare, QueryRunner.Result a, QueryRunner.Result b) {
