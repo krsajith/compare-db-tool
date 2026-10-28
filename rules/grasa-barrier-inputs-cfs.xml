@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Rule G: the 16 pairs that fail in the Node pricer ("GRASA barrier pricing requires positive underlying, strike, barrier and volatility",
+     grasa-pricer.js:49-50). Lists live American-barrier securities of those pairs grouped by which input is not positive:
+     F (settle price of underlying1_id on the value date), K (strike), H (barrier1_level), sigma (surface rows for vol1_id on the value date).
+     Legacy MATLAB (derivativepricer.m ~1352-1730) masks such rows out (isnan / ==0 checks) and wraps each family in try/catch instead of aborting. Read-only, postgres-dev. -->
+<rules name="grasa-barrier-inputs-cfs">
+    <parameters>
+        <param name="bu" type="string" value="CFS"/>
+    </parameters>
+    <sql id="barrier-inputs" db="postgres-dev" timeout="900">
+        <![CDATA[
+            WITH pairs(client, product) AS (VALUES
+                ('ACM','CM CRD'),
+                ('ACM','CM CT'),
+                ('AMC','CM CT'),
+                ('ASI','CM CT'),
+                ('ASI','CM DF'),
+                ('BFA','CM CT'),
+                ('BOV','CM C'),
+                ('CPB','CM CT'),
+                ('FMP','CM CT'),
+                ('HSD','CM C'),
+                ('IOL','CM BO'),
+                ('IOL','CM RS'),
+                ('LIB','CM CT'),
+                ('MAO','CM W'),
+                ('ORM','CM C'),
+                ('SIP','CM OR EUR')),
+            vd AS (SELECT value_date FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1),
+            sec AS (
+                SELECT DISTINCT p.client, p.product, c.security_id
+                FROM opera.helper_sensitivity_report_view_cache_table c
+                JOIN pairs p ON upper(substring(c.contract_number, 1, 3)) = upper(p.client)
+                            AND upper(trim(c.product_code)) = upper(trim(p.product))
+                WHERE upper(trim(c.business_unit)) = :bu),
+            leg AS (
+                SELECT s.client, s.product, m.security_id, m.derivative_type, m.strike, m.barrier1_level, m.barrier1_rebate, m.maturity_date,
+                       m.vol1_id, m.underlying1_id,
+                       (SELECT u.settle_value FROM opera.underlying_settle_value_table u
+                         WHERE u.underlying_id = m.underlying1_id AND u.value_date = (SELECT value_date FROM vd)) AS settle_px,
+                       (SELECT COUNT(*) FROM opera.settlement_vol_surf_table sv
+                         WHERE sv.vol_id = m.vol1_id AND sv.value_date = (SELECT value_date FROM vd)) AS surface_rows
+                FROM sec s
+                JOIN opera.cloned_security_info_table m ON m.security_id = s.security_id AND upper(m.business_unit) = :bu
+                WHERE m.status = 'Active' AND lower(m.derivative_type) LIKE 'amer%'
+                  AND m.maturity_date > (SELECT value_date FROM vd))
+            SELECT client, product, derivative_type,
+                   COUNT(*) AS legs,
+                   COUNT(*) FILTER (WHERE settle_px IS NULL OR settle_px <= 0) AS px_not_positive,
+                   COUNT(*) FILTER (WHERE strike IS NULL OR strike <= 0) AS strike_not_positive,
+                   COUNT(*) FILTER (WHERE barrier1_level IS NULL OR barrier1_level <= 0) AS barrier_not_positive,
+                   COUNT(*) FILTER (WHERE vol1_id IS NULL) AS no_vol1,
+                   COUNT(*) FILTER (WHERE vol1_id IS NOT NULL AND surface_rows = 0) AS no_surface,
+                   MIN(security_id) FILTER (WHERE settle_px IS NULL OR settle_px <= 0 OR strike IS NULL OR strike <= 0
+                        OR barrier1_level IS NULL OR barrier1_level <= 0 OR vol1_id IS NULL OR surface_rows = 0) AS sample_bad_security
+            FROM leg
+            GROUP BY client, product, derivative_type
+            ORDER BY client, product, derivative_type
+        ]]>
+    </sql>
+    <compress id="bundle" file="grasa-barrier-inputs-cfs.zip"><include ref="barrier-inputs"/></compress>
+</rules>
