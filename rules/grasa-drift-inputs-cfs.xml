@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- The three small drifts (ACM/CM CT, IOL/CM BO ladder PnL <= 19 USD; PGE/CM S PIE 269 USD): compare the pricer INPUTS per security.
-     Legacy: input_security_settlement_value_cache_table_cfs (what MATLAB priced). New: the GrasaPricingRepository.getInputs query (copied, plus the
+     Legacy: input_security_settlement_value_cache_table_cfs, latest value_date in the table (the 01-Oct rows are not there: 0 rows for :cob on the first run); see legacy_cache_date in the old-in query. New: the GrasaPricingRepository.getInputs query (copied, plus the
      calculated_settle_vol overlay). Equal inputs => the difference is in the pricer/aggregation logic; different inputs => data/overlay.
      Securities = those of the 3 pairs in the helper cache. Read-only, key security_id. -->
 <rules name="grasa-drift-inputs-cfs">
@@ -10,10 +10,10 @@
     </parameters>
     <sql id="old-in" db="mysql-oprdb02" timeout="600" fetchSize="2000">
         <![CDATA[
-            SELECT security_id, opt_type, maturity, strike, strike1, vol1_id, p1_settleprice, p1_vol, rf_rate1, p1_div_yield,
+            SELECT security_id, value_date AS legacy_cache_date, opt_type, maturity, strike, strike1, vol1_id, p1_settleprice, p1_vol, rf_rate1, p1_div_yield,
                    tick_size, barrier1_level, barrier1_rebate, isbarrier1breached
             FROM dbsystemuat.input_security_settlement_value_cache_table_cfs
-            WHERE value_date = :cob AND security_id IN (
+            WHERE value_date = (SELECT MAX(value_date) FROM dbsystemuat.input_security_settlement_value_cache_table_cfs) AND security_id IN (
                 SELECT security_id FROM dbsystemuat.helper_sensitivity_report_view_cache_table_cfs
                 WHERE (SUBSTRING(contract_number, 1, 3) = 'ACM' AND product_code = 'CM CT')
                    OR (SUBSTRING(contract_number, 1, 3) = 'IOL' AND product_code = 'CM BO')
@@ -57,6 +57,7 @@
     </sql>
     <compare id="inputs" source="old-in" target="new-in">
         <key columns="security_id"/>
+        <column name="legacy_cache_date" ignore="true"/>
         <column name="opt_type" caseInsensitive="true"/>
         <column name="maturity" dateOnly="true"/>
         <column name="strike" absTol="0.000001"/>
