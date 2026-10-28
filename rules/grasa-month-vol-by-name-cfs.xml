@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- Rule F: 15 of the 38 futures-only product/months have no option security anywhere in the BU, so a lookup through securities cannot find a vol.
-     Test the naming convention instead: vol_id = product + ' ' + contract_month (whitespace-normalised, e.g. 'CM BO F27.F27').
+     Test the naming convention instead (legacy MATLAB keeps only the first two tokens of the product, so 'CM OR EUR' -> 'CM OR'): vol_id = product + ' ' + contract_month (whitespace-normalised, e.g. 'CM BO F27.F27').
      For each of the 38 combos list the vol_id(s) present in settlement_vol_surf_table on the value date. Read-only, postgres-dev. -->
 <rules name="grasa-month-vol-by-name-cfs">
     <parameters>
@@ -53,7 +53,7 @@
             FROM pm
             LEFT JOIN opera.settlement_vol_surf_table sv
                    ON sv.value_date = (SELECT value_date FROM vd)
-                  AND regexp_replace(sv.vol_id, '\s+', ' ', 'g') = pm.product || ' ' || pm.contract_month
+                  AND regexp_replace(sv.vol_id, '\s+', ' ', 'g') = split_part(pm.product, ' ', 1) || ' ' || split_part(pm.product, ' ', 2) || ' ' || pm.contract_month
             GROUP BY pm.product, pm.contract_month, sv.vol_id
             ORDER BY pm.product, pm.contract_month
         ]]>
