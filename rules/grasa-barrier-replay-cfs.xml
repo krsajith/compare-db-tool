@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Leg-level replay data for the drift pairs ACM/CM CT, IOL/CM BO (barrier legs) and PGE/CM S (control, vanilla only).
+     legacy-out : what the LEGACY pricer stored for each security on the COB (historical_security_settlement_value_table_cfs, PK security_id+value_date).
+     pg-inputs  : the inputs the NEW Node pricer gets for the same securities (same joins as GrasaPricingRepository.getInputs), plus the
+                  surface vols (exact strike / linear interpolation on the COB surface) so vol variants can be replayed offline.
+     analysis/parity-tool/barrier_replay.mjs prices every PG row with the real grasa-pricer.js and compares with legacy-out.
+     Read-only, export-only. Run: compare.ps1 with the rules file rules\grasa-barrier-replay-cfs.xml -->
+<rules name="grasa-barrier-replay-cfs">
+    <parameters>
+        <param name="bu" type="string" value="CFS"/>
+        <param name="cob" type="date" value="2026-10-01"/>
+    </parameters>
+    <sql id="legacy-out" db="mysql-oprdb02" timeout="900" fetchSize="2000">
+        <![CDATA[
+            SELECT h.security_id, h.value_date, h.settle_price, h.settle_delta_1, h.settle_gamma_11, h.settle_vega_1, h.settle_theta
+            FROM dbsystemuat.historical_security_settlement_value_table_cfs h
+            WHERE h.value_date = :cob AND h.security_id IN (
+                SELECT security_id FROM dbsystemuat.helper_sensitivity_report_view_cache_table_cfs
+                WHERE (SUBSTRING(contract_number, 1, 3) = 'ACM' AND product_code = 'CM CT')
+                   OR (SUBSTRING(contract_number, 1, 3) = 'IOL' AND product_code = 'CM BO')
+                   OR (SUBSTRING(contract_number, 1, 3) = 'PGE' AND product_code = 'CM S'))
+        ]]>
+    </sql>
+    <sql id="pg-inputs" db="postgres-dev" timeout="900" fetchSize="2000">
+        <![CDATA[
+            WITH vd AS (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1),
+            sec AS MATERIALIZED (
+                SELECT DISTINCT upper(substring(c.contract_number, 1, 3)) AS client, upper(trim(c.product_code)) AS product, c.security_id
+                FROM opera.helper_sensitivity_report_view_cache_table c
+                WHERE c.tenant_id = (SELECT tenant_id FROM vd) AND upper(trim(c.business_unit)) = :bu
+                  AND ((upper(substring(c.contract_number, 1, 3)) = 'ACM' AND upper(trim(c.product_code)) = 'CM CT')
+                    OR (upper(substring(c.contract_number, 1, 3)) = 'IOL' AND upper(trim(c.product_code)) = 'CM BO')
+                    OR (upper(substring(c.contract_number, 1, 3)) = 'PGE' AND upper(trim(c.product_code)) = 'CM S'))
+            ),
+            base AS (
+                SELECT sec.client, sec.product, si.security_id, si.derivative_type, si.maturity_date AS maturity, si.strike, si.strike1, si.vol1_id,
+                       upper(cpm.call_put_id) AS cp, u1.settle_value AS f, u1.risk_free_rate AS rf, u1.div_yield AS div_yield, pm.tick_size,
+                       si.barrier1_level, si.barrier1_rebate, bm.isbarrier1_breached AS breached,
+                       CASE WHEN cv.p1_vol > 0 THEN cv.p1_vol WHEN shared_cv.p1_vol > 0 THEN shared_cv.p1_vol END AS overlay_vol
+                FROM sec
+                JOIN opera.cloned_security_info_table si
+                  ON si.tenant_id = (SELECT tenant_id FROM vd) AND upper(si.business_unit) = :bu AND si.security_id = sec.security_id
+                LEFT JOIN opera.underlying_settle_value_table u1
+                  ON u1.tenant_id = si.tenant_id AND u1.underlying_id = si.underlying1_id AND u1.value_date = :cob
+                LEFT JOIN opera.derivative_type_call_put_id_mapping_table cpm ON upper(cpm.derivative_type) = upper(si.derivative_type)
+                LEFT JOIN opera.underlying_list_table ul ON ul.tenant_id = si.tenant_id AND ul.underlying_id = si.underlying1_id
+                LEFT JOIN opera.product_master_table pm ON pm.tenant_id = si.tenant_id AND pm.invenio_product_code = ul.invenio_product_code
+                LEFT JOIN LATERAL (SELECT max(b.isbarrier1_breached) AS isbarrier1_breached FROM opera.barrier_monitoring_table b
+                                    WHERE b.tenant_id = si.tenant_id AND b.business_unit = si.business_unit AND b.security_id = si.security_id
+                                      AND b.value_date <= :cob) bm ON true
+                LEFT JOIN opera.calculated_settle_vol_table cv
+                  ON cv.tenant_id = si.tenant_id AND upper(cv.business_unit) = :bu AND cv.security_id = si.security_id
+                LEFT JOIN opera.calculated_settle_vol_table shared_cv
+                  ON shared_cv.tenant_id IS NULL AND upper(shared_cv.business_unit) = :bu AND shared_cv.security_id = si.security_id
+                WHERE si.derivative_type ILIKE 'vanilla%' OR si.derivative_type ILIKE 'amer%'
+            ),
+            v AS (
+                SELECT b.*, lo.strike AS lo_k, lo.settle_vol AS lo_v, hi.strike AS hi_k, hi.settle_vol AS hi_v
+                FROM base b
+                LEFT JOIN LATERAL (SELECT s.strike, s.settle_vol FROM opera.settlement_vol_surf_table s
+                                    WHERE s.tenant_id = (SELECT tenant_id FROM vd) AND s.vol_id = b.vol1_id AND s.value_date = :cob
+                                      AND upper(s.call_put_id) = b.cp AND s.strike <= b.strike1 ORDER BY s.strike DESC LIMIT 1) lo ON true
+                LEFT JOIN LATERAL (SELECT s.strike, s.settle_vol FROM opera.settlement_vol_surf_table s
+                                    WHERE s.tenant_id = (SELECT tenant_id FROM vd) AND s.vol_id = b.vol1_id AND s.value_date = :cob
+                                      AND upper(s.call_put_id) = b.cp AND s.strike >= b.strike1 ORDER BY s.strike ASC LIMIT 1) hi ON true
+            )
+            SELECT client, product, security_id, derivative_type, maturity, strike, strike1, f, rf, div_yield, tick_size,
+                   barrier1_level, barrier1_rebate, breached, overlay_vol,
+                   CASE WHEN lo_k = strike1 THEN lo_v END AS surface_exact_vol,
+                   CASE WHEN lo_k = strike1 THEN lo_v WHEN lo_k IS NULL THEN hi_v WHEN hi_k IS NULL THEN lo_v
+                        ELSE lo_v + (hi_v - lo_v) * (strike1 - lo_k) / NULLIF(hi_k - lo_k, 0) END AS surface_interp_vol
+            FROM v
+        ]]>
+    </sql>
+    <compress id="bundle" file="grasa-barrier-replay-cfs.zip"><include ref="legacy-out"/><include ref="pg-inputs"/></compress>
+</rules>

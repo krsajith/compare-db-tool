@@ -2,7 +2,7 @@
 <!-- Where does legacy MySQL still hold the pricer INPUTS (price, vol, rate, div yield) for 01-Oct-2026?
      a) every table/backup in dbsystemuat whose name relates to settlement inputs, with row count and last update
      b) value_date range and row counts of the two live input tables (cache vs non-cache) and the historical table.
-     Read-only, export-only: run with  .\compare.ps1 rules rules\grasa-legacy-input-history-cfs.xml export full -->
+     Read-only, export-only: run with  .\compare.ps1 -rules rules\grasa-legacy-input-history-cfs.xml -->
 <rules name="grasa-legacy-input-history-cfs">
     <sql id="tables" db="mysql-oprdb02" timeout="120">
         <![CDATA[
@@ -14,20 +14,28 @@
             ORDER BY table_name
         ]]>
     </sql>
-    <sql id="ranges" db="mysql-oprdb02" timeout="300">
+    <sql id="dates-cache" db="mysql-oprdb02" timeout="600">
         <![CDATA[
-            SELECT 'input_cache_cfs' AS tbl, MIN(value_date) AS min_date, MAX(value_date) AS max_date, COUNT(*) AS n, COUNT(DISTINCT value_date) AS dates
-              FROM dbsystemuat.input_security_settlement_value_cache_table_cfs
-            UNION ALL
-            SELECT 'input_cfs', MIN(value_date), MAX(value_date), COUNT(*), COUNT(DISTINCT value_date)
-              FROM dbsystemuat.input_security_settlement_value_table_cfs
-            UNION ALL
-            SELECT 'historical_cfs', MIN(value_date), MAX(value_date), COUNT(*), COUNT(DISTINCT value_date)
-              FROM dbsystemuat.historical_security_settlement_value_table_cfs
+            SELECT value_date, COUNT(*) AS n FROM dbsystemuat.input_security_settlement_value_cache_table_cfs
+            WHERE value_date BETWEEN '2026-09-28' AND '2026-10-05' GROUP BY value_date ORDER BY value_date
+        ]]>
+    </sql>
+    <sql id="dates-input" db="mysql-oprdb02" timeout="600">
+        <![CDATA[
+            SELECT value_date, COUNT(*) AS n FROM dbsystemuat.input_security_settlement_value_table_cfs
+            WHERE value_date BETWEEN '2026-09-28' AND '2026-10-05' GROUP BY value_date ORDER BY value_date
+        ]]>
+    </sql>
+    <sql id="dates-hist" db="mysql-oprdb02" timeout="600">
+        <![CDATA[
+            SELECT value_date, COUNT(*) AS n FROM dbsystemuat.historical_security_settlement_value_table_cfs
+            WHERE value_date BETWEEN '2026-09-28' AND '2026-10-05' GROUP BY value_date ORDER BY value_date
         ]]>
     </sql>
     <compress id="bundle" file="grasa-legacy-input-history-cfs.zip">
         <include ref="tables"/>
-        <include ref="ranges"/>
+        <include ref="dates-cache"/>
+        <include ref="dates-input"/>
+        <include ref="dates-hist"/>
     </compress>
 </rules>
