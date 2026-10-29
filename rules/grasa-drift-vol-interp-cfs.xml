@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Drift pairs ACM/CM CT, IOL/CM BO, PGE/CM S: which vol does the new Node pricer use vs what legacy GRASA uses?
+     Legacy (MATLAB, read): p1_vol = settlement_vol_surf_table.settle_vol at (vol1_id, strike1, C/P) on the COB; when that exact strike is
+       missing the vol is linearly interpolated on strike from the COB surface (sensitivity_interpolate_settle_vol.m), nearest strike outside the range.
+       calculated_settle_vol_table is NOT a GRASA input (derivativepricer.m 2243-2282 writes it as an output of the last full pricing run).
+     New (Node, grasa-pricing.repository.js 100-105): the calculated_settle_vol overlay (date-less) wins, the exact-strike surface vol is only a fallback.
+     This rule gives, per security: node_vol (overlay else exact), legacy_vol (exact else linear interpolation on the COB surface) and the difference.
+     Read-only, export-only. Run:  .\compare.ps1 --rules rules\grasa-drift-vol-interp-cfs.xml --export full -->
+<rules name="grasa-drift-vol-interp-cfs">
+    <parameters>
+        <param name="bu" type="string" value="CFS"/>
+        <param name="cob" type="date" value="2026-10-01"/>
+    </parameters>
+    <sql id="vol-detail" db="postgres-dev" timeout="600" fetchSize="2000">
+        <![CDATA[
+            WITH vd AS (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1),
+            sec AS MATERIALIZED (
+                SELECT DISTINCT substring(c.contract_number, 1, 3) AS client, upper(trim(c.product_code)) AS product, c.security_id
+                FROM opera.helper_sensitivity_report_view_cache_table c
+                WHERE c.tenant_id = (SELECT tenant_id FROM vd) AND upper(trim(c.business_unit)) = :bu
+                  AND ((upper(substring(c.contract_number, 1, 3)) = 'ACM' AND upper(trim(c.product_code)) = 'CM CT')
+                    OR (upper(substring(c.contract_number, 1, 3)) = 'IOL' AND upper(trim(c.product_code)) = 'CM BO')
+                    OR (upper(substring(c.contract_number, 1, 3)) = 'PGE' AND upper(trim(c.product_code)) = 'CM S'))
+            ),
+            base AS (
+                SELECT sec.client, sec.product, si.security_id, si.derivative_type, si.vol1_id, si.strike1, upper(cpm.call_put_id) AS cp,
+                       CASE WHEN cv.p1_vol > 0 THEN cv.p1_vol WHEN shared_cv.p1_vol > 0 THEN shared_cv.p1_vol END AS overlay_vol
+                FROM sec
+                JOIN opera.cloned_security_info_table si
+                  ON si.tenant_id = (SELECT tenant_id FROM vd) AND upper(si.business_unit) = :bu AND si.security_id = sec.security_id
+                LEFT JOIN opera.derivative_type_call_put_id_mapping_table cpm ON upper(cpm.derivative_type) = upper(si.derivative_type)
+                LEFT JOIN opera.calculated_settle_vol_table cv
+                  ON cv.tenant_id = (SELECT tenant_id FROM vd) AND upper(cv.business_unit) = :bu AND cv.security_id = si.security_id
+                LEFT JOIN opera.calculated_settle_vol_table shared_cv
+                  ON shared_cv.tenant_id IS NULL AND upper(shared_cv.business_unit) = :bu AND shared_cv.security_id = si.security_id
+                WHERE si.derivative_type ILIKE '%option%' OR si.derivative_type ILIKE 'amer%' OR si.derivative_type ILIKE '%call%' OR si.derivative_type ILIKE '%put%'
+            ),
+            v AS (
+                SELECT b.*, lo.strike AS lo_k, lo.settle_vol AS lo_v, hi.strike AS hi_k, hi.settle_vol AS hi_v
+                FROM base b
+                LEFT JOIN LATERAL (SELECT s.strike, s.settle_vol FROM opera.settlement_vol_surf_table s
+                                    WHERE s.tenant_id = (SELECT tenant_id FROM vd) AND s.vol_id = b.vol1_id AND s.value_date = :cob
+                                      AND upper(s.call_put_id) = b.cp AND s.strike <= b.strike1 ORDER BY s.strike DESC LIMIT 1) lo ON true
+                LEFT JOIN LATERAL (SELECT s.strike, s.settle_vol FROM opera.settlement_vol_surf_table s
+                                    WHERE s.tenant_id = (SELECT tenant_id FROM vd) AND s.vol_id = b.vol1_id AND s.value_date = :cob
+                                      AND upper(s.call_put_id) = b.cp AND s.strike >= b.strike1 ORDER BY s.strike ASC LIMIT 1) hi ON true
+            ),
+            r AS (
+                SELECT v.*,
+                       CASE WHEN lo_k = strike1 THEN lo_v
+                            WHEN lo_k IS NULL THEN hi_v
+                            WHEN hi_k IS NULL THEN lo_v
+                            ELSE lo_v + (hi_v - lo_v) * (strike1 - lo_k) / NULLIF(hi_k - lo_k, 0) END AS legacy_vol,
+                       (lo_k = strike1) AS exact_hit
+                FROM v
+            )
+            SELECT client, product, derivative_type, security_id, strike1, exact_hit, overlay_vol AS node_vol, legacy_vol,
+                   round((coalesce(overlay_vol, legacy_vol) - legacy_vol)::numeric, 8) AS vol_diff,
+                   round((100 * (coalesce(overlay_vol, legacy_vol) - legacy_vol) / NULLIF(legacy_vol, 0))::numeric, 4) AS vol_diff_pct
+            FROM r
+            ORDER BY abs(coalesce(overlay_vol, legacy_vol) - legacy_vol) DESC NULLS LAST
+        ]]>
+    </sql>
+    <compress id="bundle" file="grasa-drift-vol-interp-cfs.zip"><include ref="vol-detail"/></compress>
+</rules>

@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Where does legacy MySQL still hold the pricer INPUTS (price, vol, rate, div yield) for 01-Oct-2026?
+     a) every table/backup in dbsystemuat whose name relates to settlement inputs, with row count and last update
+     b) value_date range and row counts of the two live input tables (cache vs non-cache) and the historical table.
+     Read-only, export-only: run with  .\compare.ps1 --rules rules\grasa-legacy-input-history-cfs.xml --export full -->
+<rules name="grasa-legacy-input-history-cfs">
+    <sql id="tables" db="mysql-oprdb02" timeout="120">
+        <![CDATA[
+            SELECT table_schema, table_name, table_type, table_rows, create_time, update_time
+            FROM information_schema.tables
+            WHERE table_schema = 'dbsystemuat'
+              AND (table_name LIKE '%settlement_value%' OR table_name LIKE '%settle_value%' OR table_name LIKE '%input_security%'
+                   OR table_name LIKE '%bkp%' OR table_name LIKE '%backup%' OR table_name LIKE '%hist%')
+            ORDER BY table_name
+        ]]>
+    </sql>
+    <sql id="ranges" db="mysql-oprdb02" timeout="300">
+        <![CDATA[
+            SELECT 'input_cache_cfs' AS tbl, MIN(value_date) AS min_date, MAX(value_date) AS max_date, COUNT(*) AS n, COUNT(DISTINCT value_date) AS dates
+              FROM dbsystemuat.input_security_settlement_value_cache_table_cfs
+            UNION ALL
+            SELECT 'input_cfs', MIN(value_date), MAX(value_date), COUNT(*), COUNT(DISTINCT value_date)
+              FROM dbsystemuat.input_security_settlement_value_table_cfs
+            UNION ALL
+            SELECT 'historical_cfs', MIN(value_date), MAX(value_date), COUNT(*), COUNT(DISTINCT value_date)
+              FROM dbsystemuat.historical_security_settlement_value_table_cfs
+        ]]>
+    </sql>
+    <compress id="bundle" file="grasa-legacy-input-history-cfs.zip">
+        <include ref="tables"/>
+        <include ref="ranges"/>
+    </compress>
+</rules>
