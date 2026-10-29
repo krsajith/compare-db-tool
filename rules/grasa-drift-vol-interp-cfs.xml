@@ -5,7 +5,7 @@
        calculated_settle_vol_table is NOT a GRASA input (derivativepricer.m 2243-2282 writes it as an output of the last full pricing run).
      New (Node, grasa-pricing.repository.js 100-105): the calculated_settle_vol overlay (date-less) wins, the exact-strike surface vol is only a fallback.
      This rule gives, per security: node_vol (overlay else exact), legacy_vol (exact else linear interpolation on the COB surface) and the difference.
-     Read-only, export-only. Run:  .\compare.ps1 rules rules\grasa-drift-vol-interp-cfs.xml --export full -->
+     Read-only, export-only. Run:  .\compare.ps1 rules rules\grasa-drift-vol-interp-cfs.xml export full -->
 <rules name="grasa-drift-vol-interp-cfs">
     <parameters>
         <param name="bu" type="string" value="CFS"/>
