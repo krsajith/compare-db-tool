@@ -80,10 +80,9 @@
       <div class="chart">
         <svg viewBox="0 0 720 230" width="100%" height="100%" preserveAspectRatio="none">
           <text class="chart-title" x="350" y="23">Incremental_PnL</text>
-          <line class="axis-line" x1="42" x2="658" y1="{{chartZeroY}}" y2="{{chartZeroY}}" />
           {{#each chartXTicks}}
-          <line class="axis-line" x1="{{x}}" x2="{{x}}" y1="204" y2="209" />
-          <text class="axis-label" x="{{x}}" y="222" text-anchor="middle">{{label}}</text>
+          <line class="axis-line" x1="{{x}}" x2="{{x}}" y1="204" y2="207" />
+          <text class="axis-label" x="{{x}}" y="209" text-anchor="end" dominant-baseline="middle" transform="rotate(-90 {{x}} 209)">{{label}}</text>
           {{/each}}
           {{#each chartYTicks}}
           <text class="axis-label" x="675" y="{{y}}" dominant-baseline="middle">{{label}}</text>
@@ -108,6 +107,9 @@
         <tbody>
           {{#each deltaBreakdown}}
           <tr><td>{{month}}</td><td>{{settlePx}}</td><td>{{vol}}</td><td>{{futures}}</td><td>{{optsAccu}}</td><td>{{totalDelta}}</td><td>{{theta}}</td><td>{{vega}}</td></tr>
+          {{/each}}
+          {{#each blankMonthRows}}
+          <tr class="blank"><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>
           {{/each}}
           <tr class="total"><td>Total</td><td></td><td></td><td>{{totalFutures}}</td><td>{{totalOptsAccu}}</td><td>{{totalDelta}}</td><td>{{totalTheta}}</td><td>{{totalVega}}</td></tr>
         </tbody>
