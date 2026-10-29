@@ -1,6 +1,6 @@
 {
-  "db": "template-writer",
-  "schema": "opera_dev",
+  "db": "postgres-dev-writer",
+  "schema": "opera",
   "tenantId": "227cd5f5-4498-4dba-bda9-05b8edc41113",
   "docTemplateName": "GrasaReport",
   "businessApplication": "GrasaReport",
