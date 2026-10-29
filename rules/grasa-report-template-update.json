@@ -1,0 +1,15 @@
+{
+  "db": "template-writer",
+  "schema": "opera_dev",
+  "tenantId": "227cd5f5-4498-4dba-bda9-05b8edc41113",
+  "docTemplateName": "GrasaReport",
+  "businessApplication": "GrasaReport",
+  "businessUnit": "CFS",
+  "file": "GrasaReport.html",
+  "templateEngine": "jsreport",
+  "allowedOutputFormats": {
+    "selected": ["html", "docx"],
+    "default": "html"
+  },
+  "updatedBy": "compare-db-tool"
+}

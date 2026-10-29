@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <style>
+    @page { size: letter landscape; margin: 0; }
+    * { box-sizing: border-box; }
+    html, body { width: 11in; height: 8.5in; margin: 0; padding: 0; }
+    body { font-family: Arial, Helvetica, sans-serif; color: #111; background: #fff; }
+    .page { width: 11in; height: 8.5in; padding: 0.80in 0.78in 0.48in 0.70in; overflow: hidden; }
+    .header { height: 0.60in; display: flex; align-items: center; justify-content: space-between; border-bottom: 3px solid #111; }
+    .title { margin-left: 1.42in; font-size: 28px; font-weight: 400; white-space: nowrap; }
+    .logo { display: none; }
+    .header::after { content: ""; width: 1.72in; height: 0.48in; margin-right: 0.10in; background: url("data:image/jpeg;base64,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") center / contain no-repeat; }
+    .report-grid { display: grid; grid-template-columns: 2.64in 1fr; column-gap: 0.15in; margin-top: 0.10in; }
+    .band { height: 0.38in; border: 2px solid #111; background: #ff7300; font-size: 25px; line-height: calc(0.38in - 4px); text-align: center; }
+    .right-band { grid-column: 2; }
+    .left-column { grid-column: 1; grid-row: 2 / span 2; }
+    .right-column { grid-column: 2; grid-row: 2; }
+    table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+    th, td { border: 1.3px solid #111; padding: 1px 6px; font-size: 11px; height: 17px; }
+    th { background: #f6a04d; font-weight: 400; text-align: center; }
+    td { text-align: right; }
+    .sensitivity th { font-size: 12px; height: 18px; }
+    .sensitivity th:first-child { width: 25%; }
+    .sensitivity th:nth-child(2) { width: 49%; }
+    .sensitivity th:nth-child(3) { width: 26%; }
+    .sensitivity td:first-child { text-align: center; background: #f4f4f4; }
+    .sensitivity td:last-child { background: #f4f4f4; }
+    .sensitivity tr.row-zero td { background: #f6a04d !important; }
+    .pie { margin-top: 0.35in; }
+    .pie td { height: 17.28px; }
+    .pie td:first-child { width: 25%; background: #f6a04d; text-align: center; }
+    .pie td:nth-child(2) { width: 49%; }
+    .pie td:nth-child(3) { width: 26%; }
+    .chart { height: 2.23in; margin-top: 0.10in; border: 1.5px solid #111; }
+    .chart-title { text-anchor: middle; font-size: 18px; fill: #666; }
+    .axis-label { font-size: 9px; fill: #666; }
+    .axis-line { stroke: #aaa; stroke-width: 1; }
+    .series { fill: none; stroke: #086a14; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
+    .breakdown { margin-top: 0.16in; }
+    .breakdown th { font-size: 10px; line-height: 1.08; }
+    .breakdown thead tr:first-child { height: 25.8px; }
+    .breakdown thead tr:nth-child(2) { height: 24px; }
+    .breakdown td { height: 17.28px; }
+    .breakdown td:first-child { text-align: center; }
+    .breakdown .total td { background: #f6a04d; }
+    .disclaimer { position: absolute; left: 0.70in; bottom: 1.10in; width: 6.35in; font-size: 10px; line-height: 1.42; }
+  </style>
+</head>
+<body>
+<section class="page">
+  <header class="header">
+    <div class="title">Greeks Report &amp; Sensitivity Analysis</div>
+    <img class="logo" alt="Olam Agri" src="data:image/png;base64,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">
+  </header>
+
+  <div class="report-grid">
+    <div class="band">{{instrument}}</div>
+    <div class="band right-band">COB : {{cobDate}}</div>
+
+    <div class="left-column">
+      <table class="sensitivity">
+        <thead>
+          <tr><th rowspan="2">PX_Move</th><th>Incremental_PnL</th><th>Delta</th></tr>
+          <tr><th>(USD)</th><th>(Lots)</th></tr>
+        </thead>
+        <tbody>
+          {{#each sensitivity}}
+          <tr class="{{rowClass}}">
+            <td>{{pxMove}}</td><td style="background: {{rowColor}}">{{pnlFormatted}}</td><td>{{delta}}</td>
+          </tr>
+          {{/each}}
+        </tbody>
+      </table>
+      <table class="pie"><tbody><tr><td>10D PIE</td><td>{{pieTotalFormatted}}</td><td>{{pieTotalDelta}}</td></tr></tbody></table>
+    </div>
+
+    <div class="right-column">
+      <div class="chart">
+        <svg viewBox="0 0 720 230" width="100%" height="100%" preserveAspectRatio="none">
+          <text class="chart-title" x="350" y="23">Incremental_PnL</text>
+          <line class="axis-line" x1="42" x2="658" y1="{{chartZeroY}}" y2="{{chartZeroY}}" />
+          {{#each chartXTicks}}
+          <line class="axis-line" x1="{{x}}" x2="{{x}}" y1="204" y2="209" />
+          <text class="axis-label" x="{{x}}" y="222" text-anchor="middle">{{label}}</text>
+          {{/each}}
+          {{#each chartYTicks}}
+          <text class="axis-label" x="675" y="{{y}}" dominant-baseline="middle">{{label}}</text>
+          {{/each}}
+          <path class="series" d="{{{chartPath}}}" />
+        </svg>
+      </div>
+
+      <table class="breakdown">
+        <colgroup>
+          <col style="width: 9.51%"><col style="width: 11.27%"><col style="width: 9.51%">
+          <col style="width: 13.51%"><col style="width: 14.25%"><col style="width: 14.25%">
+          <col style="width: 13.65%"><col style="width: 13.95%">
+        </colgroup>
+        <thead>
+          <tr>
+            <th rowspan="2">Month</th><th rowspan="2">COB<br>Settlement<br>Px</th><th rowspan="2">COB<br>Settlement<br>Vol</th>
+            <th colspan="3">Delta</th><th rowspan="2">Theta<br><br>(USD/ Day)</th><th rowspan="2">Vega<br><br>(USD/ %)</th>
+          </tr>
+          <tr><th>Futures<br>(Lots)</th><th>Opts + Accu<br>(Lots)</th><th>Total Delta<br>(Lots)</th></tr>
+        </thead>
+        <tbody>
+          {{#each deltaBreakdown}}
+          <tr><td>{{month}}</td><td>{{settlePx}}</td><td>{{vol}}</td><td>{{futures}}</td><td>{{optsAccu}}</td><td>{{totalDelta}}</td><td>{{theta}}</td><td>{{vega}}</td></tr>
+          {{/each}}
+          <tr class="total"><td>Total</td><td></td><td></td><td>{{totalFutures}}</td><td>{{totalOptsAccu}}</td><td>{{totalDelta}}</td><td>{{totalTheta}}</td><td>{{totalVega}}</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="disclaimer">
+    <div>Confidential Document</div>
+    <div>Disclaimer: The information contained on this document is strictly for illustrative purposes and does not constitute a legal offer to buy or sell.</div>
+    <div>The values are calculated are using proprietary models and may not approximate to actual tradable values.</div>
+  </div>
+</section>
+</body>
+</html>
