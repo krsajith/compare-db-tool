@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- PGE / CM S: the 10D PIE differs by 269 USD (1.2e-4) while every leg and the ladder match legacy.
+     Hypothesis from the MATLAB read (generate_greeks_report_sensitivity_analysis.m, PIE block):
+       legacy applies each month's bump to every deal whose p1_name ENDS WITH the part of the month after the dot
+       (G27.H27 and H27.H27 both give the suffix H27), later months overwrite earlier ones, and the bump rows are paired by position after a re-sort.
+       The new code bumps each exact month key on its own, so a spread month such as G27.H27 is bumped differently.
+     This rule only shows the structure, so the hypothesis can be confirmed or dropped before any code change:
+       new-months : per contract month and underlying of PGE / CM S, the number of securities, derivative types, underlying price and the legacy suffix
+       old-months : the same months on the legacy helper cache (MySQL) to confirm both sides hold the same month set
+     Read-only, export-only. Run compare.ps1 with this rules file and the export full option. -->
+<rules name="grasa-pge-pie-months-cfs">
+    <parameters>
+        <param name="bu" type="string" value="CFS"/>
+        <param name="cob" type="date" value="2026-10-01"/>
+    </parameters>
+    <sql id="new-months" db="postgres-dev" timeout="600" fetchSize="2000">
+        <![CDATA[
+            WITH vd AS (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1),
+            sec AS MATERIALIZED (
+                SELECT DISTINCT c.contract_month, c.security_id
+                FROM opera.helper_sensitivity_report_view_cache_table c
+                WHERE c.tenant_id = (SELECT tenant_id FROM vd) AND upper(trim(c.business_unit)) = :bu
+                  AND upper(substring(c.contract_number, 1, 3)) = 'PGE' AND upper(trim(c.product_code)) = 'CM S'
+            )
+            SELECT sec.contract_month,
+                   split_part(sec.contract_month, '.', 2) AS legacy_suffix,
+                   si.underlying1_id,
+                   si.derivative_type,
+                   count(*) AS securities,
+                   max(u1.settle_value) AS underlying_price,
+                   min(u1.settle_value) AS underlying_price_min
+            FROM sec
+            JOIN opera.cloned_security_info_table si
+              ON si.tenant_id = (SELECT tenant_id FROM vd) AND upper(si.business_unit) = :bu AND si.security_id = sec.security_id
+            LEFT JOIN opera.underlying_settle_value_table u1
+              ON u1.tenant_id = si.tenant_id AND u1.underlying_id = si.underlying1_id AND u1.value_date = :cob
+            GROUP BY sec.contract_month, si.underlying1_id, si.derivative_type
+            ORDER BY split_part(sec.contract_month, '.', 2), sec.contract_month, si.underlying1_id, si.derivative_type
+        ]]>
+    </sql>
+    <sql id="old-months" db="mysql-oprdb02" timeout="600" fetchSize="2000">
+        <![CDATA[
+            SELECT contract_month, SUBSTRING_INDEX(contract_month, '.', -1) AS legacy_suffix, COUNT(DISTINCT security_id) AS securities
+            FROM dbsystemuat.helper_sensitivity_report_view_cache_table_cfs
+            WHERE SUBSTRING(contract_number, 1, 3) = 'PGE' AND product_code = 'CM S'
+            GROUP BY contract_month
+            ORDER BY SUBSTRING_INDEX(contract_month, '.', -1), contract_month
+        ]]>
+    </sql>
+    <compress id="bundle" file="grasa-pge-pie-months-cfs.zip"><include ref="new-months"/><include ref="old-months"/></compress>
+</rules>
