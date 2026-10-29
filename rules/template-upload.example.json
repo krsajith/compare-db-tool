@@ -1,0 +1,15 @@
+{
+  "db": "template-writer",
+  "schema": "opera_dev",
+  "tenantId": "REPLACE_WITH_TENANT_ID",
+  "docTemplateName": "ClientStatement",
+  "businessApplication": "REPLACE_WITH_APPLICATION",
+  "businessUnit": "CFS",
+  "file": "ClientStatement.html",
+  "templateEngine": "jsreport",
+  "allowedOutputFormats": {
+    "selected": ["pdf"],
+    "default": "pdf"
+  },
+  "updatedBy": "compare-db-tool"
+}

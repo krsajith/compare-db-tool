@@ -30,6 +30,10 @@ public final class Cli {
         --parallel N          Query workers (default: distinct datasource count; one active per datasource)
         --max-partition-mb N  Estimated comparison map/group budget (default: 256 MB)
         --allow-prod          Permit datasources marked prod=true or named with 'prod'
+        --template-import FILE  Import one or more templates using a JSON rule (preview by default)
+        --template-export FILE  Export requested template files, row metadata and an upload rule
+        --template-upload FILE  Alias for --template-import; existing single-template rules still work
+        --apply               Commit template replacement; otherwise roll back the preview
         --help                Show this help
 
         External configuration: config/datasources.properties, relative to working directory.
@@ -40,6 +44,9 @@ public final class Cli {
         """;
     public static final class Options {
         public Path rules;
+        public Path templateUpload;
+        public Path templateExport;
+        public boolean apply;
         public Path out = Path.of("out");
         public Map<String, String> parameters = new LinkedHashMap<>();
         public int partitions = 64;
@@ -64,7 +71,7 @@ public final class Cli {
             }
             int equal = argument.indexOf('=');
             String name = equal > 0 ? argument.substring(0, equal) : argument;
-            if (Set.of("--rules", "--out", "--param", "--limit", "--partitions", "--export", "--sample-rows", "--parallel", "--max-partition-mb").contains(name)) {
+            if (Set.of("--template-export", "--template-import", "--template-upload", "--rules", "--out", "--param", "--limit", "--partitions", "--export", "--sample-rows", "--parallel", "--max-partition-mb").contains(name)) {
                 String value;
                 if (equal > 0) value = argument.substring(equal + 1);
                 else {
@@ -73,6 +80,14 @@ public final class Cli {
                 }
                 try {
                     switch (name) {
+                        case "--template-export" -> {
+                            if (options.templateExport != null) throw new ToolException("Supply only one template export rule");
+                            options.templateExport = Path.of(value);
+                        }
+                        case "--template-import", "--template-upload" -> {
+                            if (options.templateUpload != null) throw new ToolException("Supply only one template import rule file");
+                            options.templateUpload = Path.of(value);
+                        }
                         case "--rules" -> options.rules = Path.of(value);
                         case "--out" -> options.out = Path.of(value);
                         case "--limit" -> options.limit = Long.parseLong(value);
@@ -94,6 +109,7 @@ public final class Cli {
                 } catch (IllegalArgumentException e) { throw new ToolException("Invalid value for " + name); }
             } else switch (argument) {
                 case "--validate" -> options.validate = true;
+                case "--apply" -> options.apply = true;
                 case "--datasources" -> options.datasources = true;
                 case "--allow-prod" -> options.allowProd = true;
                 case "--help", "-h" -> options.help = true;
@@ -105,11 +121,21 @@ public final class Cli {
         }
         if (options.limit < 0 || options.partitions < 1 || options.partitions > 256 || options.sampleRows < 0 || options.maxPartitionMb < 1)
             throw new ToolException("limit/sample-rows must be nonnegative, max-partition-mb positive, and partitions between 1 and 256.");
-        if (!options.help && !options.datasources && options.rules == null) throw new ToolException("Supply --rules FILE.");
+        if (options.templateUpload != null && (options.rules != null || options.datasources || !options.parameters.isEmpty()))
+            throw new ToolException("Template upload cannot be combined with comparison rules, datasource listing or parameters.");
+        if (options.templateExport != null && (options.templateUpload != null || options.rules != null
+            || options.datasources || !options.parameters.isEmpty() || options.apply))
+            throw new ToolException("Template export cannot be combined with import, comparison, datasource listing, parameters or --apply.");
+        if (options.apply && (options.templateUpload == null || options.validate))
+            throw new ToolException("--apply requires --template-upload and cannot be combined with --validate.");
+        if (!options.help && !options.datasources && options.rules == null && options.templateUpload == null && options.templateExport == null)
+            throw new ToolException("Supply --rules FILE, --template-import FILE or --template-export FILE.");
         return options;
     }
 
     public int execute(Options options) throws IOException {
+        if (options.templateExport != null) return new TemplateExporter(settings).execute(options);
+        if (options.templateUpload != null) return new TemplateUploader(settings).execute(options);
         if (options.datasources) {
             if (settings.getDatasources().isEmpty()) System.out.println("No datasources configured. Check config/datasources.properties.");
             settings.getDatasources().forEach((name, definition) -> System.out.println(name

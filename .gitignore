@@ -2,6 +2,8 @@ HELP.md
 /config/datasources.properties
 /out/
 /logs/
+/templates/.backups/
+/templates/export-*/
 *.log
 target/
 .mvn/wrapper/maven-wrapper.jar

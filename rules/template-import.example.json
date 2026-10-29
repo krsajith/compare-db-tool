@@ -1,0 +1,21 @@
+{
+  "db": "template-writer",
+  "schema": "opera_dev",
+  "tenantId": "REPLACE_WITH_TENANT_ID",
+  "businessApplication": "REPLACE_WITH_APPLICATION",
+  "businessUnit": "CFS",
+  "updatedBy": "compare-db-tool",
+  "mode": "upsert",
+  "templates": [
+    {
+      "docTemplateName": "ClientStatement",
+      "file": "ClientStatement.html",
+      "allowedOutputFormats": { "selected": ["pdf"], "default": "pdf" }
+    },
+    {
+      "docTemplateName": "ClientStatementHeader",
+      "file": "ClientStatementHeader.html",
+      "allowedOutputFormats": { "selected": ["html"], "default": "html" }
+    }
+  ]
+}

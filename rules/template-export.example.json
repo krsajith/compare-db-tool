@@ -1,0 +1,11 @@
+{
+  "db": "template-writer",
+  "schema": "opera_dev",
+  "tenantId": "REPLACE_WITH_TENANT_ID",
+  "businessApplication": "REPLACE_WITH_APPLICATION",
+  "businessUnit": "CFS",
+  "templates": [
+    { "docTemplateName": "ClientStatement" },
+    { "docTemplateName": "ClientStatementHeader" }
+  ]
+}

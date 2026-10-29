@@ -333,7 +333,7 @@ No throughput or fixed-memory target has been benchmarked.
 Queries execute in separate transactions and do not share a synchronized database snapshot. For
 repeatable comparisons, use stable source data and the same business cut-off parameters on both sides.
 
-## Read-only operation
+## Read-only comparison operation
 
 Only single SELECT/WITH statements pass the conservative SQL guard. Write operations, SELECT INTO, writable CTEs,
 multiple statements, executable/nested comments and ambiguous quoting are rejected. Use bound parameters rather
@@ -343,7 +343,8 @@ vendor syntax. SQL syntax still has to be valid for the selected database.
 Connections use JDBC read-only mode and rollback after each query. PostgreSQL and MySQL also receive session
 read-only settings. Use SELECT-only database accounts: arbitrary stored functions and all JDBC dialects cannot be
 sandboxed by a lexical SQL guard or advisory JDBC flags alone. There is no universal JDBC guarantee of read-only
-enforcement for every database. The tool never deliberately issues data-changing SQL to source databases.
+enforcement for every database. Comparison rules never deliberately issue data-changing SQL to source databases.
+The separate `--template-upload ... --apply` command described below deliberately updates a template using a writable datasource.
 
 Datasources with `prod=true` or 'prod' in their name require explicit `--allow-prod` during execution. Validation and
 listing never connect. The supplied PROD datasource is marked accordingly. Confirm environment flags for any other
@@ -429,6 +430,182 @@ an arbitrary external Logback configuration bypasses that protection. Review log
 JVM/JAR launch failures before Spring initializes logging still appear on the console and may produce no log file.
 After pulling Java/logback resource changes, rebuild the JAR once; subsequent external logging-property changes need
 only a rerun. Logging/redaction tests are included in the H2-only build verification.
+
+## Export, edit, and upload requested templates
+
+Copy `rules/template-export.example.json` to your own rule and set `db`, `schema`,
+`tenantId`, `businessApplication`, `businessUnit`, and the requested template names.
+List one or more selections in `templates`. To select by UUID instead of name,
+use `{ "uuid": "THE_TEMPLATE_UUID" }`; tenant ID is still mandatory. An entry can
+override the shared tenant/application/BU. Name selection is case-insensitive
+within the exact tenant and includes inactive records; ambiguous matches require
+an explicit UUID. Requests do not accept arbitrary SQL or wildcard selection.
+
+```powershell
+.\compare.ps1 --template-export rules\my-template-export.json --validate
+.\compare.ps1 --template-export rules\my-template-export.json
+```
+
+Export opens a read-only transaction and writes a unique directory such as:
+
+```text
+templates/export-123456/
+  upload-rule.json
+  README.txt
+  <template-uuid>/
+    template.html        # or template.docx / template.xlsx
+    row.json
+```
+
+Each file contains the original database bytes. Each `row.json` records **every
+column**, including UUID, tenant, creation/update audit fields and any additional
+database columns. Nulls are preserved. JDBC types are recorded beside the values;
+dates/UUIDs/text use their JDBC string representation and numbers/booleans are JSON
+values. `document_content` is a file reference with size and SHA-256 rather than
+duplicated binary text. Other binary columns, if present, use explicit base64.
+`row.json` is an evidence snapshot; it is not executed as SQL or used to overwrite
+creation audit fields on upload.
+
+Edit or replace the exported template files in place, then use the generated rule:
+
+```powershell
+.\compare.ps1 --template-import templates\export-123456\upload-rule.json
+.\compare.ps1 --template-import templates\export-123456\upload-rule.json --apply
+```
+
+The generated entries use `mode: "update"`, `contentOnly: true`, original UUID and
+tenant, and `expectedSha256` of the original database content. Upload targets that
+UUID within its tenant and changes only `document_content` and the update timestamp
+(plus `updatedBy` if you explicitly supply it). Current filenames, MIME, format JSON,
+status, description, creation audit fields and extra columns stay intact. Metadata
+changes made in the database while you edit are preserved. Concurrent changes to
+the **content** cause rejection; re-export and reconcile rather than removing the
+hash guard. Re-export after each successful upload before starting another edit.
+
+If you want to update supported template metadata too, edit the **upload rule**,
+set `contentOnly` to false and supply the fields documented below. Editing
+`row.json` alone does not change what is uploaded. Keep the extension/type aligned
+with the original template for content-only updates.
+
+Export works with a read-only datasource. Upload still requires a writable
+datasource: either export using that same named connection, or set optional
+`uploadDb` in the export request to the configured writer alias for the **same
+database**. `schema` is preserved in the generated rule. Confirm both aliases point
+to the intended database; the tool does not automatically equate JDBC endpoints.
+Production-marked aliases require `--allow-prod`. Export never performs database
+writes. Repeated exports create separate folders and do not overwrite local edits.
+Export directories are gitignored. A missing/ambiguous/duplicate requested row
+fails the export before files are written; the runnable upload rule is written last.
+
+## Import one or more document templates from disk
+
+Use `--template-import` with `rules/template-import.example.json` as the starting
+point. Its `templates` array accepts one or more entries. Top-level `db`, `schema`,
+`tenantId`, `businessApplication`, `businessUnit`, `updatedBy` and `mode` are defaults;
+an entry can override them. All entries must use the same datasource and schema,
+so the entire import commits in **one transaction**. A failure rolls back every
+insert and update in the batch. Duplicate identities within the rule are rejected.
+Local backup files from attempted operations may remain after rollback.
+
+```powershell
+# Validate files and rule without connecting
+.\compare.ps1 --template-import rules\my-templates.json --validate
+# Preview the complete import
+.\compare.ps1 --template-import rules\my-templates.json
+# Apply the complete import
+.\compare.ps1 --template-import rules\my-templates.json --apply
+```
+
+Set `mode` globally or per entry:
+
+| Mode | Existing template | Missing template |
+|---|---|---|
+| `update` (default) | Replace | Error |
+| `create` | Error | Insert |
+| `upsert` | Replace | Insert |
+
+New templates require `allowedOutputFormats`, receive a generated UUID and
+creation/update timestamps, and default to status `Active`. `updatedBy`, when
+provided, is used for both creation and update audit names on inserts. An optional
+`uuid` or `expectedSha256` asserts that an existing row must match and prevents an
+insert. Each inserted template gets guarded DELETE rollback SQL under
+`templates/.backups/`; replacements retain the previous bytes and restore SQL.
+When rolling back a batch manually, run the generated undo statements in a single
+transaction and verify each affected row before committing.
+
+Single-template rules and `--template-upload` remain supported as described below.
+
+The separate `--template-upload` command updates one **existing** row in
+`SCHEMA.oga_doctemplatemaster_doctemplatemaster`. Comparison XML and query execution
+remain read-only. This command accepts JSON; start with
+`rules/template-upload.example.json` and save your own rule alongside it.
+
+1. Put the original `.html`, `.docx` or `.xlsx` file in `templates/`.
+2. Set `db` to a configured datasource name, `schema` to the exact target schema,
+   and set `tenantId`, `docTemplateName`, `businessApplication`, `businessUnit`, and
+   `file` in the JSON. `file` is relative to `templates/`; subdirectories work.
+3. For applying writes, add a dedicated writer entry to your local
+   `config/datasources.properties`. Existing comparison datasources should keep
+   `read-only=true`. For example (replace database and credentials yourself):
+
+```properties
+compare.datasources.template-writer.url=jdbc:postgresql://localhost:5432/YOUR_DATABASE
+compare.datasources.template-writer.username=${TEMPLATE_DB_USER}
+compare.datasources.template-writer.password=${TEMPLATE_DB_PASSWORD}
+compare.datasources.template-writer.driver-class-name=org.postgresql.Driver
+compare.datasources.template-writer.read-only=false
+compare.datasources.template-writer.prod=false
+```
+
+Build, validate without a connection, preview the matched row, then apply:
+
+```powershell
+.\mvnw.cmd package
+.\compare.ps1 --template-upload rules\my-template.json --validate
+.\compare.ps1 --template-upload rules\my-template.json
+.\compare.ps1 --template-upload rules\my-template.json --apply
+```
+
+Preview opens a read-only connection, prints the matched UUID and old/new SHA-256,
+and rolls back without changing data or creating backups. `--apply` requires a
+writable datasource and updates in one transaction. Production-marked datasources
+also require the existing `--allow-prod` option. Exit 0 indicates success; exit 2
+indicates an error. Validation checks files/configuration, but cannot check the
+database row or inherited metadata until preview/apply.
+
+Matching uses exact tenant ID and case-insensitive template name, application,
+and trimmed rule BU, as in `DocTemplateService`. Missing rows, multiple matching
+rows (even if one is inactive), and a mismatched optional `uuid` are rejected.
+Optional `expectedSha256` prevents replacing a template whose current bytes differ
+from the previewed version. With default mode `update`, no rows are inserted.
+The utility never creates tables.
+
+The utility writes raw file bytes with JDBC binary binding, never a text/base64/CSV
+representation. It derives MIME and file type from the extension, validates the
+`jsreport` engine and selected/default output formats, and reads the bytes back
+before commit. Existing `description`, `status` and `allowedOutputFormats` are
+preserved when omitted. Engine defaults to `jsreport`; document/template filenames
+default to the input filename. You can explicitly provide `templateFileName`,
+`documentName`, `description`, `status`, `mimeType`, `templateEngine`,
+`templateFileType`, `allowedOutputFormats` and `updatedBy`. Unknown JSON fields
+are rejected. The existing UUID, tenant and creation audit fields are preserved;
+the update timestamp is refreshed and `updatedBy` changes only if supplied.
+
+Before updating, a unique directory under `templates/.backups/` receives
+`original.bin`, `backup.json`, and `restore.sql`. The backup path is printed even
+if the following update fails. Backups are local and gitignored. To roll back,
+open `restore.sql` in the **same target database**, execute its BEGIN/UPDATE,
+verify exactly one affected row, then explicitly COMMIT (or ROLLBACK if it does
+not match). Its content guard refuses to overwrite bytes changed after this
+replacement. The SQL restores original bytes, template metadata and update audit
+fields; it does not undo database-trigger side effects. PostgreSQL and MySQL
+binary literal syntax are generated according to the connected database.
+
+This is a direct database utility: application audit listeners and the service's
+`templateCache.clear()` are not invoked. Rendering pods pick up changes after
+their configured `jsreportTemplateCacheSeconds` TTL (60 seconds by default in the
+referenced service). Verify a generated document after the cache expires. No
+running service configuration or database is modified merely by adding the utility.
 
 ## Troubleshooting missing console output
 
