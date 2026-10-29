@@ -1,5 +1,5 @@
 {
-  "db": "postgres-dev-writer",
+  "db": "postgres-dev",
   "schema": "opera",
   "tenantId": "227cd5f5-4498-4dba-bda9-05b8edc41113",
   "docTemplateName": "GrasaReport",

@@ -137,8 +137,8 @@ public final class TemplateUploader {
             if (definition == null) throw new ToolException("Unknown datasource: " + rule.db);
             if (QueryRunner.production(rule.db, definition) && !options.allowProd)
                 throw new ToolException("Datasource " + rule.db + " requires --allow-prod");
-            if (options.apply && definition.isReadOnly())
-                throw new ToolException("Template writes require a dedicated datasource with read-only=false");
+            // --apply is the explicit write opt-in and opens its own read-write connection; the read-only flag guards only comparison queries,
+            // so the same datasource (same database and schema) serves both. Production still needs --allow-prod above.
             Path root = templateRoot.toRealPath();
             Path input = root.resolve(required(rule.file, "file")).normalize().toRealPath();
             if (!input.startsWith(root) || !Files.isRegularFile(input))

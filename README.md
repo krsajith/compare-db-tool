@@ -487,11 +487,11 @@ set `contentOnly` to false and supply the fields documented below. Editing
 `row.json` alone does not change what is uploaded. Keep the extension/type aligned
 with the original template for content-only updates.
 
-Export works with a read-only datasource. Upload still requires a writable
-datasource: either export using that same named connection, or set optional
-`uploadDb` in the export request to the configured writer alias for the **same
-database**. `schema` is preserved in the generated rule. Confirm both aliases point
-to the intended database; the tool does not automatically equate JDBC endpoints.
+Export and upload both work with the same datasource, including a `read-only=true` one used
+for comparisons: `--apply` is the explicit write opt-in and opens its own read-write connection
+for that run only (previews stay read-only). The database user still needs write permission on
+the template table. Production datasources additionally require `--allow-prod`. A separate
+writer alias (`uploadDb`) is optional, for setups where the comparison login cannot write.
 Production-marked aliases require `--allow-prod`. Export never performs database
 writes. Repeated exports create separate folders and do not overwrite local edits.
 Export directories are gitignored. A missing/ambiguous/duplicate requested row

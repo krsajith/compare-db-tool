@@ -88,9 +88,6 @@ class TemplateUploaderTests {
         assertThrows(ToolException.class, () -> run("--template-upload", rule.toString(), "--apply"));
     }
     @Test void guardsDatasourceHashUuidPathAndOutputFormats() throws Exception {
-        settings.getDatasources().get("test").setReadOnly(true);
-        assertThrows(ToolException.class, () -> run("--template-upload", rule.toString(), "--apply"));
-        settings.getDatasources().get("test").setReadOnly(false);
         settings.getDatasources().get("test").setProd(true);
         assertThrows(ToolException.class, () -> run("--template-upload", rule.toString()));
         settings.getDatasources().get("test").setProd(false);
