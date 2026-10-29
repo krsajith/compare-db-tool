@@ -16,7 +16,7 @@
             SELECT z.business_unit, z.settle_date, z.currency, z.dat_code, z.zero_rate
             FROM opera.cso_zero_rate_curve_table z
             WHERE z.tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1)
-              AND z.settle_date BETWEEN :cob - 5 AND :cob + 5
+              AND z.settle_date BETWEEN CAST(:cob AS date) - 5 AND CAST(:cob AS date) + 5
             ORDER BY z.business_unit, z.currency, z.settle_date, z.dat_code
         ]]>
     </sql>
