@@ -2,7 +2,7 @@
 <!-- Where does legacy MySQL still hold the pricer INPUTS (price, vol, rate, div yield) for 01-Oct-2026?
      a) every table/backup in dbsystemuat whose name relates to settlement inputs, with row count and last update
      b) value_date range and row counts of the two live input tables (cache vs non-cache) and the historical table.
-     Read-only, export-only: run with  .\compare.ps1 --rules rules\grasa-legacy-input-history-cfs.xml --export full -->
+     Read-only, export-only: run with  .\compare.ps1 rules rules\grasa-legacy-input-history-cfs.xml --export full -->
 <rules name="grasa-legacy-input-history-cfs">
     <sql id="tables" db="mysql-oprdb02" timeout="120">
         <![CDATA[
