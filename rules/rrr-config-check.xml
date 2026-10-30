@@ -30,7 +30,7 @@
             SELECT value_date, settlement_date, COUNT(*) AS n_rows
               FROM opera.vdate_sdate_table
              WHERE tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :tenantBu LIMIT 1)
-               AND value_date BETWEEN :since AND :valueDate + 7
+               AND value_date BETWEEN :since AND CAST(:valueDate AS date) + 7
              GROUP BY value_date, settlement_date
              ORDER BY value_date
         ]]>
@@ -102,7 +102,7 @@
             SELECT value_date, settlement_date, COUNT(*) AS n_rows
               FROM opera.underlying_settle_value_table
              WHERE tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :tenantBu LIMIT 1)
-               AND value_date BETWEEN :since AND :valueDate + 7
+               AND value_date BETWEEN :since AND CAST(:valueDate AS date) + 7
              GROUP BY value_date, settlement_date
              ORDER BY value_date
         ]]>
