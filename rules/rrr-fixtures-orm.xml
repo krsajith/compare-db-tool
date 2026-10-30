@@ -1,0 +1,129 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- RRR golden fixtures, BU ORM: export only, no comparison. Legacy MySQL (OPRDB02, dbsystemuat, tables suffixed _orm).
+     Purpose: unit tests of RrrCalculationEngine and the position/MTM rules. Each export gives either an input of the
+     calculation or the expected legacy output for the same clients. COB (settlement date) = :cob, value date = :valueDate,
+     previous settlement date = :prevCob. Client list is fixed in the SQL text: GBX SBX OGX SOX PAX QCX.
+     If the probe in the parity rule shows the legacy cache is no longer at the value date, the position and dripping
+     exports will be empty or wrong: check the row counts in SUMMARY first. Read-only SELECTs only. -->
+<rules name="rrr-fixtures-orm">
+    <parameters>
+        <param name="cob" type="date" value="2026-10-01"/>
+        <param name="valueDate" type="date" value="2026-10-02"/>
+        <param name="prevCob" type="date" value="2026-09-30"/>
+    </parameters>
+
+    <!-- Expected legacy output for the chosen clients (what the PDF and Excel were built from) -->
+    <sql id="expected-report" db="mysql-oprdb02" timeout="120" export="full">
+        <![CDATA[
+            SELECT cob_date, client_code, account_status, mtm, cash_balance, account_balance, threshold, excess_deficit,
+                   threshold_utilization, pie_5d, pfe_5d, threshold_def_ageing, cash_def_ageing, ftd_pnL
+              FROM dbsystemuat.rrr_report_table_orm
+             WHERE cob_date IN (:cob, :prevCob) AND UPPER(TRIM(client_code)) IN ('GBX', 'SBX', 'OGX', 'SOX', 'PAX', 'QCX')
+             ORDER BY client_code, cob_date
+        ]]>
+    </sql>
+
+    <!-- Inputs: client master and threshold, cash, PIE rows, correlation, buffers -->
+    <sql id="in-clients" db="mysql-oprdb02" timeout="120" export="full">
+        <![CDATA[
+            SELECT c.client_code, c.counterparty_parent, c.client_name, c.trade_category, c.region, c.client_status,
+                   t.final_threshold, t.min_trnsfr_amt, t.provision
+              FROM dbsystemuat.client_master_data_orm c
+              LEFT JOIN dbsystemuat.client_threshold_master_table_orm t ON LOWER(t.client_code) = LOWER(c.client_code)
+             WHERE UPPER(TRIM(c.client_code)) IN ('GBX', 'SBX', 'OGX', 'SOX', 'PAX', 'QCX')
+             ORDER BY c.client_code
+        ]]>
+    </sql>
+    <sql id="in-cash" db="mysql-oprdb02" timeout="120" export="full">
+        <![CDATA[
+            SELECT cob_date, client_code, currency, closing_balance
+              FROM dbsystemuat.client_cash_account_balance_table_orm
+             WHERE cob_date = :cob AND UPPER(TRIM(client_code)) IN ('GBX', 'SBX', 'OGX', 'SOX', 'PAX', 'QCX')
+             ORDER BY client_code, currency
+        ]]>
+    </sql>
+    <sql id="in-pie" db="mysql-oprdb02" timeout="120" export="full">
+        <![CDATA[
+            SELECT cob_date, client_code, product_code, positive_bump, negative_bump, pnl_10d_pie, delta_10d_pie
+              FROM dbsystemuat.grasa_10dpie_rrr_table_orm
+             WHERE cob_date = :cob AND UPPER(TRIM(client_code)) IN ('GBX', 'SBX', 'OGX', 'SOX', 'PAX', 'QCX')
+             ORDER BY client_code, product_code
+        ]]>
+    </sql>
+    <sql id="in-correlation" db="mysql-oprdb02" timeout="120" export="full">
+        <![CDATA[
+            SELECT product_group, product_1, product_2, correl
+              FROM dbsystemuat.rrr_product_group_correl_table_orm
+             ORDER BY product_group, product_1, product_2
+        ]]>
+    </sql>
+    <sql id="in-buffers" db="mysql-oprdb02" timeout="120" export="full">
+        <![CDATA[
+            SELECT bu_name, query_number, query_script
+              FROM dbsystemuat.query_grasa_rrr_table
+             WHERE bu_name = 'orm' AND query_number IN (1, 2, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19)
+             ORDER BY query_number
+        ]]>
+    </sql>
+
+    <!-- Inputs: positions (statement cache at the value date), dripping, booking structure, FX -->
+    <sql id="in-positions" db="mysql-oprdb02" timeout="600" fetchSize="5000" export="full">
+        <![CDATA[
+            SELECT value_date, settlement_date, client_code, contract_number, product_code, derivative_type, opt_periodicity,
+                   is_premium_paid, active_lots, mult_factor, nc_factor, fx_nc_factor, mtm_usd, mtm_nc,
+                   mkt_value_usd, mkt_value_nc, premium_paid_usd, premium_paid_nc, fixing_date
+              FROM dbsystemuat.helper_client_statement_report_view_cache_table_orm
+             WHERE value_date = :valueDate AND contract_number IS NOT NULL
+               AND SUBSTRING_INDEX(contract_number, '_', 1) IN ('GBX', 'SBX', 'OGX', 'SOX', 'PAX', 'QCX')
+             ORDER BY contract_number
+        ]]>
+    </sql>
+    <sql id="in-dripping" db="mysql-oprdb02" timeout="300" export="full">
+        <![CDATA[
+            SELECT settle_date, value_date, contract_number, mtm_post_dripping_today, mtm_post_dripping_today_USD
+              FROM dbsystemuat.client_dripping_table_orm
+             WHERE (settle_date = :cob OR value_date = :valueDate)
+               AND SUBSTRING_INDEX(contract_number, '_', 1) IN ('GBX', 'SBX', 'OGX', 'SOX', 'PAX', 'QCX')
+             ORDER BY contract_number
+        ]]>
+    </sql>
+    <sql id="in-booking" db="mysql-oprdb02" timeout="300" export="full">
+        <![CDATA[
+            SELECT contract_number, structure_name
+              FROM dbsystemuat.client_statement_booking_order_information_table_orm
+             WHERE SUBSTRING_INDEX(contract_number, '_', 1) IN ('GBX', 'SBX', 'OGX', 'SOX', 'PAX', 'QCX')
+             ORDER BY contract_number
+        ]]>
+    </sql>
+    <sql id="in-fx" db="mysql-oprdb02" timeout="300" export="full">
+        <![CDATA[
+            SELECT m.currency, m.spot, m.quantotype, u.settlement_date, u.value_date, u.settle_value
+              FROM dbsystemuat.underlying_settle_value_table u
+              JOIN dbsystemuat.currency_spot_mapping_table m ON u.underlying_id = m.spot
+             WHERE u.underlying_id LIKE '%spot%' AND (u.settlement_date IN (:cob, :valueDate) OR u.value_date IN (:cob, :valueDate))
+             ORDER BY m.currency, u.settlement_date
+        ]]>
+    </sql>
+    <sql id="in-product-currency" db="mysql-oprdb02" timeout="120" export="full">
+        <![CDATA[
+            SELECT invenio_product_code, currency
+              FROM dbsystemuat.product_master_table
+             WHERE invenio_product_code LIKE 'CR %'
+             ORDER BY invenio_product_code
+        ]]>
+    </sql>
+
+    <compress id="bundle" file="rrr-fixtures-orm.zip">
+        <include ref="expected-report"/>
+        <include ref="in-clients"/>
+        <include ref="in-cash"/>
+        <include ref="in-pie"/>
+        <include ref="in-correlation"/>
+        <include ref="in-buffers"/>
+        <include ref="in-positions"/>
+        <include ref="in-dripping"/>
+        <include ref="in-booking"/>
+        <include ref="in-fx"/>
+        <include ref="in-product-currency"/>
+    </compress>
+</rules>
