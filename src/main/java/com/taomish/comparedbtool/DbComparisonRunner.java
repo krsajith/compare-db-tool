@@ -275,7 +275,10 @@ final class DbComparisonRunner {
             projection.add("su.sn"); projection.add("tu.tn");
             for (int i = 0; i < keys.size(); i++) {
                 projection.add("COALESCE(su.k" + i + ", tu.k" + i + ") AS k" + i);
-                on.add(same("su.k" + i, "tu.k" + i));
+                // Equijoins keep PostgreSQL FULL JOIN hash/merge compatible, including NULL keys.
+                String empty = keys.get(i).numeric() ? "0" : "''";
+                on.add("(COALESCE(su.k" + i + ", " + empty + ") = COALESCE(tu.k" + i + ", " + empty
+                    + ") AND (su.k" + i + " IS NULL) = (tu.k" + i + " IS NULL))");
             }
             String select = "SELECT " + String.join(", ", projection), join = String.join(" AND ", on);
             ctes.add("j AS (" + (postgres ? select + " FROM su FULL OUTER JOIN tu ON " + join

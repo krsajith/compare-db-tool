@@ -4,8 +4,8 @@
      Order of reading: 1) probes (are the legacy tables still at these dates?)  2) totals  3) inputs  4) positions.
      MySQL may have moved ahead after migration: read the probe first; if the legacy cache or dripping show other dates,
      ignore the matching comparisons (pos, pos-agg, dripping).
-     The new position function fn_client_statement_position_rows_v2 creates temp tables, so it cannot run in this
-     read-only tool: positions are compared against the new cache table instead. Read-only SELECTs only. -->
+     Positions compare legacy and new caches, then compare the report function directly with the new cache.
+     The function query explicitly opts into non-production temp-table mode and is always rolled back. -->
 <rules name="rrr-parity-orm">
     <parameters>
         <param name="bu" type="string" value="ORM"/>
@@ -287,6 +287,36 @@
         <breakdown columns="derivative_type" top="20"/>
     </compare>
 
+    <!-- Compare the report function directly with the new cache; temp-table work is always rolled back. -->
+    <sql id="new-fn-agg" db="postgres-dev" timeout="900" fetchSize="2000" export="full" tempTables="true">
+        <![CDATA[
+            WITH t AS (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1)
+            SELECT upper(split_part(p.contract_number, '_', 1)) AS client_code, p.derivative_type,
+                   count(*) AS n_rows, round(sum(p.active_lots)::numeric, 4) AS lots,
+                   round(sum(p.mtm_usd)::numeric, 2) AS mtm_usd, round(sum(p.mtm_nc)::numeric, 2) AS mtm_nc,
+                   round(sum(p.mkt_value_usd)::numeric, 2) AS mkt_value_usd, round(sum(p.mkt_value_nc)::numeric, 2) AS mkt_value_nc,
+                   round(sum(CASE WHEN p.is_premium_paid = 1 THEN 0
+                                  ELSE p.original_premium * -p.active_lots * p.mult_factor * p.nc_factor * p.fx_nc_factor END)::numeric, 2)
+                       AS premium_unpaid_usd
+              FROM opera.fn_client_statement_position_rows_v2(
+                       (SELECT tenant_id FROM t), CAST(:bu AS text), CAST(:valueDate AS date),
+                       (SELECT jsonb_agg(m.client_code) FROM opera.client_master_data m, t
+                         WHERE m.tenant_id = t.tenant_id AND m.business_unit = :bu AND length(trim(m.client_code)) = 3)) p
+             GROUP BY 1, 2
+        ]]>
+    </sql>
+    <compare id="pos-fn-vs-cache" source="new-pos-agg" target="new-fn-agg" engine="db" export="full">
+        <key columns="client_code,derivative_type"/>
+        <column name="n_rows" absTol="0"/>
+        <column name="lots" absTol="0.01" nullAsZero="true"/>
+        <column name="mtm_usd" absTol="1" nullAsZero="true"/>
+        <column name="mtm_nc" absTol="1" nullAsZero="true"/>
+        <column name="mkt_value_usd" absTol="1" nullAsZero="true"/>
+        <column name="mkt_value_nc" absTol="1" nullAsZero="true"/>
+        <column name="premium_unpaid_usd" absTol="1" nullAsZero="true"/>
+        <breakdown columns="derivative_type" top="20"/>
+    </compare>
+
     <compress id="bundle" file="rrr-parity-orm.zip">
         <include ref="probe-old-dates"/>
         <include ref="probe-old-valuation"/>
@@ -299,6 +329,8 @@
         <include ref="pie"/>
         <include ref="dripping"/>
         <include ref="pos-agg"/>
+        <include ref="new-fn-agg"/>
+        <include ref="pos-fn-vs-cache"/>
         <include ref="pos"/>
     </compress>
 </rules>
