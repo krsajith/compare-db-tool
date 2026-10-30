@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- RRR client master three-way check, BU CFS: legacy MySQL today, the migration copy in Postgres (schema opera_backup_04_10,
+     written 03-Oct-2026) and current Postgres (schema opera). The earlier compare found 18 credit review differences
+     (client_status), 6 corrupted names (question marks) and 3 clients present only in legacy.
+     Question: did legacy change after the migration (backup equals current, legacy differs), or did the migration or a later edit
+     change the data (backup differs from legacy)? Comparisons here are case sensitive on purpose: capital and lower case
+     differences have caused parity problems before (spot ids, status text). The key is the exact client code.
+     legacy-vs-backup streams two small result sets across databases. backup-vs-current runs inside Postgres.
+     Read-only SELECTs only. -->
+<rules name="rrr-client-master-3way-cfs">
+    <parameters>
+        <param name="bu" type="string" value="CFS"/>
+    </parameters>
+
+    <sql id="legacy-master" db="mysql-oprdb02" timeout="300" fetchSize="2000">
+        <![CDATA[
+            SELECT TRIM(client_code) AS client_code, counterparty_parent, trade_category, region, client_status
+              FROM dbsystemuat.client_master_data_cfs
+        ]]>
+    </sql>
+    <sql id="backup-master" db="postgres-dev" timeout="300" fetchSize="2000">
+        <![CDATA[
+            SELECT trim(client_code) AS client_code, counterparty_parent, trade_category, region, client_status
+              FROM opera_backup_04_10.client_master_data
+             WHERE tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1)
+               AND business_unit = :bu
+        ]]>
+    </sql>
+    <sql id="current-master" db="postgres-dev" timeout="300" fetchSize="2000">
+        <![CDATA[
+            SELECT trim(client_code) AS client_code, counterparty_parent, trade_category, region, client_status
+              FROM opera.client_master_data
+             WHERE tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1)
+               AND business_unit = :bu
+        ]]>
+    </sql>
+
+    <!-- Exact text comparison (no trim, case or null relaxation except null equals null) -->
+    <compare id="legacy-vs-backup" source="legacy-master" target="backup-master">
+        <key columns="client_code"/>
+        <column name="counterparty_parent"/>
+        <column name="trade_category"/>
+        <column name="region"/>
+        <column name="client_status"/>
+    </compare>
+    <compare id="backup-vs-current" source="backup-master" target="current-master" engine="db">
+        <key columns="client_code"/>
+        <column name="counterparty_parent"/>
+        <column name="trade_category"/>
+        <column name="region"/>
+        <column name="client_status"/>
+    </compare>
+
+    <compress id="bundle" file="rrr-client-master-3way-cfs.zip">
+        <include ref="legacy-vs-backup"/>
+        <include ref="backup-vs-current"/>
+    </compress>
+</rules>
