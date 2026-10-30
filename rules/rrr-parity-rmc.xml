@@ -1,0 +1,304 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- RRR parity, BU RMC: legacy MySQL (OPRDB02, schema dbsystemuat, tables suffixed _rmc) vs new Postgres (postgres-dev, schema opera).
+     Settlement date (COB) = :cob, value date = :valueDate. For COB 01-Oct-2026 the value date is 02-Oct-2026.
+     Order of reading: 1) probes (are the legacy tables still at these dates?)  2) totals  3) inputs  4) positions.
+     MySQL may have moved ahead after migration: read the probe first; if the legacy cache or dripping show other dates,
+     ignore the matching comparisons (pos, pos-agg, dripping).
+     The new position function fn_client_statement_position_rows_v2 creates temp tables, so it cannot run in this
+     read-only tool: positions are compared against the new cache table instead. Read-only SELECTs only. -->
+<rules name="rrr-parity-rmc">
+    <parameters>
+        <param name="bu" type="string" value="RMC"/>
+        <param name="cob" type="date" value="2026-10-01"/>
+        <param name="valueDate" type="date" value="2026-10-02"/>
+        <param name="since" type="date" value="2026-09-25"/>
+    </parameters>
+
+    <!-- ===== Step 0: probes (export only, no compare) ===== -->
+    <sql id="probe-old-dates" db="mysql-oprdb02" timeout="300" fetchSize="2000" export="full">
+        <![CDATA[
+            SELECT 'rrr_report' AS src, CAST(cob_date AS CHAR) AS d1, '' AS d2, COUNT(*) AS n
+              FROM dbsystemuat.rrr_report_table_rmc WHERE cob_date >= :since GROUP BY cob_date
+            UNION ALL
+            SELECT 'cash', CAST(cob_date AS CHAR), '', COUNT(*)
+              FROM dbsystemuat.client_cash_account_balance_table_rmc WHERE cob_date >= :since GROUP BY cob_date
+            UNION ALL
+            SELECT 'grasa_rrr', CAST(cob_date AS CHAR), '', COUNT(*)
+              FROM dbsystemuat.grasa_10dpie_rrr_table_rmc WHERE cob_date >= :since GROUP BY cob_date
+            UNION ALL
+            SELECT 'dripping(settle_date,value_date)', CAST(settle_date AS CHAR), CAST(value_date AS CHAR), COUNT(*)
+              FROM dbsystemuat.client_dripping_table_rmc WHERE settle_date >= :since OR value_date >= :since GROUP BY settle_date, value_date
+            UNION ALL
+            SELECT 'stmt_cache(value_date,settlement_date)', CAST(value_date AS CHAR), CAST(settlement_date AS CHAR), COUNT(*)
+              FROM dbsystemuat.helper_client_statement_report_view_cache_table_rmc GROUP BY value_date, settlement_date
+        ]]>
+    </sql>
+    <!-- Separate query: the legacy valuation-date table name differs per BU, a wrong name must not fail the probe above -->
+    <sql id="probe-old-valuation" db="mysql-oprdb02" timeout="60" export="full">
+        <![CDATA[
+            SELECT value_date, settlement_date FROM dbsystemuat.valuation_date_table_rmc
+        ]]>
+    </sql>
+    <sql id="probe-old-queries" db="mysql-oprdb02" timeout="120" export="full">
+        <![CDATA[
+            SELECT bu_name, query_number, query_script
+              FROM dbsystemuat.query_grasa_rrr_table
+             WHERE bu_name = 'rmc' AND query_number IN (1, 2, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19)
+             ORDER BY query_number
+        ]]>
+    </sql>
+    <sql id="probe-new-config" db="postgres-dev" timeout="120" export="full">
+        <![CDATA[
+            SELECT business_unit, threshold_def_ageing_buffer, cash_def_ageing_buffer, client_cash_call_buffer,
+                   account_balance_buffer, ofi_internal_threshold, ofi_external_threshold, ofi_total_threshold,
+                   ogh_internal_threshold, ogh_external_threshold, ogh_total_threshold
+              FROM opera.rrr_report_configuration
+             WHERE tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1)
+               AND business_unit IN (:bu, 'DEFAULT')
+        ]]>
+    </sql>
+
+    <!-- ===== Step 2: report totals per client (the numbers on the PDF) ===== -->
+    <sql id="old-totals" db="mysql-oprdb02" timeout="300" fetchSize="2000">
+        <![CDATA[
+            SELECT UPPER(TRIM(client_code)) AS client_code, account_status, mtm, cash_balance, account_balance, threshold,
+                   excess_deficit, pie_5d, pfe_5d, threshold_def_ageing, cash_def_ageing, ftd_pnL AS ftd_pnl
+              FROM dbsystemuat.rrr_report_table_rmc
+             WHERE cob_date = :cob
+        ]]>
+    </sql>
+    <sql id="new-totals" db="postgres-dev" timeout="300" fetchSize="2000">
+        <![CDATA[
+            SELECT UPPER(TRIM(client_code)) AS client_code, account_status, mtm, cash_balance, account_balance, threshold,
+                   excess_deficit, pie_5d, pfe_5d, threshold_def_ageing, cash_def_ageing, ftd_pnl
+              FROM opera.rrr_report_table
+             WHERE tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1)
+               AND business_unit = :bu AND cob_date = :cob
+        ]]>
+    </sql>
+    <compare id="totals" source="old-totals" target="new-totals">
+        <key columns="client_code"/>
+        <column name="account_status" trim="true" nullAsEmpty="true" caseInsensitive="true"/>
+        <column name="mtm" absTol="1"/>
+        <column name="cash_balance" absTol="1"/>
+        <column name="account_balance" absTol="1"/>
+        <column name="threshold" absTol="1"/>
+        <column name="excess_deficit" absTol="1"/>
+        <column name="pie_5d" absTol="1"/>
+        <column name="pfe_5d" absTol="1"/>
+        <column name="ftd_pnl" absTol="1"/>
+        <breakdown columns="account_status" top="15"/>
+    </compare>
+
+    <!-- ===== Step 2b: inputs to the totals, one comparison each ===== -->
+    <!-- Client master: population, region, trade category, credit review (client_status) -->
+    <sql id="old-clients" db="mysql-oprdb02" timeout="300" fetchSize="2000">
+        <![CDATA[
+            SELECT UPPER(TRIM(client_code)) AS client_code, counterparty_parent, trade_category, region, client_status,
+                   CHAR_LENGTH(TRIM(client_code)) AS code_len
+              FROM dbsystemuat.client_master_data_rmc
+        ]]>
+    </sql>
+    <sql id="new-clients" db="postgres-dev" timeout="300" fetchSize="2000">
+        <![CDATA[
+            SELECT UPPER(TRIM(client_code)) AS client_code, counterparty_parent, trade_category, region, client_status,
+                   length(trim(client_code)) AS code_len
+              FROM opera.client_master_data
+             WHERE tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1)
+               AND business_unit = :bu
+        ]]>
+    </sql>
+    <compare id="clients" source="old-clients" target="new-clients">
+        <key columns="client_code"/>
+        <column name="counterparty_parent" trim="true" nullAsEmpty="true"/>
+        <column name="trade_category" trim="true" nullAsEmpty="true" caseInsensitive="true"/>
+        <column name="region" trim="true" nullAsEmpty="true" caseInsensitive="true"/>
+        <column name="client_status" trim="true" nullAsEmpty="true" caseInsensitive="true"/>
+        <breakdown columns="code_len" top="10"/>
+        <breakdown columns="region" top="15"/>
+    </compare>
+
+    <!-- Threshold: legacy takes the first row per client, the new code takes the latest; duplicates show up here -->
+    <sql id="old-threshold" db="mysql-oprdb02" timeout="300" fetchSize="2000">
+        <![CDATA[
+            SELECT UPPER(TRIM(client_code)) AS client_code, final_threshold, min_trnsfr_amt, provision
+              FROM dbsystemuat.client_threshold_master_table_rmc
+        ]]>
+    </sql>
+    <sql id="new-threshold" db="postgres-dev" timeout="300" fetchSize="2000">
+        <![CDATA[
+            SELECT UPPER(TRIM(client_code)) AS client_code, final_threshold, min_trnsfr_amt, provision
+              FROM opera.client_threshold_master
+             WHERE tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1)
+               AND upper(trim(business_unit)) = :bu
+        ]]>
+    </sql>
+    <compare id="threshold" source="old-threshold" target="new-threshold">
+        <key columns="client_code"/>
+        <column name="final_threshold" absTol="0.01" nullAsZero="true"/>
+        <column name="min_trnsfr_amt" absTol="0.01" nullAsZero="true"/>
+        <column name="provision" absTol="0.01" nullAsZero="true"/>
+    </compare>
+
+    <!-- Cash at the settlement date; key includes currency so multi-currency clients show as duplicates, not hidden sums -->
+    <sql id="old-cash" db="mysql-oprdb02" timeout="300" fetchSize="2000">
+        <![CDATA[
+            SELECT UPPER(TRIM(client_code)) AS client_code, UPPER(TRIM(currency)) AS currency, closing_balance
+              FROM dbsystemuat.client_cash_account_balance_table_rmc
+             WHERE cob_date = :cob
+        ]]>
+    </sql>
+    <sql id="new-cash" db="postgres-dev" timeout="300" fetchSize="2000">
+        <![CDATA[
+            SELECT UPPER(TRIM(client_code)) AS client_code, UPPER(TRIM(currency)) AS currency, closing_balance
+              FROM opera.client_cash_account_balance_table
+             WHERE tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1)
+               AND business_unit = :bu AND cob_date = :cob
+        ]]>
+    </sql>
+    <compare id="cash" source="old-cash" target="new-cash">
+        <key columns="client_code,currency"/>
+        <column name="closing_balance" absTol="1" nullAsZero="true"/>
+    </compare>
+
+    <!-- 10D PIE rows from GRASA (settlement date) -->
+    <sql id="old-pie" db="mysql-oprdb02" timeout="300" fetchSize="2000">
+        <![CDATA[
+            SELECT UPPER(TRIM(client_code)) AS client_code, UPPER(TRIM(product_code)) AS product_code,
+                   positive_bump, negative_bump, pnl_10d_pie, delta_10d_pie
+              FROM dbsystemuat.grasa_10dpie_rrr_table_rmc
+             WHERE cob_date = :cob
+        ]]>
+    </sql>
+    <sql id="new-pie" db="postgres-dev" timeout="300" fetchSize="2000">
+        <![CDATA[
+            SELECT UPPER(TRIM(client_code)) AS client_code, UPPER(TRIM(product_code)) AS product_code,
+                   positive_bump, negative_bump, pnl_10d_pie, delta_10d_pie
+              FROM opera.grasa_10dpie_rrr_table
+             WHERE tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1)
+               AND business_unit = :bu AND cob_date = :cob
+        ]]>
+    </sql>
+    <compare id="pie" source="old-pie" target="new-pie">
+        <key columns="client_code,product_code"/>
+        <column name="positive_bump" absTol="1" nullAsZero="true"/>
+        <column name="negative_bump" absTol="1" nullAsZero="true"/>
+        <column name="pnl_10d_pie" absTol="1" nullAsZero="true"/>
+        <column name="delta_10d_pie" absTol="0.01" nullAsZero="true"/>
+    </compare>
+
+    <!-- Dripping: legacy reads settle_date = COB, new reads value_date = valueDate -->
+    <sql id="old-dripping" db="mysql-oprdb02" timeout="300" fetchSize="2000">
+        <![CDATA[
+            SELECT LOWER(TRIM(contract_number)) AS contract_number, mtm_post_dripping_today,
+                   mtm_post_dripping_today_USD AS mtm_post_dripping_today_usd
+              FROM dbsystemuat.client_dripping_table_rmc
+             WHERE settle_date = :cob
+        ]]>
+    </sql>
+    <sql id="new-dripping" db="postgres-dev" timeout="300" fetchSize="2000">
+        <![CDATA[
+            SELECT LOWER(TRIM(contract_number)) AS contract_number, mtm_post_dripping_today, mtm_post_dripping_today_usd
+              FROM opera.client_dripping_table
+             WHERE tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1)
+               AND business_unit = :bu AND value_date = :valueDate
+        ]]>
+    </sql>
+    <compare id="dripping" source="old-dripping" target="new-dripping">
+        <key columns="contract_number"/>
+        <column name="mtm_post_dripping_today" absTol="1" nullAsZero="true"/>
+        <column name="mtm_post_dripping_today_usd" absTol="1" nullAsZero="true"/>
+    </compare>
+
+    <!-- ===== Step 3: positions (MTM inputs). Legacy cache vs new cache table at the value date ===== -->
+    <sql id="old-pos-agg" db="mysql-oprdb02" timeout="900" fetchSize="2000" export="full">
+        <![CDATA[
+            SELECT UPPER(SUBSTRING_INDEX(contract_number, '_', 1)) AS client_code, derivative_type,
+                   COUNT(*) AS n_rows, ROUND(SUM(active_lots), 4) AS lots,
+                   ROUND(SUM(mtm_usd), 2) AS mtm_usd, ROUND(SUM(mtm_nc), 2) AS mtm_nc,
+                   ROUND(SUM(mkt_value_usd), 2) AS mkt_value_usd, ROUND(SUM(mkt_value_nc), 2) AS mkt_value_nc,
+                   ROUND(SUM(CASE WHEN is_premium_paid = 1 THEN 0 ELSE premium_paid_usd END), 2) AS premium_unpaid_usd
+              FROM dbsystemuat.helper_client_statement_report_view_cache_table_rmc
+             WHERE value_date = :valueDate AND contract_number IS NOT NULL
+             GROUP BY 1, 2
+        ]]>
+    </sql>
+    <sql id="new-pos-agg" db="postgres-dev" timeout="900" fetchSize="2000" export="full">
+        <![CDATA[
+            SELECT UPPER(split_part(contract_number, '_', 1)) AS client_code, derivative_type,
+                   COUNT(*) AS n_rows, ROUND(SUM(active_lots)::numeric, 4) AS lots,
+                   ROUND(SUM(mtm_usd)::numeric, 2) AS mtm_usd, ROUND(SUM(mtm_nc)::numeric, 2) AS mtm_nc,
+                   ROUND(SUM(mkt_value_usd)::numeric, 2) AS mkt_value_usd, ROUND(SUM(mkt_value_nc)::numeric, 2) AS mkt_value_nc,
+                   ROUND(SUM(CASE WHEN is_premium_paid = 1 THEN 0 ELSE premium_paid_usd END)::numeric, 2) AS premium_unpaid_usd
+              FROM opera.helper_client_statement_report_view_cache_table
+             WHERE tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1)
+               AND business_unit = :bu AND value_date = :valueDate AND contract_number IS NOT NULL
+             GROUP BY 1, 2
+        ]]>
+    </sql>
+    <compare id="pos-agg" source="old-pos-agg" target="new-pos-agg" export="full">
+        <key columns="client_code,derivative_type"/>
+        <column name="n_rows" absTol="0"/>
+        <column name="lots" absTol="0.01" nullAsZero="true"/>
+        <column name="mtm_usd" absTol="1" nullAsZero="true"/>
+        <column name="mtm_nc" absTol="1" nullAsZero="true"/>
+        <column name="mkt_value_usd" absTol="1" nullAsZero="true"/>
+        <column name="mkt_value_nc" absTol="1" nullAsZero="true"/>
+        <column name="premium_unpaid_usd" absTol="1" nullAsZero="true"/>
+        <breakdown columns="derivative_type" top="20"/>
+    </compare>
+
+    <sql id="old-pos" db="mysql-oprdb02" timeout="900" fetchSize="5000">
+        <![CDATA[
+            SELECT LOWER(TRIM(contract_number)) AS contract_number, product_code, derivative_type, opt_periodicity,
+                   is_premium_paid, active_lots, mult_factor, nc_factor, fx_nc_factor,
+                   mtm_usd, mtm_nc, mkt_value_usd, mkt_value_nc, premium_paid_usd, premium_paid_nc, fixing_date
+              FROM dbsystemuat.helper_client_statement_report_view_cache_table_rmc
+             WHERE value_date = :valueDate AND contract_number IS NOT NULL
+        ]]>
+    </sql>
+    <sql id="new-pos" db="postgres-dev" timeout="900" fetchSize="5000">
+        <![CDATA[
+            SELECT LOWER(TRIM(contract_number)) AS contract_number, product_code, derivative_type, opt_periodicity,
+                   is_premium_paid, active_lots, mult_factor, nc_factor, fx_nc_factor,
+                   mtm_usd, mtm_nc, mkt_value_usd, mkt_value_nc, premium_paid_usd, premium_paid_nc, fixing_date
+              FROM opera.helper_client_statement_report_view_cache_table
+             WHERE tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1)
+               AND business_unit = :bu AND value_date = :valueDate AND contract_number IS NOT NULL
+        ]]>
+    </sql>
+    <compare id="pos" source="old-pos" target="new-pos">
+        <key columns="contract_number"/>
+        <column name="product_code" trim="true" caseInsensitive="true"/>
+        <column name="derivative_type" trim="true" caseInsensitive="true"/>
+        <column name="opt_periodicity" trim="true" nullAsEmpty="true" caseInsensitive="true"/>
+        <column name="active_lots" absTol="0.0001" nullAsZero="true"/>
+        <column name="mult_factor" absTol="0.000001" nullAsZero="true"/>
+        <column name="nc_factor" absTol="0.000001" nullAsZero="true"/>
+        <column name="fx_nc_factor" absTol="0.000001" nullAsZero="true"/>
+        <column name="mtm_usd" absTol="1" nullAsZero="true"/>
+        <column name="mtm_nc" absTol="1" nullAsZero="true"/>
+        <column name="mkt_value_usd" absTol="1" nullAsZero="true"/>
+        <column name="mkt_value_nc" absTol="1" nullAsZero="true"/>
+        <column name="premium_paid_usd" absTol="1" nullAsZero="true"/>
+        <column name="premium_paid_nc" absTol="1" nullAsZero="true"/>
+        <column name="fixing_date" dateOnly="true"/>
+        <breakdown columns="derivative_type,product_code" top="25"/>
+        <breakdown columns="derivative_type" top="20"/>
+    </compare>
+
+    <compress id="bundle" file="rrr-parity-rmc.zip">
+        <include ref="probe-old-dates"/>
+        <include ref="probe-old-valuation"/>
+        <include ref="probe-old-queries"/>
+        <include ref="probe-new-config"/>
+        <include ref="totals"/>
+        <include ref="clients"/>
+        <include ref="threshold"/>
+        <include ref="cash"/>
+        <include ref="pie"/>
+        <include ref="dripping"/>
+        <include ref="pos-agg"/>
+        <include ref="pos"/>
+    </compress>
+</rules>
