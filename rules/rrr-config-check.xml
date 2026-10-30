@@ -1,0 +1,146 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- RRR configuration and readiness check, all business units, no comparison, read-only SELECTs.
+     Question it answers: is the value date, the date mapping, the cache refresh state and the base data right for the
+     value date we want to report on (value date 02-Oct-2026, settlement date 01-Oct-2026, previous settlement 30-Sep-2026)?
+     Read the output together with analysis/rrr-parity-2026-10-30/CONFIG_CHECK_GUIDE.md.
+     Postgres probes run on postgres-dev, the legacy valuation dates on mysql-oprdb02. -->
+<rules name="rrr-config-check">
+    <parameters>
+        <param name="tenantBu" type="string" value="CFS"/>
+        <param name="valueDate" type="date" value="2026-10-02"/>
+        <param name="cob" type="date" value="2026-10-01"/>
+        <param name="prevCob" type="date" value="2026-09-30"/>
+        <param name="since" type="date" value="2026-09-25"/>
+    </parameters>
+
+    <!-- 1. Valuation date per BU (all rows: the Java report takes the latest updated row, the SQL functions take the max value date) -->
+    <sql id="cfg-valuation-dates" db="postgres-dev" timeout="120" export="full">
+        <![CDATA[
+            SELECT business_unit, value_date, settlement_date, updated_by, updated_timestamp
+              FROM opera.valuation_date_table
+             WHERE tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :tenantBu LIMIT 1)
+             ORDER BY business_unit, updated_timestamp DESC
+             LIMIT 300
+        ]]>
+    </sql>
+
+    <!-- 2. Value date to settlement date mapping around the report date -->
+    <sql id="cfg-date-mapping" db="postgres-dev" timeout="120" export="full">
+        <![CDATA[
+            SELECT value_date, settlement_date, COUNT(*) AS n_rows
+              FROM opera.vdate_sdate_table
+             WHERE tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :tenantBu LIMIT 1)
+               AND value_date BETWEEN :since AND :valueDate + 7
+             GROUP BY value_date, settlement_date
+             ORDER BY value_date
+        ]]>
+    </sql>
+
+    <!-- 3. Last cache refreshes recorded by fn_refresh_client_statement_positions (which value date, when, by whom) -->
+    <sql id="cfg-refresh-status" db="postgres-dev" timeout="120" export="full">
+        <![CDATA[
+            SELECT business_unit, tablename, valuation_date, status_type, status, created_by, created_timestamp
+              FROM opera.status_table
+             WHERE tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :tenantBu LIMIT 1)
+               AND tablename LIKE 'client_statement_cache_table%'
+             ORDER BY created_timestamp DESC
+             LIMIT 60
+        ]]>
+    </sql>
+
+    <!-- 4. What the cache holds per BU and value date, and when it was written -->
+    <sql id="cfg-cache-state" db="postgres-dev" timeout="300" export="full">
+        <![CDATA[
+            SELECT business_unit, value_date, settlement_date, COUNT(*) AS n_rows,
+                   MIN(created_timestamp) AS first_written, MAX(created_timestamp) AS last_written
+              FROM opera.helper_client_statement_report_view_cache_table
+             WHERE tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :tenantBu LIMIT 1)
+               AND value_date >= :since
+             GROUP BY business_unit, value_date, settlement_date
+             ORDER BY business_unit, value_date
+        ]]>
+    </sql>
+
+    <!-- 5. Base data present for the report date, per BU -->
+    <sql id="cfg-readiness" db="postgres-dev" timeout="600" export="full">
+        <![CDATA[
+            WITH ten AS (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :tenantBu LIMIT 1)
+            SELECT 'security_settle_price at value date' AS source, business_unit, COUNT(*) AS n_rows
+              FROM opera.security_settlement_value_table
+             WHERE tenant_id = (SELECT tenant_id FROM ten) AND value_date = :valueDate GROUP BY business_unit
+            UNION ALL
+            SELECT 'latest_active_lot non zero (current)', business_unit, COUNT(*)
+              FROM opera.latest_active_lot
+             WHERE tenant_id = (SELECT tenant_id FROM ten) AND active_lots <> 0 GROUP BY business_unit
+            UNION ALL
+            SELECT 'cash balance at settlement date', business_unit, COUNT(*)
+              FROM opera.client_cash_account_balance_table
+             WHERE tenant_id = (SELECT tenant_id FROM ten) AND cob_date = :cob GROUP BY business_unit
+            UNION ALL
+            SELECT 'grasa 10d pie at settlement date', business_unit, COUNT(*)
+              FROM opera.grasa_10dpie_rrr_table
+             WHERE tenant_id = (SELECT tenant_id FROM ten) AND cob_date = :cob GROUP BY business_unit
+            UNION ALL
+            SELECT 'dripping at value date', business_unit, COUNT(*)
+              FROM opera.client_dripping_table
+             WHERE tenant_id = (SELECT tenant_id FROM ten) AND value_date = :valueDate GROUP BY business_unit
+            UNION ALL
+            SELECT 'rrr_report at settlement date', business_unit, COUNT(*)
+              FROM opera.rrr_report_table
+             WHERE tenant_id = (SELECT tenant_id FROM ten) AND cob_date = :cob GROUP BY business_unit
+            UNION ALL
+            SELECT 'rrr_report at previous settlement date', business_unit, COUNT(*)
+              FROM opera.rrr_report_table
+             WHERE tenant_id = (SELECT tenant_id FROM ten) AND cob_date = :prevCob GROUP BY business_unit
+            ORDER BY 1, 2
+        ]]>
+    </sql>
+
+    <!-- 6. Underlying values (shared by all BUs) at the value date -->
+    <sql id="cfg-underlying" db="postgres-dev" timeout="120" export="full">
+        <![CDATA[
+            SELECT value_date, settlement_date, COUNT(*) AS n_rows
+              FROM opera.underlying_settle_value_table
+             WHERE tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :tenantBu LIMIT 1)
+               AND value_date BETWEEN :since AND :valueDate + 7
+             GROUP BY value_date, settlement_date
+             ORDER BY value_date
+        ]]>
+    </sql>
+
+    <!-- 7. RRR configuration rows (buffers and thresholds) -->
+    <sql id="cfg-rrr-config" db="postgres-dev" timeout="120" export="full">
+        <![CDATA[
+            SELECT business_unit, threshold_def_ageing_buffer, cash_def_ageing_buffer, client_cash_call_buffer,
+                   account_balance_buffer, ofi_internal_threshold, ofi_external_threshold, ofi_total_threshold,
+                   ogh_internal_threshold, ogh_external_threshold, ogh_total_threshold
+              FROM opera.rrr_report_configuration
+             WHERE tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :tenantBu LIMIT 1)
+             ORDER BY business_unit
+        ]]>
+    </sql>
+
+    <!-- 8. Legacy valuation dates: the legacy side has moved ahead, so legacy cannot be compared at the report date -->
+    <sql id="cfg-legacy-valuation-cfs-orm" db="mysql-oprdb02" timeout="60" export="full">
+        <![CDATA[
+            SELECT 'cfs and orm' AS tables_used, value_date, settlement_date FROM dbsystemuat.valuation_date_table
+        ]]>
+    </sql>
+    <sql id="cfg-legacy-valuation-rmc" db="mysql-oprdb02" timeout="60" export="full">
+        <![CDATA[
+            SELECT 'rmc' AS tables_used, value_date, settlement_date FROM dbsystemuat.valuation_date_table_rmc
+        ]]>
+    </sql>
+
+    <compress id="bundle" file="rrr-config-check.zip">
+        <include ref="cfg-valuation-dates"/>
+        <include ref="cfg-date-mapping"/>
+        <include ref="cfg-refresh-status"/>
+        <include ref="cfg-cache-state"/>
+        <include ref="cfg-readiness"/>
+        <include ref="cfg-underlying"/>
+        <include ref="cfg-rrr-config"/>
+        <include ref="cfg-legacy-valuation-cfs-orm"/>
+        <include ref="cfg-legacy-valuation-rmc"/>
+    </compress>
+</rules>
