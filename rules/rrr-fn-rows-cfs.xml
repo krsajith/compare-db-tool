@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- RRR position rows, BU CFS, value date 02-Oct-2026: statement cache table (reproduces legacy MTM) against the output of
+     fn_client_statement_position_rows_v2 (what the Java report reads), row by row on trade_id, for a few clients only.
+     The aggregate comparison pos-fn-vs-cache showed premium equal but market value, MTM and some lots different.
+     This rule shows which input of the market value differs: settle_price, mult_factor, nc_factor, fx_nc_factor or lots.
+     Both sides are Postgres, so the comparison runs inside the database (engine db) and only differences are fetched.
+     The function call needs the temp-table mode. Read-only SELECTs only. -->
+<rules name="rrr-fn-rows-cfs">
+    <parameters>
+        <param name="bu" type="string" value="CFS"/>
+        <param name="valueDate" type="date" value="2026-10-02"/>
+    </parameters>
+
+    <sql id="cache-rows" db="postgres-dev" timeout="600" fetchSize="5000">
+        <![CDATA[
+            SELECT trade_id, derivative_type, product_code,
+                   CAST(active_lots AS numeric(30, 8)) AS active_lots,
+                   CAST(settle_price AS numeric(30, 10)) AS settle_price,
+                   CAST(mult_factor AS numeric(30, 10)) AS mult_factor,
+                   CAST(nc_factor AS numeric(30, 10)) AS nc_factor,
+                   CAST(fx_nc_factor AS numeric(30, 10)) AS fx_nc_factor,
+                   CAST(mkt_value_usd AS numeric(30, 4)) AS mkt_value_usd,
+                   CAST(mtm_usd AS numeric(30, 4)) AS mtm_usd
+              FROM opera.helper_client_statement_report_view_cache_table
+             WHERE tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1)
+               AND business_unit = :bu AND value_date = :valueDate AND contract_number IS NOT NULL
+               AND upper(split_part(contract_number, '_', 1)) IN ('AST', 'BFA', 'BFE', 'BOV', 'LIB', 'IOL')
+        ]]>
+    </sql>
+    <sql id="fn-rows" db="postgres-dev" timeout="900" fetchSize="5000" tempTables="true">
+        <![CDATA[
+            SELECT p.trade_id, p.derivative_type, p.product_code,
+                   CAST(p.active_lots AS numeric(30, 8)) AS active_lots,
+                   CAST(p.settle_price AS numeric(30, 10)) AS settle_price,
+                   CAST(p.mult_factor AS numeric(30, 10)) AS mult_factor,
+                   CAST(p.nc_factor AS numeric(30, 10)) AS nc_factor,
+                   CAST(p.fx_nc_factor AS numeric(30, 10)) AS fx_nc_factor,
+                   CAST(p.mkt_value_usd AS numeric(30, 4)) AS mkt_value_usd,
+                   CAST(p.mtm_usd AS numeric(30, 4)) AS mtm_usd
+              FROM opera.fn_client_statement_position_rows_v2(
+                       (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1),
+                       CAST(:bu AS text), CAST(:valueDate AS date),
+                       CAST('["AST","BFA","BFE","BOV","LIB","IOL"]' AS jsonb)) p
+        ]]>
+    </sql>
+    <compare id="rows" source="cache-rows" target="fn-rows" engine="db">
+        <key columns="trade_id"/>
+        <column name="derivative_type" trim="true" caseInsensitive="true"/>
+        <column name="product_code" trim="true" caseInsensitive="true"/>
+        <column name="active_lots" absTol="0.0001" nullAsZero="true"/>
+        <column name="settle_price" absTol="0.000001" nullAsZero="true"/>
+        <column name="mult_factor" absTol="0.000001" nullAsZero="true"/>
+        <column name="nc_factor" absTol="0.000001" nullAsZero="true"/>
+        <column name="fx_nc_factor" absTol="0.000001" nullAsZero="true"/>
+        <column name="mkt_value_usd" absTol="1" nullAsZero="true"/>
+        <column name="mtm_usd" absTol="1" nullAsZero="true"/>
+        <breakdown columns="derivative_type" top="20"/>
+        <breakdown columns="product_code" top="20"/>
+    </compare>
+
+    <compress id="bundle" file="rrr-fn-rows-cfs.zip">
+        <include ref="rows"/>
+    </compress>
+</rules>
