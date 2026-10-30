@@ -131,7 +131,7 @@ public final class RuleLoader {
                 throw new ToolException("Unknown datasource for query " + sql.id + ": " + sql.db);
             if (sql.timeout <= 0 || sql.fetchSize <= 0 || sql.maxRows < 0)
                 throw new ToolException("Invalid timeout, fetchSize or maxRows for " + sql.id);
-            if (checkQueries && !settings.getDatasources().get(sql.db).isReadOnly())
+            if (checkQueries && !sql.tempTables && !settings.getDatasources().get(sql.db).isReadOnly())
                 throw new ToolException("Datasource " + sql.db + " must have read-only=true.");
             if (checkQueries) SqlGuard.validate(sql.text);
             if (checkQueries) TempTablePolicy.validate(sql, settings);

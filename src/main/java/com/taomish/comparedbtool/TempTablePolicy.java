@@ -3,7 +3,7 @@ package com.taomish.comparedbtool;
 import java.util.*;
 import java.util.regex.Pattern;
 
-/** Opt-in policy checked both during validation and immediately before execution. */
+/** Non-production policy checked both during validation and immediately before execution. */
 final class TempTablePolicy {
     private TempTablePolicy() {}
     private static final Pattern TOKENS = Pattern.compile(
@@ -15,9 +15,11 @@ final class TempTablePolicy {
         var definition = settings.getDatasources().get(rule.db);
         if (definition == null) throw new ToolException("Unknown datasource: " + rule.db);
         if (QueryRunner.production(rule.db, definition))
-            throw new ToolException("Temp-table queries are forbidden on production datasource " + rule.db + ".");
+            throw new ToolException("Temp-table query " + rule.id + " refused: production datasource " + rule.db
+                + " (prod=true or name contains prod); no override. Datasource files loaded: " + settings.configurationDescription());
         if (!definition.isAllowTempTables())
-            throw new ToolException("Datasource " + rule.db + " requires allow-temp-tables=true for query " + rule.id + ".");
+            throw new ToolException("Temp tables explicitly disabled for datasource " + rule.db + ", query " + rule.id
+                + ". Set compare.datasources." + rule.db + ".allow-temp-tables=true. Datasource files loaded: " + settings.configurationDescription());
         if (definition.getUrl() == null || !(definition.getUrl().startsWith("jdbc:postgresql:") || definition.getUrl().startsWith("jdbc:h2:")))
             throw new ToolException("Temp-table mode supports PostgreSQL (and H2 tests) only: " + rule.db);
         String allowed = definition.getAllowedFunctions();

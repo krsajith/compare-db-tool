@@ -62,7 +62,7 @@ public final class QueryRunner implements AutoCloseable {
         return (tempTables ? tempPools : pools).computeIfAbsent(name, key -> {
             var definition = settings.getDatasources().get(key);
             if (definition == null) throw new ToolException("Unknown datasource: " + key);
-            if (!definition.isReadOnly()) throw new ToolException("Datasource must be read-only: " + key);
+            if (!tempTables && !definition.isReadOnly()) throw new ToolException("Datasource must be read-only: " + key);
             if (production(key, definition) && !allowProd)
                 throw new ToolException("Datasource " + key + " requires --allow-prod.");
             if (definition.getUrl() == null || !definition.getUrl().startsWith("jdbc:"))

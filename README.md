@@ -342,11 +342,24 @@ separate writable pool (one connection, auto-commit off). Every execution logs a
 and query id and rolls back on success or failure. Production names/flags are refused even with `--allow-prod`.
 Ordinary queries continue to use the read-only pool and session settings.
 
-Enable `compare.datasources.<name>.allow-temp-tables=true` explicitly. Optional
+Temp tables are enabled by default for non-production datasources, including dev and UAT. Optional
+`compare.datasources.<name>.allow-temp-tables=false` disables them explicitly; set it to `true` to re-enable.
+Production remains refused regardless of this property or `--allow-prod`. The datasource `read-only` flag
+governs ordinary queries only; temp-table queries use the separate writable pool with either flag value.
+The SQL attribute `tempTables="true"` is still required; statements remain single SELECT/WITH and always roll back.
+Optional
 `compare.datasources.<name>.allowed-functions=opera.fn_*` restricts schema-qualified function calls
 (comma-separated names or `*` patterns). When omitted it defaults to `*` (any function).
 Validation performs these checks without opening connections. The account can in principle write:
 use only trusted, allow-listed functions on non-prod; rollback cannot undo external side effects.
+
+Startup and `--datasources` show the absolute paths of datasource files loaded by Spring (including
+imports/additional locations) and each datasource's effective read-only, prod, allow-temp-tables and
+allowed-functions settings. Connection URLs, usernames and passwords are excluded. File paths are listed
+in configuration precedence order; environment/command-line overrides can still determine effective values.
+The PowerShell launcher changes to the project directory, so the default file is
+`<project>/config/datasources.properties`. Direct Java launches resolve it against their working directory.
+No datasource file is copied into `target`; additional locations may load and override another file.
 
 ### Compare inside PostgreSQL
 

@@ -138,8 +138,7 @@ public final class Cli {
         if (options.templateUpload != null) return new TemplateUploader(settings).execute(options);
         if (options.datasources) {
             if (settings.getDatasources().isEmpty()) System.out.println("No datasources configured. Check config/datasources.properties.");
-            settings.getDatasources().forEach((name, definition) -> System.out.println(name
-                + " [read-only=" + definition.isReadOnly() + ", prod=" + QueryRunner.production(name, definition) + "]"));
+            settings.diagnostics().forEach(System.out::println);
             return 0;
         }
         LOG.info("Loading rules: {}", options.rules.toAbsolutePath().normalize());
@@ -381,7 +380,7 @@ public final class Cli {
         QueryRunner.validateParameters(query, parameters);
         var definition = settings.getDatasources().get(query.db);
         if (definition == null) throw new ToolException("Unknown datasource: " + query.db);
-        if (!definition.isReadOnly()) throw new ToolException("Datasource " + query.db + " must have read-only=true.");
+        if (!query.tempTables && !definition.isReadOnly()) throw new ToolException("Datasource " + query.db + " must have read-only=true.");
         if (QueryRunner.production(query.db, definition) && !allowProd)
             throw new ToolException("Datasource " + query.db + " requires --allow-prod if production access is intended.");
         if (definition.getUrl() == null || !definition.getUrl().startsWith("jdbc:") || definition.getUrl().contains("${")

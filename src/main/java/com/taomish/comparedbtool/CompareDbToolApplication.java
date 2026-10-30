@@ -36,6 +36,8 @@ public class CompareDbToolApplication {
             try (var context = application.run(args)) {
                 DatasourceSettings settings = context.getBean(DatasourceSettings.class);
                 settings.getDatasources().values().forEach(d -> SecretRedactor.register(d.getPassword()));
+                DatasourceDiagnostics.capture(context.getEnvironment(), settings);
+                settings.diagnostics().forEach(line -> LOG.info("{}", line));
                 LOG.info("Runtime Java={} vendor={} Spring Boot={} workingDirectory={}",
                     System.getProperty("java.version"), System.getProperty("java.vendor"),
                     SpringBootVersion.getVersion(), System.getProperty("user.dir"));
