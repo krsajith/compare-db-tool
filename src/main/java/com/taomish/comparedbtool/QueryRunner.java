@@ -47,6 +47,17 @@ public final class QueryRunner implements AutoCloseable {
     public static boolean production(String name, DatasourceSettings.Definition definition) {
         return definition.isProd() || name.toLowerCase(Locale.ROOT).contains("prod");
     }
+    @FunctionalInterface interface ConnectionWork<T> { T execute(Connection connection) throws Exception; }
+    <T> T transaction(Rules.Sql rule, Map<String, Object> parameters, ConnectionWork<T> work) throws Exception {
+        SqlGuard.validate(rule.text);
+        TempTablePolicy.validate(rule, settings);
+        validateParameters(rule, parameters);
+        if (rule.tempTables) LOG.warn("Temp-table mode datasource={} query={}; transaction will be rolled back", rule.db, rule.id);
+        try (Connection connection = datasource(rule.db, rule.tempTables).getConnection()) {
+            try { return work.execute(connection); }
+            finally { connection.rollback(); }
+        }
+    }
     private HikariDataSource datasource(String name, boolean tempTables) {
         return (tempTables ? tempPools : pools).computeIfAbsent(name, key -> {
             var definition = settings.getDatasources().get(key);

@@ -348,6 +348,38 @@ Enable `compare.datasources.<name>.allow-temp-tables=true` explicitly. Optional
 Validation performs these checks without opening connections. The account can in principle write:
 use only trusted, allow-listed functions on non-prod; rollback cannot undo external side effects.
 
+### Compare inside PostgreSQL
+
+Set `<compare ... engine="db">` when both SQL rules use the same PostgreSQL datasource.
+The default `engine="stream"` keeps the existing CSV comparison. The database engine materializes
+the two inputs as CTEs, joins normalized keys, excludes ambiguous duplicate keys and computes counts,
+cell classes and breakdowns in SQL. Both inputs share one transaction; if either uses `tempTables="true"`,
+the complete statement uses the opt-in writable pool and is rolled back. Database comparisons start after
+the query workers finish, preserving one active query per datasource.
+
+Only aggregates and at most `--sample-rows` samples per cell class/acceptance, unmatched side or duplicate
+side cross the wire. Equal rows are never fetched. CSV names, columns and SUMMARY.md tables keep their
+existing format. Even `export="full"` keeps capped samples for this engine; summaries show exported/true
+totals. `none` fetches aggregates and breakdowns only. Inputs referenced exclusively by database comparisons
+produce SQL/metadata files without a standalone query CSV, even when their SQL export is full. An input
+also needed by a streaming comparison retains its ordinary export behavior.
+
+Supported comparison columns are native exact numeric types (integer/decimal) and variable text, with
+`absTol`, `relTol`, HALF_UP `round`, `nullAsZero`, `nullAsEmpty`, `trim`, and ASCII `caseInsensitive` rules.
+Keys use normalization, not tolerance. PostgreSQL text operations use the C collation. `dateOnly`,
+cross-datasource comparisons and SQL `maxRows` fail rule validation. `--limit` is refused at execution.
+JDBC metadata checks refuse floats, temporal/binary/fixed CHAR columns, mixed numeric/text mappings and
+numeric rules on text before executing inputs. Date/numeric-looking or non-ASCII differing text that would
+require Java-specific interpretation is detected by an SQL validity aggregate and fails clearly; project a
+native numeric column or use the streaming engine. Non-ASCII/numeric/date-looking text keys are likewise
+refused. These data/type checks require execution; offline `--validate` checks rule options and datasource
+references without connecting. H2 is supported for the isolated test suite; its full join uses equivalent
+left/right unions and its CTE planner is unsuitable for performance measurements. PostgreSQL requires 12+
+for materialized CTEs.
+
+Cross-database bucketed checksums remain a future phase. Numeric normalization/tolerance expressions
+can be reused, but cross-engine canonical serialization and identical hashing need separate design and tests.
+
 
 Only single SELECT/WITH statements pass the conservative SQL guard. Write operations, SELECT INTO, writable CTEs,
 multiple statements, executable/nested comments and ambiguous quoting are rejected. Use bound parameters rather

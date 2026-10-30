@@ -151,6 +151,7 @@ public final class RuleLoader {
                 throw new ToolException("Comparison '" + compare.id + "' references unknown SQL id(s): source='"
                     + compare.source + "', target='" + compare.target + "'. Available SQL ids: " + new TreeSet<>(queries.keySet()));
             List<String> keys = keys(compare);
+            DbComparisonRunner.validate(compare, queries.get(compare.source), queries.get(compare.target), settings, checkQueries);
             if (keys.isEmpty() || keys.stream().anyMatch(String::isBlank)
                 || keys.stream().map(k -> k.toLowerCase(Locale.ROOT)).distinct().count() != keys.size())
                 throw new ToolException("Comparison " + compare.id + " needs distinct, nonempty key columns.");

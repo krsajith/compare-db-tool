@@ -39,6 +39,7 @@ public class Rules {
         @JacksonXmlText public String text;
     }
     public static class Compare {
+        @JacksonXmlProperty(isAttribute = true) public String engine = "stream";
         @JacksonXmlProperty(isAttribute = true) public String id;
         @JacksonXmlProperty(isAttribute = true) public String source;
         @JacksonXmlProperty(isAttribute = true) public String target;

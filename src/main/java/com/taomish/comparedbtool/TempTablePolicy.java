@@ -18,6 +18,8 @@ final class TempTablePolicy {
             throw new ToolException("Temp-table queries are forbidden on production datasource " + rule.db + ".");
         if (!definition.isAllowTempTables())
             throw new ToolException("Datasource " + rule.db + " requires allow-temp-tables=true for query " + rule.id + ".");
+        if (definition.getUrl() == null || !(definition.getUrl().startsWith("jdbc:postgresql:") || definition.getUrl().startsWith("jdbc:h2:")))
+            throw new ToolException("Temp-table mode supports PostgreSQL (and H2 tests) only: " + rule.db);
         String allowed = definition.getAllowedFunctions();
         if (allowed == null) allowed = "*";
         List<String> patterns = Arrays.stream(allowed.split(",")).map(String::strip).toList();

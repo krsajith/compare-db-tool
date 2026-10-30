@@ -121,6 +121,17 @@ public final class ComparisonRunner {
             try { CsvFiles.deleteTree(work); }
             catch (IOException cleanup) { LOG.warn("Could not remove comparison temporary files at {}", work, cleanup); }
         }
+        return finish(rule, source, target, directory, mode, totals, groups, breakdowns, exports, sourceExtra, targetExtra);
+    }
+
+    static Result finish(Rules.Compare rule, QueryRunner.Result source, QueryRunner.Result target, Path directory,
+                         ExportMode mode, long[] totals, Map<Group, Long> groups, Breakdowns breakdowns,
+                         Map<String, String> exports, List<String> sourceExtra, List<String> targetExtra) throws IOException {
+        boolean schemaDifferent = !sourceExtra.isEmpty() || !targetExtra.isEmpty();
+        List<String> keyNames = RuleLoader.keys(rule);
+        Path cells = directory.resolve("differences.csv"), onlySource = directory.resolve("only-source.csv"),
+            onlyTarget = directory.resolve("only-target.csv"), duplicates = directory.resolve("duplicates.csv"),
+            summary = directory.resolve("SUMMARY.md");
         boolean partial = source.partial() || target.partial();
         String headline = (partial ? "PARTIAL; " : "") + "matched=" + totals[0] + ", equal=" + totals[1]
             + ", different=" + totals[2] + ", only-source=" + totals[3] + ", only-target=" + totals[4]
@@ -145,7 +156,8 @@ public final class ComparisonRunner {
         }
         markdown.append("\nOnly accepted=false cells count as failures. "
             + "Relative difference = abs(source-target) / max(abs(source),abs(target)). "
-            + "Duplicate keys are listed separately; their complete rows remain in the original query CSVs.\n");
+            + ("db".equals(rule.engine) ? "Database engine: only capped samples are exported, including in full mode; equal rows are never fetched.\n"
+                : "Duplicate keys are listed separately; their complete rows remain in the original query CSVs.\n"));
         writeSmallSummary(summary, markdown.toString());
         List<Path> files = new ArrayList<>();
         if (mode != ExportMode.NONE) files.addAll(List.of(cells, onlySource, onlyTarget, duplicates));
@@ -154,7 +166,7 @@ public final class ComparisonRunner {
             totals[8], totals[9], schemaDifferent, partial, List.copyOf(files), headline);
     }
 
-    private List<Binding> bindings(Rules.Compare compare, QueryRunner.Result a, QueryRunner.Result b) {
+    static List<Binding> bindings(Rules.Compare compare, QueryRunner.Result a, QueryRunner.Result b) {
         LinkedHashMap<String, Rules.Column> columns = new LinkedHashMap<>();
         for (QueryRunner.Column column : a.columns()) if (index(b.columns(), column.name()) >= 0) {
             Rules.Column rule = new Rules.Column(); rule.name = column.name();

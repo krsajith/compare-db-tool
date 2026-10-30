@@ -172,7 +172,14 @@ public final class Cli {
             ComparisonRunner comparator = new ComparisonRunner(options.partitions, options.maxPartitionMb);
             LOG.info("Scheduling queries: workers={} one query per datasource; identical SQL is reused",
                 options.parallel == 0 ? rules.queries.stream().map(q -> q.db).distinct().count() : options.parallel);
-            QueryScheduler.run(rules.queries, options.parallel,
+            Set<String> dbOnly = new HashSet<>();
+            for (var compare : rules.comparisons) if ("db".equals(compare.engine)) {
+                dbOnly.add(compare.source); dbOnly.add(compare.target);
+            }
+            for (var compare : rules.comparisons) if (!"db".equals(compare.engine)) {
+                dbOnly.remove(compare.source); dbOnly.remove(compare.target);
+            }
+            QueryScheduler.run(rules.queries.stream().filter(q -> !dbOnly.contains(q.id)).toList(), options.parallel,
                 group -> executeGroup(group, runner, parameters, directory, options),
                 outcomes -> {
                     for (var outcome : outcomes) {
@@ -180,19 +187,45 @@ public final class Cli {
                         recordQuery(outcome, directory, manualDirectory, queries, artifacts, failures);
                     }
                     for (Rules.Compare compare : rules.comparisons) {
+                        if ("db".equals(compare.engine)) continue;
                         if (attemptedComparisons.contains(compare.id) || !completedQueries.contains(compare.source)
                             || !completedQueries.contains(compare.target)) continue;
                         attemptedComparisons.add(compare.id);
                         compareReady(compare, comparator, directory, manualDirectory, queries, artifacts, failures, comparisons, options);
                     }
                 });
+            // After query workers finish, database comparisons cannot overlap a datasource's scheduler lane.
+            for (var compare : rules.comparisons) if ("db".equals(compare.engine)) {
+                var source = rules.queries.stream().filter(q -> q.id.equals(compare.source)).findFirst().orElseThrow();
+                var target = rules.queries.stream().filter(q -> q.id.equals(compare.target)).findFirst().orElseThrow();
+                for (var query : List.of(source, target)) if (dbOnly.contains(query.id)) {
+                    Path sql = directory.resolve(query.id + ".sql"), note = directory.resolve(query.id + ".md");
+                    Files.writeString(sql, query.text);
+                    Files.writeString(note, "# Query " + query.id + "\n\nInput to engine=db comparison; no standalone CSV is fetched. See comparison SUMMARY.md for execution status, counts and capped samples.\n");
+                    artifacts.put(query.id, List.of(sql, note));
+                }
+                try {
+                    if (options.limit > 0) throw new ToolException("engine=db cannot be combined with --limit; remove the row cap.");
+                    checkQuery(source, parameters, options.allowProd); checkQuery(target, parameters, options.allowProd);
+                    var outcome = new DbComparisonRunner().run(compare, source, target, runner, parameters, directory, options.export, options.sampleRows);
+                    queries.putIfAbsent(source.id, outcome.source()); queries.putIfAbsent(target.id, outcome.target());
+                    comparisons.add(outcome.comparison()); artifacts.put(compare.id, outcome.comparison().files());
+                    LOG.info("Compare {} engine=db: {}; fetched aggregate/sample rows={}", compare.id, outcome.comparison().headline(), outcome.fetched());
+                } catch (Exception error) {
+                    LOG.error("Database comparison {} did not complete; continuing", compare.id, error);
+                    String detail = failureReason(error); failures.put(compare.id, "Comparison " + compare.id + ": " + detail);
+                    Path note = manualDirectory.resolve(compare.id + ".md");
+                    Files.writeString(note, "# Comparison " + compare.id + " not completed\n\n" + detail + "\n\nAny comparison files are incomplete.\n");
+                    artifacts.put(compare.id, List.of(note));
+                }
+            }
             boolean partial = queries.values().stream().anyMatch(QueryRunner.Result::partial);
             boolean differs = comparisons.stream().anyMatch(ComparisonRunner.Result::differs);
             int exit = partial || !failures.isEmpty() ? 2 : differs ? 1 : 0;
             StringBuilder summary = new StringBuilder("# " + rules.name + "\n\nStatus: "
                 + (!failures.isEmpty() ? "INCOMPLETE / MANUAL ACTIONS REQUIRED" : partial ? "PARTIAL" : differs ? "DIFFERENCES" : "COMPLETE / EQUAL") + "; exit code: " + exit
                 + "\n\nExport default: " + options.export.name().toLowerCase(Locale.ROOT) + "; sample cap: " + options.sampleRows
-                + ". Full counts always include all fetched rows; sampling never limits comparison accuracy. Query CSVs are exported only in full mode.\n\n"
+                + ". Counts cover complete inputs; sampling never limits comparison accuracy. Query CSVs are exported only in full mode; inputs used only by engine=db stay inside the database.\n\n"
                 + "| Query | Datasource | Rows | Time ms | Status |\n|---|---|---|---|---|\n");
             for (Rules.Sql query : rules.queries) {
                 var r = queries.get(query.id);

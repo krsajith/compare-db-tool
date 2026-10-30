@@ -15,6 +15,7 @@ final class Breakdowns {
         final List<String> names;
         final int[] source, target;
         final Map<String, Map<List<Cell>, Long>> counts = new LinkedHashMap<>();
+        final Map<String, Long> databaseTotals = new HashMap<>();
         final List<String> missing = new ArrayList<>();
         Table(Rules.Breakdown rule, List<QueryRunner.Column> left, List<QueryRunner.Column> right, List<Rules.Column> mappings) {
             this.rule = rule;
@@ -32,13 +33,13 @@ final class Breakdowns {
             }
             CATEGORIES.forEach(category -> counts.put(category, new HashMap<>()));
         }
-        void add(String category, List<String> row, boolean left, MemoryBudget budget) {
+        void add(String category, List<String> row, boolean left, MemoryBudget budget, long count) {
             List<Cell> values = new ArrayList<>();
             for (int index : left ? source : target) {
                 values.add(new Cell(index < 0, index < 0 ? null : row.get(index)));
             }
             if (!counts.get(category).containsKey(values)) budget.group(values.stream().map(Cell::value).toList());
-            counts.get(category).merge(values, 1L, Long::sum);
+            counts.get(category).merge(values, count, Long::sum);
         }
     }
     Breakdowns(Rules.Compare rule, QueryRunner.Result source, QueryRunner.Result target, MemoryBudget budget) {
@@ -46,7 +47,11 @@ final class Breakdowns {
         if (rule.breakdowns != null) for (Rules.Breakdown breakdown : rule.breakdowns)
             tables.add(new Table(breakdown, source.columns(), target.columns(), rule.columns));
     }
-    void add(String category, List<String> row, boolean source) { tables.forEach(t -> t.add(category, row, source, budget)); }
+    void add(String category, List<String> row, boolean source) { tables.forEach(t -> t.add(category, row, source, budget, 1)); }
+    void addCount(int table, String category, List<String> row, boolean source, long count) {
+        tables.get(table).add(category, row, source, budget, count);
+    }
+    void total(int table, String category, long count) { tables.get(table).databaseTotals.put(category, count); }
     void appendTo(StringBuilder markdown) {
         for (Table table : tables) {
             markdown.append("\n## Breakdown: ").append(escape(table.rule.columns)).append("\n\n");
@@ -74,6 +79,7 @@ final class Breakdowns {
                     markdown.append("| ").append(String.join(" | ", group.getKey().stream().map(c -> escape(c.display())).toList()))
                         .append(" | ").append(group.getValue()).append(" |\n");
                 }
+                total = table.databaseTotals.getOrDefault(category, total);
                 long other = total - shown;
                 if (other > 0) markdown.append("| other").append(" |".repeat(table.names.size() - 1))
                     .append(" | ").append(other).append(" |\n");
