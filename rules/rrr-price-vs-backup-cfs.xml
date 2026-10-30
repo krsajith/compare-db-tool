@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- RRR price check, BU CFS, value date 02-Oct-2026: the security settle prices now in schema opera (loaded 30-Oct-2026 09:57)
+     against the migration copy of the same prices in schema opera_backup_04_10 (written by the migration on 03-Oct-2026).
+     The client statement handoff of 14-Oct-2026 (section 4.2 and 8) states that the prices rewritten on 13-Oct and 14-Oct were
+     identical to opera_backup_04_10, so that copy is the trusted reference for the verified statements.
+     If the current prices equal the backup, the 30-Oct load is harmless and the cache must simply be refreshed.
+     If they differ, the 30-Oct load changed the prices and the difference list shows which securities.
+     Both sides are on postgres-dev, so the comparison runs inside the database. Read-only SELECTs only. -->
+<rules name="rrr-price-vs-backup-cfs">
+    <parameters>
+        <param name="bu" type="string" value="CFS"/>
+        <param name="valueDate" type="date" value="2026-10-02"/>
+    </parameters>
+
+    <sql id="backup-prices" db="postgres-dev" timeout="600" fetchSize="5000">
+        <![CDATA[
+            SELECT security_id,
+                   CAST(settle_price AS numeric(30, 10)) AS settle_price,
+                   CAST(settle_delta_1 AS numeric(30, 10)) AS settle_delta_1
+              FROM opera_backup_04_10.security_settlement_value_table
+             WHERE tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1)
+               AND business_unit = :bu AND value_date = :valueDate
+        ]]>
+    </sql>
+    <sql id="current-prices" db="postgres-dev" timeout="600" fetchSize="5000">
+        <![CDATA[
+            SELECT security_id,
+                   CAST(settle_price AS numeric(30, 10)) AS settle_price,
+                   CAST(settle_delta_1 AS numeric(30, 10)) AS settle_delta_1
+              FROM opera.security_settlement_value_table
+             WHERE tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1)
+               AND business_unit = :bu AND value_date = :valueDate
+        ]]>
+    </sql>
+    <compare id="prices" source="backup-prices" target="current-prices" engine="db">
+        <key columns="security_id"/>
+        <column name="settle_price" absTol="0.000001" nullAsZero="true"/>
+        <column name="settle_delta_1" absTol="0.000001" nullAsZero="true"/>
+    </compare>
+
+    <compress id="bundle" file="rrr-price-vs-backup-cfs.zip">
+        <include ref="prices"/>
+    </compress>
+</rules>
