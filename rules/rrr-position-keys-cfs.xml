@@ -1,0 +1,95 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- RRR position keys and FX rates, BU CFS, value date 02-Oct-2026, COB 01-Oct-2026. Export only, no comparison.
+     After the cache refresh and the function fix, CFS totals differ from legacy for 34 clients. Three causes are suspected:
+     A) FX forward positions of Brazilian clients (GBS, SBC, SOR, SFX, OGB) come out about 5.17 times too large: the cached mtm_usd equals
+        mtm_nc for these NDF positions, so the Java FX conversion probably found no rate and kept the native value.
+        Probe A repeats the Java rate lookup (product master, currency spot mapping, underlying value on the rate date).
+     B) The report function returns FX forward positions with no contract number, assigned to a client code (VCI, ZUT, SCB...).
+        Legacy stored query 2 keeps only contract_number IS NOT NULL and not empty, and assigns the client from the contract prefix.
+        Probe B lists those rows per client and type.
+     C) Rows where the client code column differs from the contract prefix (FEA and MDL show equal and opposite differences).
+        Probe C lists them.
+     The function call needs the temp-table mode. Read-only SELECTs only. -->
+<rules name="rrr-position-keys-cfs">
+    <parameters>
+        <param name="bu" type="string" value="CFS"/>
+        <param name="valueDate" type="date" value="2026-10-02"/>
+        <param name="cob" type="date" value="2026-10-01"/>
+    </parameters>
+
+    <!-- A: the Java rate lookup for NDF positions of the suspect clients -->
+    <sql id="probe-a-ndf-rates" db="postgres-dev" timeout="600" export="full">
+        <![CDATA[
+            WITH ten AS (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1),
+            pos AS (
+                SELECT upper(split_part(c.contract_number, '_', 1)) AS client_code, upper(trim(c.product_code)) AS product_key,
+                       CASE WHEN c.fixing_date IS NOT NULL AND c.fixing_date <= :cob THEN c.fixing_date ELSE CAST(:cob AS date) END AS rate_date,
+                       c.mtm_usd, c.mtm_nc
+                  FROM opera.helper_client_statement_report_view_cache_table c
+                 WHERE c.tenant_id = (SELECT tenant_id FROM ten) AND c.business_unit = :bu AND c.value_date = :valueDate
+                   AND c.derivative_type = 'fx_forward_ndf' AND c.contract_number IS NOT NULL
+                   AND upper(split_part(c.contract_number, '_', 1)) IN ('GBS', 'SBC', 'SOR', 'SFX', 'OGB', 'GBX', 'SBX')
+            )
+            SELECT pos.client_code, pos.product_key, pos.rate_date, COUNT(*) AS n_positions,
+                   ROUND(SUM(pos.mtm_nc)::numeric, 2) AS sum_mtm_nc,
+                   MAX(p.invenio_product_code) AS product_master_code, MAX(p.currency) AS product_currency,
+                   MAX(m.spot) AS spot_id, MAX(m.quantotype) AS quantotype,
+                   MAX(u.settle_value) AS rate_found, MAX(u.settlement_date) AS rate_settlement_date
+              FROM pos
+              LEFT JOIN opera.product_master_table p
+                ON p.tenant_id = (SELECT tenant_id FROM ten)
+               AND replace(upper(trim(p.invenio_product_code)), 'CR ', '') = pos.product_key
+               AND upper(trim(p.invenio_product_code)) LIKE 'CR %'
+              LEFT JOIN opera.currency_spot_mapping_table m
+                ON m.tenant_id = (SELECT tenant_id FROM ten) AND upper(trim(m.currency)) = upper(trim(p.currency))
+              LEFT JOIN opera.underlying_settle_value_table u
+                ON u.tenant_id = (SELECT tenant_id FROM ten) AND u.underlying_id = m.spot AND u.settlement_date = pos.rate_date
+             GROUP BY pos.client_code, pos.product_key, pos.rate_date
+             ORDER BY pos.client_code, pos.rate_date
+        ]]>
+    </sql>
+
+    <!-- B: function rows without a contract number, by the client code the function gave them -->
+    <sql id="probe-b-null-contract" db="postgres-dev" timeout="900" export="full" tempTables="true">
+        <![CDATA[
+            SELECT upper(p.client_code) AS client_code, p.derivative_type, COUNT(*) AS n_rows,
+                   ROUND(SUM(p.mtm_usd)::numeric, 2) AS sum_mtm_usd, ROUND(SUM(p.mtm_nc)::numeric, 2) AS sum_mtm_nc
+              FROM opera.fn_client_statement_position_rows_v2(
+                       (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1),
+                       CAST(:bu AS text), CAST(:valueDate AS date),
+                       (SELECT jsonb_agg(m.client_code) FROM opera.client_master_data m
+                         WHERE m.tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1)
+                           AND m.business_unit = :bu AND length(trim(m.client_code)) = 3)) p
+             WHERE p.contract_number IS NULL OR trim(p.contract_number) = ''
+             GROUP BY 1, 2
+             ORDER BY ABS(SUM(p.mtm_usd)) DESC
+             LIMIT 100
+        ]]>
+    </sql>
+
+    <!-- C: function rows whose client code column differs from the contract prefix -->
+    <sql id="probe-c-prefix-mismatch" db="postgres-dev" timeout="900" export="full" tempTables="true">
+        <![CDATA[
+            SELECT upper(p.client_code) AS client_code_column, upper(split_part(p.contract_number, '_', 1)) AS contract_prefix,
+                   p.derivative_type, COUNT(*) AS n_rows,
+                   ROUND(SUM(p.mtm_usd)::numeric, 2) AS sum_mtm_usd, MIN(p.contract_number) AS example_contract
+              FROM opera.fn_client_statement_position_rows_v2(
+                       (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1),
+                       CAST(:bu AS text), CAST(:valueDate AS date),
+                       (SELECT jsonb_agg(m.client_code) FROM opera.client_master_data m
+                         WHERE m.tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1)
+                           AND m.business_unit = :bu AND length(trim(m.client_code)) = 3)) p
+             WHERE p.contract_number IS NOT NULL AND trim(p.contract_number) <> ''
+               AND upper(coalesce(p.client_code, '')) <> upper(split_part(p.contract_number, '_', 1))
+             GROUP BY 1, 2, 3
+             ORDER BY ABS(SUM(p.mtm_usd)) DESC
+             LIMIT 100
+        ]]>
+    </sql>
+
+    <compress id="bundle" file="rrr-position-keys-cfs.zip">
+        <include ref="probe-a-ndf-rates"/>
+        <include ref="probe-b-null-contract"/>
+        <include ref="probe-c-prefix-mismatch"/>
+    </compress>
+</rules>
