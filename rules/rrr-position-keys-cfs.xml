@@ -1,6 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- RRR position keys and FX rates, BU CFS, value date 02-Oct-2026, COB 01-Oct-2026. Export only, no comparison.
      After the cache refresh and the function fix, CFS totals differ from legacy for 34 clients. Three causes are suspected:
+     Case matters: MySQL and MATLAB compare text without regard to case, Postgres compares exactly, and the Java rate lookup joins
+        the spot id exactly. Probe A therefore also looks the rate up ignoring case.
      A) FX forward positions of Brazilian clients (GBS, SBC, SOR, SFX, OGB) come out about 5.17 times too large: the cached mtm_usd equals
         mtm_nc for these NDF positions, so the Java FX conversion probably found no rate and kept the native value.
         Probe A repeats the Java rate lookup (product master, currency spot mapping, underlying value on the rate date).
@@ -34,7 +36,8 @@
                    ROUND(SUM(pos.mtm_nc)::numeric, 2) AS sum_mtm_nc,
                    MAX(p.invenio_product_code) AS product_master_code, MAX(p.currency) AS product_currency,
                    MAX(m.spot) AS spot_id, MAX(m.quantotype) AS quantotype,
-                   MAX(u.settle_value) AS rate_found, MAX(u.settlement_date) AS rate_settlement_date
+                   MAX(u.settle_value) AS rate_found_exact_case, MAX(u2.settle_value) AS rate_found_ignoring_case,
+                   MAX(u2.underlying_id) AS underlying_id_as_stored
               FROM pos
               LEFT JOIN opera.product_master_table p
                 ON p.tenant_id = (SELECT tenant_id FROM ten)
@@ -44,6 +47,8 @@
                 ON m.tenant_id = (SELECT tenant_id FROM ten) AND upper(trim(m.currency)) = upper(trim(p.currency))
               LEFT JOIN opera.underlying_settle_value_table u
                 ON u.tenant_id = (SELECT tenant_id FROM ten) AND u.underlying_id = m.spot AND u.settlement_date = pos.rate_date
+              LEFT JOIN opera.underlying_settle_value_table u2
+                ON u2.tenant_id = (SELECT tenant_id FROM ten) AND lower(u2.underlying_id) = lower(m.spot) AND u2.settlement_date = pos.rate_date
              GROUP BY pos.client_code, pos.product_key, pos.rate_date
              ORDER BY pos.client_code, pos.rate_date
         ]]>
