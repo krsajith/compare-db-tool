@@ -134,6 +134,7 @@ public final class RuleLoader {
             if (checkQueries && !settings.getDatasources().get(sql.db).isReadOnly())
                 throw new ToolException("Datasource " + sql.db + " must have read-only=true.");
             if (checkQueries) SqlGuard.validate(sql.text);
+            if (checkQueries) TempTablePolicy.validate(sql, settings);
             queries.put(sql.id, sql);
         }
         if (rules.comparisons == null) rules.comparisons = new ArrayList<>();

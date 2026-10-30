@@ -9,14 +9,14 @@ final class QueryScheduler {
         String datasource() { return rules.getFirst().db; }
     }
     record Outcome(Rules.Sql query, QueryRunner.Result result, Throwable error, boolean permitted) {}
-    private record Key(String datasource, String text) {}
+    private record Key(String datasource, String text, boolean tempTables) {}
     private record Completed(Group group, List<Outcome> outcomes) {}
     @FunctionalInterface interface Work { List<Outcome> execute(Group group) throws Exception; }
     @FunctionalInterface interface Consumer { void completed(List<Outcome> outcomes) throws Exception; }
 
     static void run(List<Rules.Sql> queries, int parallel, Work work, Consumer consumer) throws Exception {
         Map<Key, List<Rules.Sql>> equivalent = new LinkedHashMap<>();
-        for (Rules.Sql query : queries) equivalent.computeIfAbsent(new Key(query.db, query.text), k -> new ArrayList<>()).add(query);
+        for (Rules.Sql query : queries) equivalent.computeIfAbsent(new Key(query.db, query.text, query.tempTables), k -> new ArrayList<>()).add(query);
         Map<String, Deque<Group>> lanes = new LinkedHashMap<>();
         int order = 0;
         for (var group : equivalent.values()) lanes.computeIfAbsent(group.getFirst().db, k -> new ArrayDeque<>())

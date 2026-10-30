@@ -38,6 +38,7 @@ public final class QueryRunner implements AutoCloseable {
     private final DatasourceSettings settings;
     private final boolean allowProd;
     private final Map<String, HikariDataSource> pools = new ConcurrentHashMap<>();
+    private final Map<String, HikariDataSource> tempPools = new ConcurrentHashMap<>();
     public QueryRunner(DatasourceSettings settings, boolean allowProd) {
         this.settings = settings; this.allowProd = allowProd;
         settings.getDatasources().values().forEach(d -> SecretRedactor.register(d.getPassword()));
@@ -46,8 +47,8 @@ public final class QueryRunner implements AutoCloseable {
     public static boolean production(String name, DatasourceSettings.Definition definition) {
         return definition.isProd() || name.toLowerCase(Locale.ROOT).contains("prod");
     }
-    private HikariDataSource datasource(String name) {
-        return pools.computeIfAbsent(name, key -> {
+    private HikariDataSource datasource(String name, boolean tempTables) {
+        return (tempTables ? tempPools : pools).computeIfAbsent(name, key -> {
             var definition = settings.getDatasources().get(key);
             if (definition == null) throw new ToolException("Unknown datasource: " + key);
             if (!definition.isReadOnly()) throw new ToolException("Datasource must be read-only: " + key);
@@ -58,28 +59,28 @@ public final class QueryRunner implements AutoCloseable {
             if (definition.getPassword() != null && definition.getPassword().contains("${"))
                 throw new ToolException("Set the password environment variable for datasource " + key + ".");
             HikariConfig config = new HikariConfig();
-            config.setPoolName("compare-" + key);
+            config.setPoolName("compare-" + (tempTables ? "temp-" : "") + key);
             config.setJdbcUrl(definition.getUrl());
             config.setUsername(definition.getUsername());
             config.setPassword(definition.getPassword());
             if (definition.getDriverClassName() != null && !definition.getDriverClassName().isBlank())
                 config.setDriverClassName(definition.getDriverClassName());
-            config.setReadOnly(true);
+            config.setReadOnly(!tempTables);
             config.setAutoCommit(false);
             config.setMaximumPoolSize(1);
             config.setMinimumIdle(0);
             config.setConnectionTimeout(30_000);
             config.setInitializationFailTimeout(-1);
-            if (definition.getUrl().startsWith("jdbc:postgresql:"))
+            if (!tempTables && definition.getUrl().startsWith("jdbc:postgresql:"))
                 config.setConnectionInitSql("SET default_transaction_read_only = on");
-            else if (definition.getUrl().startsWith("jdbc:mysql:"))
+            else if (!tempTables && definition.getUrl().startsWith("jdbc:mysql:"))
                 config.setConnectionInitSql("SET SESSION TRANSACTION READ ONLY");
             if (definition.getUrl().startsWith("jdbc:mysql:")) {
                 config.addDataSourceProperty("useCursorFetch", "true");
                 config.addDataSourceProperty("useServerPrepStmts", "true");
             }
-            LOG.info("Creating read-only datasource pool name={} driver={} production={}", key,
-                definition.getDriverClassName(), production(key, definition));
+            LOG.info("Creating datasource pool name={} driver={} production={} tempTables={}", key,
+                definition.getDriverClassName(), production(key, definition), tempTables);
             return new HikariDataSource(config);
         });
     }
@@ -90,6 +91,7 @@ public final class QueryRunner implements AutoCloseable {
     public Result run(Rules.Sql rule, Map<String, Object> parameters, long globalLimit, Path directory, ExportMode defaultMode) throws IOException {
         ExportMode mode = ExportMode.resolve(rule.export, defaultMode);
         String sql = SqlGuard.validate(rule.text);
+        TempTablePolicy.validate(rule, settings);
         // Resolve all parameters before opening a database connection.
         validateParameters(rule, parameters);
         long cap = rule.maxRows;
@@ -107,12 +109,14 @@ public final class QueryRunner implements AutoCloseable {
         long[] rows = {0};
         boolean[] partial = {false};
         try {
-            new NamedParameterJdbcTemplate(datasource(rule.db)).execute(sql, parameters,
+            if (rule.tempTables) LOG.warn("Temp-table mode datasource={} query={}; transaction will be rolled back", rule.db, rule.id);
+            new NamedParameterJdbcTemplate(datasource(rule.db, rule.tempTables)).execute(sql, parameters,
                 (PreparedStatementCallback<Void>) statement -> {
-                    statement.setQueryTimeout(rule.timeout);
-                    statement.setFetchSize(rule.fetchSize);
-                    LOG.debug("Connected for query {}; executing SELECT", rule.id);
-                    try (ResultSet result = statement.executeQuery()) {
+                    try {
+                      statement.setQueryTimeout(rule.timeout);
+                      statement.setFetchSize(rule.fetchSize);
+                      LOG.debug("Connected for query {}; executing SELECT", rule.id);
+                      try (ResultSet result = statement.executeQuery()) {
                         ResultSetMetaData metadata = result.getMetaData();
                         Set<String> labels = new HashSet<>();
                         for (int index = 1; index <= metadata.getColumnCount(); index++) {
@@ -132,6 +136,7 @@ public final class QueryRunner implements AutoCloseable {
                                 if (rows[0] % 100_000 == 0) LOG.info("Query {} exported {} rows so far", rule.id, rows[0]);
                             }
                         } catch (IOException e) { throw new ToolException("Cannot write CSV for query " + rule.id + ".", e); }
+                      }
                     } finally {
                         // No source data is committed, even for drivers with advisory read-only flags.
                         statement.getConnection().rollback();
@@ -213,5 +218,6 @@ public final class QueryRunner implements AutoCloseable {
     @Override public void close() {
         LOG.debug("Closing {} datasource pool(s)", pools.size());
         pools.values().forEach(HikariDataSource::close);
+        tempPools.values().forEach(HikariDataSource::close);
     }
 }

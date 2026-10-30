@@ -268,6 +268,7 @@ public final class Cli {
         }
         Rules.Sql first = eligible.getFirst(), canonical = new Rules.Sql();
         canonical.id = first.id; canonical.db = first.db; canonical.text = first.text; canonical.export = "none";
+        canonical.tempTables = first.tempTables;
         canonical.timeout = eligible.stream().mapToInt(q -> q.timeout).min().orElseThrow();
         canonical.fetchSize = eligible.stream().mapToInt(q -> q.fetchSize).min().orElseThrow();
         List<Long> limits = eligible.stream().map(q -> QueryRunner.effectiveLimit(q, options.limit)).toList();
@@ -343,6 +344,7 @@ public final class Cli {
 
     private void checkQuery(Rules.Sql query, Map<String, Object> parameters, boolean allowProd) {
         SqlGuard.validate(query.text);
+        TempTablePolicy.validate(query, settings);
         QueryRunner.validateParameters(query, parameters);
         var definition = settings.getDatasources().get(query.db);
         if (definition == null) throw new ToolException("Unknown datasource: " + query.db);

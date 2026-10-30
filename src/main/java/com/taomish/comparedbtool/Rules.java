@@ -34,6 +34,7 @@ public class Rules {
         @JacksonXmlProperty(isAttribute = true) public int timeout = 120;
         @JacksonXmlProperty(isAttribute = true) public int fetchSize = 1000;
         @JacksonXmlProperty(isAttribute = true) public long maxRows;
+        @JacksonXmlProperty(isAttribute = true) public boolean tempTables;
         @JacksonXmlProperty(isAttribute = true) public String export;
         @JacksonXmlText public String text;
     }

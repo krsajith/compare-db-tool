@@ -17,6 +17,8 @@ public class DatasourceSettings {
         private String driverClassName;
         private boolean readOnly = true;
         private boolean prod;
+        private boolean allowTempTables;
+        private String allowedFunctions = "*";
         public String getUrl() { return url; }
         public void setUrl(String value) { url = value; }
         public String getUsername() { return username; }
@@ -29,5 +31,9 @@ public class DatasourceSettings {
         public void setReadOnly(boolean value) { readOnly = value; }
         public boolean isProd() { return prod; }
         public void setProd(boolean value) { prod = value; }
+        public boolean isAllowTempTables() { return allowTempTables; }
+        public void setAllowTempTables(boolean value) { allowTempTables = value; }
+        public String getAllowedFunctions() { return allowedFunctions; }
+        public void setAllowedFunctions(String value) { allowedFunctions = value; }
     }
 }

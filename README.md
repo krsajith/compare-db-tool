@@ -335,6 +335,20 @@ repeatable comparisons, use stable source data and the same business cut-off par
 
 ## Read-only comparison operation
 
+### Functions that create temporary tables
+
+On a non-production datasource, `<sql tempTables="true">` opts a single guarded SELECT/WITH into a
+separate writable pool (one connection, auto-commit off). Every execution logs a WARN with datasource
+and query id and rolls back on success or failure. Production names/flags are refused even with `--allow-prod`.
+Ordinary queries continue to use the read-only pool and session settings.
+
+Enable `compare.datasources.<name>.allow-temp-tables=true` explicitly. Optional
+`compare.datasources.<name>.allowed-functions=opera.fn_*` restricts schema-qualified function calls
+(comma-separated names or `*` patterns). When omitted it defaults to `*` (any function).
+Validation performs these checks without opening connections. The account can in principle write:
+use only trusted, allow-listed functions on non-prod; rollback cannot undo external side effects.
+
+
 Only single SELECT/WITH statements pass the conservative SQL guard. Write operations, SELECT INTO, writable CTEs,
 multiple statements, executable/nested comments and ambiguous quoting are rejected. Use bound parameters rather
 than backslash or dollar quoting. Use whitespace after `--` comments. The guard may conservatively reject unusual
