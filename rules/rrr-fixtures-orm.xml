@@ -87,6 +87,30 @@
              ORDER BY contract_number
         ]]>
     </sql>
+    <!-- New side positions and dripping at the value date. The legacy cache moves on every day, so legacy positions
+         for an old date are gone; the new cache table reproduced the legacy MTM exactly in the parity check. -->
+    <sql id="in-positions-new" db="postgres-dev" timeout="600" fetchSize="5000" export="full">
+        <![CDATA[
+            SELECT value_date, settlement_date, client_code, contract_number, product_code, derivative_type, opt_periodicity,
+                   is_premium_paid, active_lots, mult_factor, nc_factor, fx_nc_factor, mtm_usd, mtm_nc,
+                   mkt_value_usd, mkt_value_nc, premium_paid_usd, premium_paid_nc, fixing_date
+              FROM opera.helper_client_statement_report_view_cache_table
+             WHERE tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = 'ORM' LIMIT 1)
+               AND business_unit = 'ORM' AND value_date = :valueDate AND contract_number IS NOT NULL
+               AND UPPER(split_part(contract_number, '_', 1)) IN ('GBX', 'SBX', 'OGX', 'SOX', 'PAX', 'QCX')
+             ORDER BY contract_number
+        ]]>
+    </sql>
+    <sql id="in-dripping-new" db="postgres-dev" timeout="300" export="full">
+        <![CDATA[
+            SELECT value_date, contract_number, mtm_post_dripping_today, mtm_post_dripping_today_usd
+              FROM opera.client_dripping_table
+             WHERE tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = 'ORM' LIMIT 1)
+               AND business_unit = 'ORM' AND value_date = :valueDate
+               AND UPPER(split_part(contract_number, '_', 1)) IN ('GBX', 'SBX', 'OGX', 'SOX', 'PAX', 'QCX')
+             ORDER BY contract_number
+        ]]>
+    </sql>
     <sql id="in-booking" db="mysql-oprdb02" timeout="300" export="full">
         <![CDATA[
             SELECT contract_number, structure_name
@@ -122,6 +146,8 @@
         <include ref="in-buffers"/>
         <include ref="in-positions"/>
         <include ref="in-dripping"/>
+        <include ref="in-positions-new"/>
+        <include ref="in-dripping-new"/>
         <include ref="in-booking"/>
         <include ref="in-fx"/>
         <include ref="in-product-currency"/>
