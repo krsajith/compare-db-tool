@@ -1,0 +1,94 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- RRR base-table parity, BU CFS, value date 02-Oct-2026. First principles: market value is
+     settle_price x lots x mult_factor x nc_factor x fx_nc_factor x -1 (legacy view helper_client_statement_report_view).
+     The new cache table matches legacy MTM, but the position function does not. Before trusting either, check the base
+     tables the formula reads, legacy MySQL against new Postgres, at the same value date, and check how the cache was filled.
+     Probe: who and when wrote the cache rows (a copy of legacy data would match legacy trivially).
+     Compare 1: security settle prices (the settle_price term). Compare 2: underlying spot values (the FX terms).
+     Read-only SELECTs only. -->
+<rules name="rrr-base-parity-cfs">
+    <parameters>
+        <param name="bu" type="string" value="CFS"/>
+        <param name="valueDate" type="date" value="2026-10-02"/>
+    </parameters>
+
+    <!-- Probe: provenance of the new cache rows at the value date -->
+    <sql id="probe-cache-provenance" db="postgres-dev" timeout="300" export="full">
+        <![CDATA[
+            SELECT created_by, CAST(created_timestamp AS date) AS created_day, updated_by, CAST(updated_timestamp AS date) AS updated_day,
+                   COUNT(*) AS n_rows
+              FROM opera.helper_client_statement_report_view_cache_table
+             WHERE tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1)
+               AND business_unit = :bu AND value_date = :valueDate
+             GROUP BY 1, 2, 3, 4
+             ORDER BY n_rows DESC
+             LIMIT 20
+        ]]>
+    </sql>
+    <sql id="probe-settle-provenance" db="postgres-dev" timeout="300" export="full">
+        <![CDATA[
+            SELECT created_by, CAST(created_timestamp AS date) AS created_day, updated_by, CAST(updated_timestamp AS date) AS updated_day,
+                   COUNT(*) AS n_rows
+              FROM opera.security_settlement_value_table
+             WHERE tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1)
+               AND business_unit = :bu AND value_date = :valueDate
+             GROUP BY 1, 2, 3, 4
+             ORDER BY n_rows DESC
+             LIMIT 20
+        ]]>
+    </sql>
+
+    <!-- Compare 1: security settle price at the value date -->
+    <sql id="old-settle" db="mysql-oprdb02" timeout="600" fetchSize="5000">
+        <![CDATA[
+            SELECT security_id, settle_price, settle_delta_1, settle_vega_1, settle_theta
+              FROM dbsystemuat.security_settlement_value_table_cfs
+             WHERE value_date = :valueDate
+        ]]>
+    </sql>
+    <sql id="new-settle" db="postgres-dev" timeout="600" fetchSize="5000">
+        <![CDATA[
+            SELECT security_id, settle_price, settle_delta_1, settle_vega_1, settle_theta
+              FROM opera.security_settlement_value_table
+             WHERE tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1)
+               AND business_unit = :bu AND value_date = :valueDate
+        ]]>
+    </sql>
+    <compare id="settle" source="old-settle" target="new-settle">
+        <key columns="security_id"/>
+        <column name="settle_price" absTol="0.000001" nullAsZero="true"/>
+        <column name="settle_delta_1" absTol="0.000001" nullAsZero="true"/>
+        <column name="settle_vega_1" absTol="0.000001" nullAsZero="true"/>
+        <column name="settle_theta" absTol="0.000001" nullAsZero="true"/>
+    </compare>
+
+    <!-- Compare 2: underlying (spot, futures, FX) settle values at the value date -->
+    <sql id="old-underlying" db="mysql-oprdb02" timeout="300" fetchSize="5000">
+        <![CDATA[
+            SELECT underlying_id, settle_value, risk_free_rate, div_yield
+              FROM dbsystemuat.underlying_settle_value_table
+             WHERE value_date = :valueDate
+        ]]>
+    </sql>
+    <sql id="new-underlying" db="postgres-dev" timeout="300" fetchSize="5000">
+        <![CDATA[
+            SELECT underlying_id, settle_value, risk_free_rate, div_yield
+              FROM opera.underlying_settle_value_table
+             WHERE tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1)
+               AND value_date = :valueDate
+        ]]>
+    </sql>
+    <compare id="underlying" source="old-underlying" target="new-underlying">
+        <key columns="underlying_id"/>
+        <column name="settle_value" absTol="0.000001" nullAsZero="true"/>
+        <column name="risk_free_rate" absTol="0.000001" nullAsZero="true"/>
+        <column name="div_yield" absTol="0.000001" nullAsZero="true"/>
+    </compare>
+
+    <compress id="bundle" file="rrr-base-parity-cfs.zip">
+        <include ref="probe-cache-provenance"/>
+        <include ref="probe-settle-provenance"/>
+        <include ref="settle"/>
+        <include ref="underlying"/>
+    </compress>
+</rules>
