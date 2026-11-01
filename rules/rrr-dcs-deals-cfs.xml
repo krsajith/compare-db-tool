@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- RRR CFS client DCS: legacy deals against the migration copy and the current system. The DCS probe of 1-Nov-2026 shows that legacy MySQL holds two live DCS
+     cs_spread_put trades (maturities 2027-02-01 and 2027-04-01, lots -200 together), while the new system holds one (DCS_WP_003, maturity 2027-02-01, lots -100).
+     Legacy reported DCS at -52,441 on 01-Oct-2026, the new report +20,000. This rule lists the live DCS trades with a maturity on or after 01-Oct-2026 in the three
+     places, keyed by trade id, to show whether the second trade was lost by the migration, was added in legacy after the migration, or exists in the new system under
+     another key. Read-only SELECTs only. -->
+<rules name="rrr-dcs-deals-cfs">
+    <parameters>
+        <param name="bu" type="string" value="CFS"/>
+        <param name="fromDate" type="date" value="2026-10-01"/>
+    </parameters>
+
+    <sql id="dcs-legacy" db="mysql-oprdb02" timeout="300">
+        <![CDATA[
+            SELECT TRIM(t.trade_id) AS trade_id, t.contract_number, t.transaction_date, t.deal_status, t.netting_status, t.original_lots, t.premium,
+                   s.derivative_type, s.maturity_date
+              FROM dbsystemuat.cloned_deal_ticket_table_cfs t
+              JOIN dbsystemuat.cloned_security_info_table_cfs s ON s.security_id = t.security_id
+             WHERE SUBSTRING_INDEX(t.contract_number, '_', 1) = 'DCS' AND (s.maturity_date IS NULL OR s.maturity_date >= :fromDate)
+        ]]>
+    </sql>
+    <sql id="dcs-migration" db="postgres-dev" timeout="300">
+        <![CDATA[
+            SELECT trim(t.trade_id) AS trade_id, t.contract_number, t.transaction_date, t.deal_status, t.netting_status, t.original_lots, t.premium,
+                   s.derivative_type, s.maturity_date
+              FROM opera_backup_04_10.cloned_deal_ticket_table t
+              JOIN opera_backup_04_10.cloned_security_info_table s
+                ON s.tenant_id = t.tenant_id AND s.business_unit = t.business_unit AND s.security_id = t.security_id
+             WHERE t.tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1)
+               AND t.business_unit = :bu AND t.is_latest_version = 1
+               AND upper(split_part(t.contract_number, '_', 1)) = 'DCS' AND (s.maturity_date IS NULL OR s.maturity_date >= :fromDate)
+        ]]>
+    </sql>
+    <sql id="dcs-current" db="postgres-dev" timeout="300">
+        <![CDATA[
+            SELECT trim(t.trade_id) AS trade_id, t.contract_number, t.transaction_date, t.deal_status, t.netting_status, t.original_lots, t.premium,
+                   s.derivative_type, s.maturity_date
+              FROM opera.cloned_deal_ticket_table t
+              JOIN opera.cloned_security_info_table s
+                ON s.tenant_id = t.tenant_id AND s.business_unit = t.business_unit AND s.security_id = t.security_id
+             WHERE t.tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1)
+               AND t.business_unit = :bu AND t.is_latest_version = 1
+               AND upper(split_part(t.contract_number, '_', 1)) = 'DCS' AND (s.maturity_date IS NULL OR s.maturity_date >= :fromDate)
+        ]]>
+    </sql>
+
+    <compare id="legacy-vs-migration" source="dcs-legacy" target="dcs-migration" export="full">
+        <key columns="trade_id"/>
+        <column name="contract_number" trim="true"/>
+        <column name="transaction_date" dateOnly="true"/>
+        <column name="deal_status" trim="true" caseInsensitive="true"/>
+        <column name="netting_status" trim="true" caseInsensitive="true" nullAsEmpty="true"/>
+        <column name="original_lots" absTol="0.0001" nullAsZero="true"/>
+        <column name="premium" absTol="0.0001" nullAsZero="true"/>
+        <column name="derivative_type" trim="true" caseInsensitive="true"/>
+        <column name="maturity_date" dateOnly="true"/>
+    </compare>
+    <compare id="legacy-vs-current" source="dcs-legacy" target="dcs-current" export="full">
+        <key columns="trade_id"/>
+        <column name="contract_number" trim="true"/>
+        <column name="transaction_date" dateOnly="true"/>
+        <column name="deal_status" trim="true" caseInsensitive="true"/>
+        <column name="netting_status" trim="true" caseInsensitive="true" nullAsEmpty="true"/>
+        <column name="original_lots" absTol="0.0001" nullAsZero="true"/>
+        <column name="premium" absTol="0.0001" nullAsZero="true"/>
+        <column name="derivative_type" trim="true" caseInsensitive="true"/>
+        <column name="maturity_date" dateOnly="true"/>
+    </compare>
+
+    <compress id="bundle" file="rrr-dcs-deals-cfs.zip">
+        <include ref="dcs-legacy"/>
+        <include ref="dcs-migration"/>
+        <include ref="dcs-current"/>
+        <include ref="legacy-vs-migration"/>
+        <include ref="legacy-vs-current"/>
+    </compress>
+</rules>
