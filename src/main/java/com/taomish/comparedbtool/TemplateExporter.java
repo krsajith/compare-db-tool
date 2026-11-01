@@ -71,6 +71,8 @@ public final class TemplateExporter {
             config.setJdbcUrl(definition.getUrl()); config.setUsername(definition.getUsername()); config.setPassword(definition.getPassword());
             if (definition.getDriverClassName() != null) config.setDriverClassName(definition.getDriverClassName());
             config.setReadOnly(true); config.setAutoCommit(false); config.setMaximumPoolSize(1); config.setMinimumIdle(0);
+            // Same connect behaviour as QueryRunner: retry a slow handshake for up to 30 s instead of failing on the first attempt.
+            config.setConnectionTimeout(30_000); config.setInitializationFailTimeout(-1);
             // All requested rows are read from one consistent transaction snapshot.
             config.setTransactionIsolation("TRANSACTION_REPEATABLE_READ");
             if (definition.getUrl().startsWith("jdbc:postgresql:")) config.setConnectionInitSql("SET default_transaction_read_only = on");

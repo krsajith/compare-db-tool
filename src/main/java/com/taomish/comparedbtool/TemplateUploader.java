@@ -105,6 +105,8 @@ public final class TemplateUploader {
             config.setUsername(definition.getUsername()); config.setPassword(definition.getPassword());
             if (definition.getDriverClassName() != null) config.setDriverClassName(definition.getDriverClassName());
             config.setMaximumPoolSize(1); config.setMinimumIdle(0); config.setAutoCommit(false);
+            // Same connect behaviour as QueryRunner: retry a slow handshake for up to 30 s instead of failing on the first attempt.
+            config.setConnectionTimeout(30_000); config.setInitializationFailTimeout(-1);
             config.setReadOnly(!options.apply);
             try (var pool = new HikariDataSource(config); Connection connection = pool.getConnection()) {
                 try {
