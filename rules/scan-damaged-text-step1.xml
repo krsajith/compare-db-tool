@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Scan for text damaged by the migration, step 1 of 2. Postgres only, read-only SELECTs, no business unit filter.
+     Background: six client names lost their non-ASCII characters at migration (UTF-8 bytes replaced one by one with a question mark,
+     evidence in analysis/rrr-parity-2026-10-30/05_client_names_encoding_cfs.sql). The same loss can exist in any table.
+     Method: for every ordinary table of schema opera (current data) and of schema opera_backup_04_10 (the migration copy of 02-Oct-2026)
+     count the rows whose text form contains a question mark, and show up to three example rows. Tables above 3 million rows are not
+     scanned (reported with an empty count) so the run stays short. A question mark can also be legitimate text (web addresses, questions),
+     so the examples decide. A table that shows the same count in the migration copy and in the current schema was damaged by the migration
+     or never touched since. Step 2 (a generated rule) then compares the flagged tables with legacy MySQL bytes. -->
+<rules name="scan-damaged-text-step1">
+    <parameters>
+        <param name="maxRows" type="integer" value="3000000"/>
+    </parameters>
+
+    <sql id="scan-current" db="postgres-dev" timeout="1800" export="full">
+        <![CDATA[
+            WITH counts AS (
+                SELECT n.nspname AS schema_name, c.relname AS table_name, CAST(c.reltuples AS bigint) AS approx_rows,
+                       CASE WHEN c.reltuples > :maxRows THEN NULL
+                            ELSE CAST(CAST((xpath('/row/n/text()', query_to_xml(
+                                   format('select count(*) as n from %I.%I t where t::text like %L', n.nspname, c.relname, '%?%'),
+                                   false, true, ''))) [1] AS text) AS bigint) END AS rows_with_question_mark
+                  FROM pg_class c
+                  JOIN pg_namespace n ON n.oid = c.relnamespace
+                 WHERE n.nspname = 'opera' AND c.relkind = 'r'
+            )
+            SELECT counts.schema_name, counts.table_name, counts.approx_rows, counts.rows_with_question_mark,
+                   CASE WHEN counts.rows_with_question_mark > 0 THEN
+                        (SELECT string_agg(CAST(x AS text), ' ||| ')
+                           FROM unnest(xpath('/table/row/s/text()', query_to_xml(
+                                  format('select left(t::text, 220) as s from %I.%I t where t::text like %L limit 3',
+                                         counts.schema_name, counts.table_name, '%?%'), false, false, ''))) AS x)
+                   END AS examples
+              FROM counts
+             ORDER BY counts.rows_with_question_mark DESC NULLS LAST, counts.table_name
+        ]]>
+    </sql>
+
+    <sql id="scan-migration-copy" db="postgres-dev" timeout="1800" export="full">
+        <![CDATA[
+            WITH counts AS (
+                SELECT n.nspname AS schema_name, c.relname AS table_name, CAST(c.reltuples AS bigint) AS approx_rows,
+                       CASE WHEN c.reltuples > :maxRows THEN NULL
+                            ELSE CAST(CAST((xpath('/row/n/text()', query_to_xml(
+                                   format('select count(*) as n from %I.%I t where t::text like %L', n.nspname, c.relname, '%?%'),
+                                   false, true, ''))) [1] AS text) AS bigint) END AS rows_with_question_mark
+                  FROM pg_class c
+                  JOIN pg_namespace n ON n.oid = c.relnamespace
+                 WHERE n.nspname = 'opera_backup_04_10' AND c.relkind = 'r'
+            )
+            SELECT counts.schema_name, counts.table_name, counts.approx_rows, counts.rows_with_question_mark,
+                   CASE WHEN counts.rows_with_question_mark > 0 THEN
+                        (SELECT string_agg(CAST(x AS text), ' ||| ')
+                           FROM unnest(xpath('/table/row/s/text()', query_to_xml(
+                                  format('select left(t::text, 220) as s from %I.%I t where t::text like %L limit 3',
+                                         counts.schema_name, counts.table_name, '%?%'), false, false, ''))) AS x)
+                   END AS examples
+              FROM counts
+             ORDER BY counts.rows_with_question_mark DESC NULLS LAST, counts.table_name
+        ]]>
+    </sql>
+
+    <compress id="bundle" file="scan-damaged-text-step1.zip">
+        <include ref="scan-current"/>
+        <include ref="scan-migration-copy"/>
+    </compress>
+</rules>

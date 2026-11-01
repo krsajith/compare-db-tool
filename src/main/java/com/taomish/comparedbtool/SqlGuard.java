@@ -15,6 +15,11 @@ public final class SqlGuard {
         "PG_ADVISORY_LOCK", "PG_ADVISORY_XACT_LOCK", "PG_TERMINATE_BACKEND", "PG_CANCEL_BACKEND",
         "DBLINK_EXEC", "LO_IMPORT", "LO_EXPORT", "GET_LOCK", "RELEASE_LOCK");
 
+    static boolean flagged(String word) { return FORBIDDEN.contains(word); }
+
+    /** Offline assessment only: execution authorization remains a separate policy decision. */
+    public static SqlAssessment assess(String sql) { return SqlAssessment.scan(sql); }
+
     public static String validate(String sql) {
         if (sql == null || sql.isBlank()) throw new ToolException("SQL cannot be empty.");
         List<String> words = new ArrayList<>();
