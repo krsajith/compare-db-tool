@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- RRR CFS, value date 02-Oct-2026. Export only, read-only SELECTs. Two open items.
+     DCS: the only live DCS trade on the report date is DCS_WP_003 (cs_spread_put, 100 lots, premium 4.0, maturity 01-Feb-2027). Legacy reported DCS at -52,441, the new report +20,000
+     (market value 0, unpaid premium 20,000). Legacy trade DCS_WP_004 has transaction date 20-Oct-2026, after the report date, so it is not part of the difference.
+     Q1a and Q1b show the security and its settle price rows around the report date in the current system and in the migration copy, Q1c the legacy cache rows for DCS today
+     (settle price, market value, premium), Q2 how many cs_spread securities have no or a zero settle price on the report date, current and migration copy.
+     ACM and IOL: the CFS report differs from legacy by about 2.7 and 2.0 dollars. Q3 exports the swap legs (avg_swap_cc) of both clients with full precision, so the effect of rounding
+     each leg to cents can be calculated against the legacy totals (ACM -975,703.74, IOL -246,204 on 01-Oct-2026). -->
+<rules name="rrr-dcs-acm-iol-probe-cfs">
+    <parameters>
+        <param name="bu" type="string" value="CFS"/>
+        <param name="valueDate" type="date" value="2026-10-02"/>
+        <param name="from" type="date" value="2026-09-28"/>
+        <param name="to" type="date" value="2026-10-06"/>
+    </parameters>
+
+    <sql id="q1a-dcs-security-prices-current" db="postgres-dev" timeout="300" export="full">
+        <![CDATA[
+            SELECT s.security_id, s.derivative_type, s.underlying1_id, s.underlying2_id, s.strike1, s.maturity_date,
+                   sv.value_date, sv.settle_price, sv.created_by, sv.created_timestamp
+              FROM opera.cloned_deal_ticket_table t
+              JOIN opera.cloned_security_info_table s
+                ON s.tenant_id = t.tenant_id AND s.business_unit = t.business_unit AND s.security_id = t.security_id
+              LEFT JOIN opera.security_settlement_value_table sv
+                ON sv.tenant_id = s.tenant_id AND sv.business_unit = s.business_unit AND sv.security_id = s.security_id
+               AND sv.value_date BETWEEN :from AND :to
+             WHERE t.tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1)
+               AND t.business_unit = :bu AND t.is_latest_version = 1 AND t.contract_number = 'DCS_WP_003'
+             ORDER BY sv.value_date
+        ]]>
+    </sql>
+    <sql id="q1b-dcs-security-prices-migration" db="postgres-dev" timeout="300" export="full">
+        <![CDATA[
+            SELECT s.security_id, sv.value_date, sv.settle_price, sv.created_by, sv.created_timestamp
+              FROM opera_backup_04_10.cloned_deal_ticket_table t
+              JOIN opera_backup_04_10.cloned_security_info_table s
+                ON s.tenant_id = t.tenant_id AND s.business_unit = t.business_unit AND s.security_id = t.security_id
+              LEFT JOIN opera_backup_04_10.security_settlement_value_table sv
+                ON sv.tenant_id = s.tenant_id AND sv.business_unit = s.business_unit AND sv.security_id = s.security_id
+               AND sv.value_date BETWEEN :from AND :to
+             WHERE t.tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1)
+               AND t.business_unit = :bu AND t.is_latest_version = 1 AND t.contract_number = 'DCS_WP_003'
+             ORDER BY sv.value_date
+        ]]>
+    </sql>
+    <sql id="q1c-dcs-legacy-cache" db="mysql-oprdb02" timeout="300" export="full">
+        <![CDATA[
+            SELECT contract_number, value_date, derivative_type, active_lots, settle_price, mult_factor, nc_factor, fx_nc_factor,
+                   is_premium_paid, premium_paid_usd, mkt_value_usd, mtm_usd, maturity_date
+              FROM dbsystemuat.helper_client_statement_report_view_cache_table_cfs
+             WHERE SUBSTRING_INDEX(contract_number, '_', 1) = 'DCS'
+        ]]>
+    </sql>
+    <sql id="q2-cs-spread-price-coverage" db="postgres-dev" timeout="600" export="full">
+        <![CDATA[
+            SELECT 'current' AS source, COUNT(*) AS cs_spread_securities,
+                   COUNT(*) FILTER (WHERE sv.security_id IS NULL) AS no_price_row,
+                   COUNT(*) FILTER (WHERE sv.settle_price = 0) AS zero_price
+              FROM opera.cloned_security_info_table s
+              LEFT JOIN opera.security_settlement_value_table sv
+                ON sv.tenant_id = s.tenant_id AND sv.business_unit = s.business_unit AND sv.security_id = s.security_id AND sv.value_date = :valueDate
+             WHERE s.tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1)
+               AND s.business_unit = :bu AND s.derivative_type LIKE 'cs_spread%' AND (s.maturity_date IS NULL OR s.maturity_date >= :valueDate)
+            UNION ALL
+            SELECT 'migration copy', COUNT(*), COUNT(*) FILTER (WHERE sv.security_id IS NULL), COUNT(*) FILTER (WHERE sv.settle_price = 0)
+              FROM opera_backup_04_10.cloned_security_info_table s
+              LEFT JOIN opera_backup_04_10.security_settlement_value_table sv
+                ON sv.tenant_id = s.tenant_id AND sv.business_unit = s.business_unit AND sv.security_id = s.security_id AND sv.value_date = :valueDate
+             WHERE s.tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1)
+               AND s.business_unit = :bu AND s.derivative_type LIKE 'cs_spread%' AND (s.maturity_date IS NULL OR s.maturity_date >= :valueDate)
+        ]]>
+    </sql>
+
+    <sql id="q3-acm-iol-swap-legs" db="postgres-dev" timeout="300" export="full">
+        <![CDATA[
+            SELECT upper(split_part(contract_number, '_', 1)) AS client_code, contract_number, trade_id, active_lots,
+                   CAST(mtm_usd AS numeric(30, 10)) AS mtm_usd, CAST(mtm_nc AS numeric(30, 10)) AS mtm_nc
+              FROM opera.helper_client_statement_report_view_cache_table
+             WHERE tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1)
+               AND business_unit = :bu AND value_date = :valueDate AND derivative_type = 'avg_swap_cc'
+               AND upper(split_part(contract_number, '_', 1)) IN ('ACM', 'IOL')
+             ORDER BY 1, 2
+        ]]>
+    </sql>
+
+    <compress id="bundle" file="rrr-dcs-acm-iol-probe-cfs.zip">
+        <include ref="q1a-dcs-security-prices-current"/>
+        <include ref="q1b-dcs-security-prices-migration"/>
+        <include ref="q1c-dcs-legacy-cache"/>
+        <include ref="q2-cs-spread-price-coverage"/>
+        <include ref="q3-acm-iol-swap-legs"/>
+    </compress>
+</rules>
