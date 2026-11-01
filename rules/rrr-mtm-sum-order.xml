@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- RRR MTM sum order (ADP prints (92,063), legacy (92,062)). Value date 02-Oct-2026, dev (the data the 1 Nov reports used).
+     Exports, at full double precision (CAST AS text gives the exact shortest form), the inputs of the client MTM for the
+     39 CFS and 4 ORM clients whose new MTM differs from legacy only by float noise, plus control clients that match exactly:
+     (1) statement cache rows (what the legacy MATLAB summed), with their physical order;
+     (2) fn_client_statement_position_rows_v2 rows (what the Java report sums), in the order returned;
+     (3) dripping rows. The managing chat replays both summation orders offline. Read-only SELECTs only. -->
+<rules name="rrr-mtm-sum-order">
+    <parameters>
+        <param name="valueDate" type="date" value="2026-10-02"/>
+    </parameters>
+
+    <sql id="cache-cfs" db="postgres-dev" timeout="600" fetchSize="5000" export="full">
+        <![CDATA[
+            SELECT c.ctid::text AS row_pos, c.trade_id, c.contract_number, upper(split_part(c.contract_number, '_', 1)) AS client,
+                   c.client_code, c.derivative_type, c.opt_periodicity, c.is_premium_paid, c.product_code,
+                   c.active_lots::text AS active_lots, c.mult_factor::text AS mult_factor, c.nc_factor::text AS nc_factor,
+                   c.fx_nc_factor::text AS fx_nc_factor, c.traded_price::text AS traded_price,
+                   c.mtm_usd::text AS mtm_usd, c.mtm_nc::text AS mtm_nc, c.mkt_value_usd::text AS mkt_value_usd,
+                   c.premium_paid_usd::text AS premium_paid_usd, c.premium_paid_nc::text AS premium_paid_nc
+              FROM opera.helper_client_statement_report_view_cache_table c
+             WHERE c.tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = 'CFS' LIMIT 1)
+               AND c.business_unit = 'CFS' AND c.value_date = :valueDate AND c.contract_number IS NOT NULL
+               AND upper(split_part(c.contract_number, '_', 1)) IN ('ADP','ALG','ASI','BSB','BUN','CAD','CDL','CFC','CGL','CWE','DFE','DYE',
+                   'EDF','FAB','GAE','GBS','JUP','MAN','MDL','MFE','MOA','OAA','OBC','OCC','OGM','ORM','PBE','RWF','SBC','SCE','SIC','SIP',
+                   'SOR','SSO','TSR','UDA','VBN','VCI','WSF','ACL','ALV','BEG','BKP','BOC','CBS','CTL','DCS','DFS','GBT','GIL','IVO')
+        ]]>
+    </sql>
+    <sql id="fn-cfs" db="postgres-dev" timeout="900" fetchSize="5000" tempTables="true" export="full">
+        <![CDATA[
+            SELECT p.ordinality AS ord, p.trade_id, p.contract_number, p.client_code, p.counterparty_parent, p.derivative_type, p.opt_periodicity,
+                   p.is_premium_paid, p.product_code, p.active_lots::text AS active_lots, p.mult_factor::text AS mult_factor,
+                   p.original_premium::text AS original_premium, p.nc_factor::text AS nc_factor, p.fx_nc_factor::text AS fx_nc_factor,
+                   p.mtm_usd::text AS mtm_usd, p.mtm_nc::text AS mtm_nc, p.mkt_value_usd::text AS mkt_value_usd,
+                   p.mkt_value_nc::text AS mkt_value_nc, p.fixing_date
+              FROM opera.fn_client_statement_position_rows_v2(
+                       (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = 'CFS' LIMIT 1),
+                       CAST('CFS' AS text), CAST(:valueDate AS date),
+                       CAST('["ADP","ALG","ASI","BSB","BUN","CAD","CDL","CFC","CGL","CWE","DFE","DYE","EDF","FAB","GAE","GBS","JUP","MAN","MDL","MFE","MOA","OAA","OBC","OCC","OGM","ORM","PBE","RWF","SBC","SCE","SIC","SIP","SOR","SSO","TSR","UDA","VBN","VCI","WSF","ACL","ALV","BEG","BKP","BOC","CBS","CTL","DCS","DFS","GBT","GIL","IVO"]' AS jsonb))
+                   WITH ORDINALITY AS p
+        ]]>
+    </sql>
+    <sql id="cache-orm" db="postgres-dev" timeout="600" fetchSize="5000" export="full">
+        <![CDATA[
+            SELECT c.ctid::text AS row_pos, c.trade_id, c.contract_number, upper(split_part(c.contract_number, '_', 1)) AS client,
+                   c.client_code, c.derivative_type, c.opt_periodicity, c.is_premium_paid, c.product_code,
+                   c.active_lots::text AS active_lots, c.mult_factor::text AS mult_factor, c.nc_factor::text AS nc_factor,
+                   c.fx_nc_factor::text AS fx_nc_factor, c.traded_price::text AS traded_price,
+                   c.mtm_usd::text AS mtm_usd, c.mtm_nc::text AS mtm_nc, c.mkt_value_usd::text AS mkt_value_usd,
+                   c.premium_paid_usd::text AS premium_paid_usd, c.premium_paid_nc::text AS premium_paid_nc
+              FROM opera.helper_client_statement_report_view_cache_table c
+             WHERE c.tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = 'ORM' LIMIT 1)
+               AND c.business_unit = 'ORM' AND c.value_date = :valueDate AND c.contract_number IS NOT NULL
+               AND upper(split_part(c.contract_number, '_', 1)) IN ('OGA','PRO','QCX','RRP','GBX','GCL','OGX','PAX','SBX','SOX')
+        ]]>
+    </sql>
+    <sql id="fn-orm" db="postgres-dev" timeout="900" fetchSize="5000" tempTables="true" export="full">
+        <![CDATA[
+            SELECT p.ordinality AS ord, p.trade_id, p.contract_number, p.client_code, p.counterparty_parent, p.derivative_type, p.opt_periodicity,
+                   p.is_premium_paid, p.product_code, p.active_lots::text AS active_lots, p.mult_factor::text AS mult_factor,
+                   p.original_premium::text AS original_premium, p.nc_factor::text AS nc_factor, p.fx_nc_factor::text AS fx_nc_factor,
+                   p.mtm_usd::text AS mtm_usd, p.mtm_nc::text AS mtm_nc, p.mkt_value_usd::text AS mkt_value_usd,
+                   p.mkt_value_nc::text AS mkt_value_nc, p.fixing_date
+              FROM opera.fn_client_statement_position_rows_v2(
+                       (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = 'ORM' LIMIT 1),
+                       CAST('ORM' AS text), CAST(:valueDate AS date),
+                       CAST('["OGA","PRO","QCX","RRP","GBX","GCL","OGX","PAX","SBX","SOX"]' AS jsonb))
+                   WITH ORDINALITY AS p
+        ]]>
+    </sql>
+    <sql id="dripping" db="postgres-dev" timeout="300" fetchSize="5000" export="full">
+        <![CDATA[
+            SELECT d.business_unit, d.contract_number, upper(split_part(d.contract_number, '_', 1)) AS client,
+                   d.mtm_post_dripping_today::text AS mtm_post_dripping_today,
+                   d.mtm_post_dripping_today_usd::text AS mtm_post_dripping_today_usd, d.ctid::text AS row_pos
+              FROM opera.client_dripping_table d
+             WHERE d.business_unit IN ('CFS', 'ORM') AND d.value_date = :valueDate
+        ]]>
+    </sql>
+</rules>
