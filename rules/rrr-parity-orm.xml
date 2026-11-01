@@ -79,14 +79,14 @@
     <compare id="totals" source="old-totals" target="new-totals">
         <key columns="client_code"/>
         <column name="account_status" trim="true" nullAsEmpty="true" caseInsensitive="true"/>
-        <column name="mtm" absTol="1"/>
-        <column name="cash_balance" absTol="1"/>
-        <column name="account_balance" absTol="1"/>
-        <column name="threshold" absTol="1"/>
-        <column name="excess_deficit" absTol="1"/>
-        <column name="pie_5d" absTol="1"/>
-        <column name="pfe_5d" absTol="1"/>
-        <column name="ftd_pnl" absTol="1"/>
+        <column name="mtm" absTol="0.005"/>
+        <column name="cash_balance" absTol="0.005"/>
+        <column name="account_balance" absTol="0.005"/>
+        <column name="threshold" absTol="0.005"/>
+        <column name="excess_deficit" absTol="0.005"/>
+        <column name="pie_5d" absTol="0.005"/>
+        <column name="pfe_5d" absTol="0.005"/>
+        <column name="ftd_pnl" absTol="0.005"/>
         <breakdown columns="account_status" top="15"/>
     </compare>
 
