@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- RRR ORM client QCX, value date 02-Oct-2026. Export only, read-only SELECTs. The legacy report of COB 01-Oct-2026 has QCX at MTM -18,328.05
+     (status MARGIN CALL); the new report has MTM 0 (status INACTIVE). This was already so before the position key fix, so it is not caused by it.
+     Q1 shows whether QCX deals exist in the deal table and which of the legacy and function filters would remove them (counterparty, sub portfolio, deal status,
+     netting, transaction date). Q2 shows what the position function returns for QCX. Q3 shows how many rows the function returns per client for ORM, to see
+     whether the function returns rows under another client column. The function call needs the temp-table mode. -->
+<rules name="rrr-orm-qcx-probe">
+    <parameters>
+        <param name="bu" type="string" value="ORM"/>
+        <param name="valueDate" type="date" value="2026-10-02"/>
+    </parameters>
+
+    <sql id="q1-qcx-deals" db="postgres-dev" timeout="300" export="full">
+        <![CDATA[
+            SELECT t.trade_id, t.contract_number, t.counterparty_parent, t.subportfolio, t.deal_status, t.netting_status, t.transaction_date,
+                   t.market_action, t.original_lots, l.active_lots AS latest_active_lots, t.security_id
+              FROM opera.cloned_deal_ticket_table t
+              LEFT JOIN opera.latest_active_lot l
+                ON l.tenant_id = t.tenant_id AND l.business_unit = t.business_unit AND l.trade_id = t.trade_id
+             WHERE t.tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1)
+               AND t.business_unit = :bu AND t.is_latest_version = 1
+               AND upper(split_part(t.contract_number, '_', 1)) = 'QCX'
+             ORDER BY t.contract_number
+             LIMIT 100
+        ]]>
+    </sql>
+
+    <sql id="q2-qcx-function-rows" db="postgres-dev" timeout="600" export="full" tempTables="true">
+        <![CDATA[
+            SELECT p.trade_id, p.contract_number, p.client_code, p.counterparty_parent, p.derivative_type, p.active_lots, p.mtm_usd, p.mkt_value_usd
+              FROM opera.fn_client_statement_position_rows_v2(
+                       (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1),
+                       CAST(:bu AS text), CAST(:valueDate AS date),
+                       (SELECT jsonb_agg(m.client_code) FROM opera.client_master_data m
+                         WHERE m.tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1)
+                           AND m.business_unit = :bu)) p
+             WHERE upper(split_part(p.contract_number, '_', 1)) = 'QCX' OR upper(trim(p.client_code)) = 'QCX'
+             ORDER BY p.contract_number
+             LIMIT 100
+        ]]>
+    </sql>
+
+    <sql id="q3-function-rows-per-client" db="postgres-dev" timeout="600" export="full" tempTables="true">
+        <![CDATA[
+            SELECT upper(trim(p.client_code)) AS client_column, upper(split_part(p.contract_number, '_', 1)) AS contract_prefix,
+                   COUNT(*) AS n_rows, ROUND(SUM(p.mtm_usd)::numeric, 2) AS sum_mtm_usd
+              FROM opera.fn_client_statement_position_rows_v2(
+                       (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1),
+                       CAST(:bu AS text), CAST(:valueDate AS date),
+                       (SELECT jsonb_agg(m.client_code) FROM opera.client_master_data m
+                         WHERE m.tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1)
+                           AND m.business_unit = :bu)) p
+             GROUP BY 1, 2
+             ORDER BY 1, 2
+             LIMIT 100
+        ]]>
+    </sql>
+
+    <compress id="bundle" file="rrr-orm-qcx-probe.zip">
+        <include ref="q1-qcx-deals"/>
+        <include ref="q2-qcx-function-rows"/>
+        <include ref="q3-function-rows-per-client"/>
+    </compress>
+</rules>
