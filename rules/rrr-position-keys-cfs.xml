@@ -41,7 +41,7 @@
               FROM pos
               LEFT JOIN opera.product_master_table p
                 ON p.tenant_id = (SELECT tenant_id FROM ten)
-               AND replace(upper(trim(p.invenio_product_code)), 'CR ', '') = pos.product_key
+               AND substr(upper(trim(p.invenio_product_code)), 4) = pos.product_key
                AND upper(trim(p.invenio_product_code)) LIKE 'CR %'
               LEFT JOIN opera.currency_spot_mapping_table m
                 ON m.tenant_id = (SELECT tenant_id FROM ten) AND upper(trim(m.currency)) = upper(trim(p.currency))
