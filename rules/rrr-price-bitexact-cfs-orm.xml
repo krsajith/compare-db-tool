@@ -27,18 +27,22 @@
     </sql>
     <sql id="underlying-price-diff" db="postgres-dev" timeout="600" fetchSize="5000">
         <![CDATA[
-            SELECT coalesce(n.business_unit, o.business_unit) AS business_unit,
-                   to_jsonb(coalesce(n, o))->>'underlying_id' AS underlying_id,
-                   to_jsonb(o)->>'settle_value' AS backup_value,
-                   to_jsonb(n)->>'settle_value' AS current_value
+            SELECT coalesce(n.underlying_id, o.underlying_id) AS underlying_id,
+                   o.settle_value::text AS backup_settle_value, n.settle_value::text AS current_settle_value,
+                   o.risk_free_rate::text AS backup_risk_free_rate, n.risk_free_rate::text AS current_risk_free_rate,
+                   o.div_yield::text AS backup_div_yield, n.div_yield::text AS current_div_yield,
+                   n.updated_by, n.updated_timestamp
               FROM (SELECT * FROM opera.underlying_settle_value_table
-                     WHERE business_unit IN ('CFS', 'ORM') AND value_date = :valueDate) n
+                     WHERE tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = 'CFS' LIMIT 1)
+                       AND value_date = :valueDate) n
               FULL JOIN (SELECT * FROM opera_backup_04_10.underlying_settle_value_table
-                     WHERE business_unit IN ('CFS', 'ORM') AND value_date = :valueDate) o
-                ON o.uuid = n.uuid
-             WHERE to_jsonb(n)::text IS DISTINCT FROM to_jsonb(o)::text
-             ORDER BY 1, 2
-             LIMIT 2000
+                     WHERE tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = 'CFS' LIMIT 1)
+                       AND value_date = :valueDate) o
+                ON o.tenant_id = n.tenant_id AND o.underlying_id = n.underlying_id AND o.value_date = n.value_date
+             WHERE n.settle_value::text IS DISTINCT FROM o.settle_value::text
+                OR n.risk_free_rate::text IS DISTINCT FROM o.risk_free_rate::text
+                OR n.div_yield::text IS DISTINCT FROM o.div_yield::text
+             ORDER BY 1
         ]]>
     </sql>
     <compress id="bundle" file="rrr-price-bitexact-cfs-orm.zip">
