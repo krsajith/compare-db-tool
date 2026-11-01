@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- RRR deal changes since the migration, BU CFS. After all fixes CFS MTM differs from legacy for 7 clients. MAN is explained by 18 test deals created on 30-Oct-2026.
+     BFA, AST, BOV, DAI and SND fit the dripping differences. DCS (legacy -52,441, now +20,000 from a single cs_spread_put) is not explained.
+     This rule compares, for the clients in focus, the deal status and the latest active lots of every trade in the migration copy (schema opera_backup_04_10)
+     with the current system, so trades whose status or lots changed after the migration show up. Both sides are Postgres, so it runs inside the database.
+     Read-only SELECTs only. -->
+<rules name="rrr-deal-changes-cfs">
+    <parameters>
+        <param name="bu" type="string" value="CFS"/>
+    </parameters>
+
+    <sql id="deals-migration" db="postgres-dev" timeout="600">
+        <![CDATA[
+            SELECT t.trade_id, upper(split_part(t.contract_number, '_', 1)) AS client_prefix, t.contract_number, t.deal_status,
+                   CAST(coalesce(l.active_lots, 0) AS numeric(30, 6)) AS active_lots
+              FROM opera_backup_04_10.cloned_deal_ticket_table t
+              LEFT JOIN opera_backup_04_10.latest_active_lot l
+                ON l.tenant_id = t.tenant_id AND l.business_unit = t.business_unit AND l.trade_id = t.trade_id
+             WHERE t.tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1)
+               AND t.business_unit = :bu AND t.is_latest_version = 1
+               AND upper(split_part(t.contract_number, '_', 1)) IN ('DCS', 'SND', 'BFA', 'AST', 'BOV', 'DAI')
+        ]]>
+    </sql>
+    <sql id="deals-current" db="postgres-dev" timeout="600">
+        <![CDATA[
+            SELECT t.trade_id, upper(split_part(t.contract_number, '_', 1)) AS client_prefix, t.contract_number, t.deal_status,
+                   CAST(coalesce(l.active_lots, 0) AS numeric(30, 6)) AS active_lots
+              FROM opera.cloned_deal_ticket_table t
+              LEFT JOIN opera.latest_active_lot l
+                ON l.tenant_id = t.tenant_id AND l.business_unit = t.business_unit AND l.trade_id = t.trade_id
+             WHERE t.tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1)
+               AND t.business_unit = :bu AND t.is_latest_version = 1
+               AND upper(split_part(t.contract_number, '_', 1)) IN ('DCS', 'SND', 'BFA', 'AST', 'BOV', 'DAI')
+        ]]>
+    </sql>
+    <compare id="deal-changes" source="deals-migration" target="deals-current" engine="db">
+        <key columns="trade_id"/>
+        <column name="client_prefix"/>
+        <column name="contract_number"/>
+        <column name="deal_status" trim="true" caseInsensitive="true"/>
+        <column name="active_lots" absTol="0.0001"/>
+        <breakdown columns="client_prefix" top="10"/>
+        <breakdown columns="client_prefix,deal_status" top="20"/>
+    </compare>
+
+    <compress id="bundle" file="rrr-deal-changes-cfs.zip">
+        <include ref="deal-changes"/>
+    </compress>
+</rules>
