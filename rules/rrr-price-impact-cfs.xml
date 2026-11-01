@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- RRR CFS price differences, value date 02-Oct-2026. Export only, read-only SELECTs, Postgres only (current schema against the migration copy opera_backup_04_10).
+     Background: the compare of 1-Nov-2026 reported 385 settle prices that differ between the current system and the migration copy, but a comparison in the database exports
+     only a capped sample, so only 100 of them were seen. This rule lists ALL of them with a plain query, and estimates what the differences do to each client.
+     Known so far: security CM WP H27 (cs_spread_put of client DCS) is 14.488 in the migration copy and 0 now, which explains the whole DCS gap of 72,441. The underlying compare
+     shows three underlyings with a different risk free rate on the report date (CM CT Z26, CM BO V26, CM BO Z26, all 0.0435 now; legacy 0.0427, 0.0417 and 0.0428), which fits small price
+     differences in cotton and palm oil options (ACM and IOL are off by about 2 dollars).
+     Q1 lists every security whose price differs, Q2 the three underlyings with who wrote them and when, Q3 the estimated effect per client:
+     (current price minus migration price) x active lots x multiplier x factors x -1 for option positions in the statement cache (an estimate, not the report value). -->
+<rules name="rrr-price-impact-cfs">
+    <parameters>
+        <param name="bu" type="string" value="CFS"/>
+        <param name="valueDate" type="date" value="2026-10-02"/>
+    </parameters>
+
+    <sql id="q1-all-price-differences" db="postgres-dev" timeout="600" export="full">
+        <![CDATA[
+            SELECT c.security_id, CAST(b.settle_price AS numeric(30, 10)) AS migration_price, CAST(c.settle_price AS numeric(30, 10)) AS current_price,
+                   CAST(c.settle_price - b.settle_price AS numeric(30, 10)) AS price_difference,
+                   CASE WHEN b.settle_price = 0 THEN NULL ELSE CAST((c.settle_price - b.settle_price) / abs(b.settle_price) AS numeric(30, 8)) END AS relative_difference,
+                   c.created_by AS current_writer, c.created_timestamp AS current_written
+              FROM opera.security_settlement_value_table c
+              JOIN opera_backup_04_10.security_settlement_value_table b
+                ON b.tenant_id = c.tenant_id AND b.business_unit = c.business_unit AND b.security_id = c.security_id AND b.value_date = c.value_date
+             WHERE c.tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1)
+               AND c.business_unit = :bu AND c.value_date = :valueDate
+               AND abs(c.settle_price - b.settle_price) > 0.000001
+             ORDER BY abs(c.settle_price - b.settle_price) DESC
+             LIMIT 2000
+        ]]>
+    </sql>
+
+    <sql id="q2-underlying-risk-free-rates" db="postgres-dev" timeout="300" export="full">
+        <![CDATA[
+            SELECT c.underlying_id, CAST(b.risk_free_rate AS numeric(30, 8)) AS migration_rate, CAST(c.risk_free_rate AS numeric(30, 8)) AS current_rate,
+                   CAST(b.settle_value AS numeric(30, 8)) AS migration_value, CAST(c.settle_value AS numeric(30, 8)) AS current_value,
+                   c.created_by AS current_writer, c.created_timestamp AS current_written, c.updated_by, c.updated_timestamp
+              FROM opera.underlying_settle_value_table c
+              JOIN opera_backup_04_10.underlying_settle_value_table b
+                ON b.tenant_id = c.tenant_id AND b.underlying_id = c.underlying_id AND b.value_date = c.value_date
+             WHERE c.tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1)
+               AND c.value_date = :valueDate
+               AND (abs(coalesce(c.risk_free_rate, 0) - coalesce(b.risk_free_rate, 0)) > 0.0000001
+                    OR abs(coalesce(c.settle_value, 0) - coalesce(b.settle_value, 0)) > 0.0000001)
+             ORDER BY c.underlying_id
+             LIMIT 200
+        ]]>
+    </sql>
+
+    <sql id="q3-estimated-effect-per-client" db="postgres-dev" timeout="900" export="full">
+        <![CDATA[
+            SELECT upper(split_part(k.contract_number, '_', 1)) AS client_code, COUNT(*) AS n_positions, COUNT(DISTINCT t.security_id) AS n_securities,
+                   ROUND(SUM((c.settle_price - b.settle_price) * k.active_lots * k.mult_factor * k.nc_factor * k.fx_nc_factor * -1)::numeric, 2) AS estimated_effect_usd
+              FROM opera.helper_client_statement_report_view_cache_table k
+              JOIN opera.cloned_deal_ticket_table t
+                ON t.tenant_id = k.tenant_id AND t.business_unit = k.business_unit AND t.trade_id = k.trade_id AND t.is_latest_version = 1
+              JOIN opera.security_settlement_value_table c
+                ON c.tenant_id = t.tenant_id AND c.business_unit = t.business_unit AND c.security_id = t.security_id AND c.value_date = k.value_date
+              JOIN opera_backup_04_10.security_settlement_value_table b
+                ON b.tenant_id = c.tenant_id AND b.business_unit = c.business_unit AND b.security_id = c.security_id AND b.value_date = c.value_date
+             WHERE k.tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1)
+               AND k.business_unit = :bu AND k.value_date = :valueDate
+               AND (k.derivative_type LIKE '%call' OR k.derivative_type LIKE '%put')
+               AND abs(c.settle_price - b.settle_price) > 0.000001
+             GROUP BY 1
+             ORDER BY abs(SUM((c.settle_price - b.settle_price) * k.active_lots * k.mult_factor * k.nc_factor * k.fx_nc_factor * -1)) DESC
+             LIMIT 60
+        ]]>
+    </sql>
+
+    <compress id="bundle" file="rrr-price-impact-cfs.zip">
+        <include ref="q1-all-price-differences"/>
+        <include ref="q2-underlying-risk-free-rates"/>
+        <include ref="q3-estimated-effect-per-client"/>
+    </compress>
+</rules>
