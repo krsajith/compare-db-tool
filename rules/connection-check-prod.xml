@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Connection check for postgres-prod only: one SELECT 1, read-only. Use it to tell a network or VPN problem apart from a problem in a template upload rule. -->
+<rules name="connection-check-prod">
+    <sql id="postgres-prod-check" db="postgres-prod"><![CDATA[SELECT 1 AS check_value]]></sql>
+</rules>
