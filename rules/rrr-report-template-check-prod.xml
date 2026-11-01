@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- Which RrrReport template is on prod now (read-only). One row per business unit with the sha256 of the stored template.
      version: NEW = templates/rrr/RrrReport.html of this repo (sha c80d5414...), OLD = the version the prod upload rule expects to replace (sha 093acd73...), OTHER = neither.
-     Run with: .\compare.ps1 -r rules\rrr-report-template-check-prod.xml -allow-prod -->
+     Run with: .\compare.ps1 rules\rrr-report-template-check-prod.xml with the options rules and allow-prod -->
 <rules name="rrr-report-template-check-prod">
     <sql id="template-version" db="postgres-prod" timeout="120">
         <![CDATA[
