@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- RRR CFS client DCS, value date 02-Oct-2026. Export only, read-only SELECTs. Legacy MTM is -52,441, the new report has +20,000 from a single cs_spread_put.
+     The deal check of 1-Nov-2026 shows that no migrated DCS deal changed status, netting or lots, and no DCS deal was added before the report date, and the settle prices
+     equal the migration copy, so the difference is in which positions are built or valued. Q1 shows what the legacy cache holds for DCS today (positions that are still live),
+     Q2 what the position function returns for DCS on the report date, Q3 the live DCS deals with maturities, so the positions that expired between 02-Oct and 30-Oct
+     in the legacy cache can be told apart. The function call needs the temp-table mode. -->
+<rules name="rrr-dcs-probe-cfs">
+    <parameters>
+        <param name="bu" type="string" value="CFS"/>
+        <param name="valueDate" type="date" value="2026-10-02"/>
+    </parameters>
+
+    <sql id="q1-legacy-cache-dcs" db="mysql-oprdb02" timeout="300" export="full">
+        <![CDATA[
+            SELECT derivative_type, opt_periodicity, COUNT(*) AS n_rows, ROUND(SUM(active_lots), 4) AS lots, ROUND(SUM(mtm_usd), 2) AS mtm_usd,
+                   ROUND(SUM(mkt_value_usd), 2) AS mkt_value_usd, MIN(maturity_date) AS first_maturity, MAX(maturity_date) AS last_maturity
+              FROM dbsystemuat.helper_client_statement_report_view_cache_table_cfs
+             WHERE SUBSTRING_INDEX(contract_number, '_', 1) = 'DCS'
+             GROUP BY derivative_type, opt_periodicity
+        ]]>
+    </sql>
+
+    <sql id="q2-function-rows-dcs" db="postgres-dev" timeout="600" export="full" tempTables="true">
+        <![CDATA[
+            SELECT p.derivative_type, p.opt_periodicity, COUNT(*) AS n_rows, ROUND(SUM(p.active_lots)::numeric, 4) AS lots,
+                   ROUND(SUM(p.mtm_usd)::numeric, 2) AS mtm_usd, ROUND(SUM(p.mkt_value_usd)::numeric, 2) AS mkt_value_usd,
+                   MIN(p.maturity_date) AS first_maturity, MAX(p.maturity_date) AS last_maturity, MIN(p.contract_number) AS example_contract
+              FROM opera.fn_client_statement_position_rows_v2(
+                       (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1),
+                       CAST(:bu AS text), CAST(:valueDate AS date), CAST('["DCS"]' AS jsonb)) p
+             GROUP BY p.derivative_type, p.opt_periodicity
+        ]]>
+    </sql>
+
+    <sql id="q3-live-dcs-deals" db="postgres-dev" timeout="300" export="full">
+        <![CDATA[
+            SELECT upper(t.deal_status) AS deal_status, t.netting_status, COUNT(*) AS n_trades, MIN(s.maturity_date) AS first_maturity,
+                   MAX(s.maturity_date) AS last_maturity, MIN(s.derivative_type) AS example_type
+              FROM opera.cloned_deal_ticket_table t
+              JOIN opera.cloned_security_info_table s
+                ON s.tenant_id = t.tenant_id AND s.business_unit = t.business_unit AND s.security_id = t.security_id
+             WHERE t.tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1)
+               AND t.business_unit = :bu AND t.is_latest_version = 1 AND upper(split_part(t.contract_number, '_', 1)) = 'DCS'
+               AND lower(t.deal_status) = 'live' AND (s.maturity_date IS NULL OR s.maturity_date >= :valueDate)
+             GROUP BY 1, 2
+        ]]>
+    </sql>
+
+    <compress id="bundle" file="rrr-dcs-probe-cfs.zip">
+        <include ref="q1-legacy-cache-dcs"/>
+        <include ref="q2-function-rows-dcs"/>
+        <include ref="q3-live-dcs-deals"/>
+    </compress>
+</rules>
