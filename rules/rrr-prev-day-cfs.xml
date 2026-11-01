@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- RRR previous day rows, BU CFS, settlement date 30-Sep-2026. The report takes yesterday's rows from rrr_report_table for FTD P&L and for the ageing
+     counters. After the 1-Nov-2026 regeneration FTD P&L is wrong for 81 clients (LIB +151 million against -0.8 million in legacy), so the 30-Sep rows on
+     dev are suspect: they were written on 30-Oct-2026 05:45 by user nishchay, by a calculation that ran before the 2-Oct prices were loaded.
+     Three sources: legacy MySQL (the report table keeps one set of rows per date), the migration copy (schema opera_backup_04_10) and the current rows.
+     legacy-vs-migration shows whether the migration loaded the legacy rows correctly; migration-vs-current shows what was overwritten later.
+     Read-only SELECTs only. -->
+<rules name="rrr-prev-day-cfs">
+    <parameters>
+        <param name="bu" type="string" value="CFS"/>
+        <param name="prevCob" type="date" value="2026-09-30"/>
+    </parameters>
+
+    <sql id="prev-legacy" db="mysql-oprdb02" timeout="120" fetchSize="2000">
+        <![CDATA[
+            SELECT TRIM(client_code) AS client_code, account_status, mtm, cash_balance, account_balance, threshold, excess_deficit,
+                   threshold_def_ageing, cash_def_ageing
+              FROM dbsystemuat.rrr_report_table_cfs WHERE cob_date = :prevCob
+        ]]>
+    </sql>
+    <sql id="prev-migration" db="postgres-dev" timeout="120" fetchSize="2000">
+        <![CDATA[
+            SELECT trim(client_code) AS client_code, account_status, mtm, cash_balance, account_balance, threshold, excess_deficit,
+                   threshold_def_ageing, cash_def_ageing
+              FROM opera_backup_04_10.rrr_report_table
+             WHERE tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1)
+               AND business_unit = :bu AND cob_date = :prevCob
+        ]]>
+    </sql>
+    <sql id="prev-current" db="postgres-dev" timeout="120" fetchSize="2000">
+        <![CDATA[
+            SELECT trim(client_code) AS client_code, account_status, mtm, cash_balance, account_balance, threshold, excess_deficit,
+                   threshold_def_ageing, cash_def_ageing
+              FROM opera.rrr_report_table
+             WHERE tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1)
+               AND business_unit = :bu AND cob_date = :prevCob
+        ]]>
+    </sql>
+
+    <compare id="legacy-vs-migration" source="prev-legacy" target="prev-migration">
+        <key columns="client_code"/>
+        <column name="account_status" trim="true" nullAsEmpty="true"/>
+        <column name="mtm" absTol="1"/>
+        <column name="cash_balance" absTol="1"/>
+        <column name="account_balance" absTol="1"/>
+        <column name="threshold" absTol="1"/>
+        <column name="excess_deficit" absTol="1"/>
+        <column name="threshold_def_ageing" absTol="0.5"/>
+        <column name="cash_def_ageing" absTol="0.5"/>
+    </compare>
+    <compare id="legacy-vs-current" source="prev-legacy" target="prev-current">
+        <key columns="client_code"/>
+        <column name="account_status" trim="true" nullAsEmpty="true"/>
+        <column name="mtm" absTol="1"/>
+        <column name="cash_balance" absTol="1"/>
+        <column name="account_balance" absTol="1"/>
+        <column name="threshold" absTol="1"/>
+        <column name="excess_deficit" absTol="1"/>
+        <column name="threshold_def_ageing" absTol="0.5"/>
+        <column name="cash_def_ageing" absTol="0.5"/>
+    </compare>
+
+    <compress id="bundle" file="rrr-prev-day-cfs.zip">
+        <include ref="legacy-vs-migration"/>
+        <include ref="legacy-vs-current"/>
+    </compress>
+</rules>

@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- RRR deals that are new in the new system, BU CFS, value date 02-Oct-2026. After the 1-Nov-2026 regeneration CFS MTM differs from legacy for 9 clients.
+     MAN is 554,630 against 7,230: exactly two cs_spread positions of 273,700 each. DCS has a single cs_spread_put of +20,000 where legacy has -52,441.
+     Hypothesis (not proven): these are deals entered in the new system after the migration with a transaction date before the report date, which legacy never had.
+     Q1 lists the deals of MAN, DCS and SND with who created them and when, and whether the deal exists in the migration copy (schema opera_backup_04_10).
+     Q2 counts, for the whole of CFS, the deals with a transaction date before 02-Oct-2026 that are NOT in the migration copy, by creator and day.
+     Read-only SELECTs only. -->
+<rules name="rrr-new-deals-cfs">
+    <parameters>
+        <param name="bu" type="string" value="CFS"/>
+        <param name="valueDate" type="date" value="2026-10-02"/>
+    </parameters>
+
+    <sql id="q1-deals-man-dcs-snd" db="postgres-dev" timeout="300" export="full">
+        <![CDATA[
+            SELECT t.trade_id, t.contract_number, t.counterparty_parent, t.subportfolio, t.deal_status, t.transaction_date, t.original_lots,
+                   t.created_by, t.created_timestamp, t.updated_by, t.updated_timestamp, t.security_id,
+                   (b.trade_id IS NOT NULL) AS in_migration_copy
+              FROM opera.cloned_deal_ticket_table t
+              LEFT JOIN opera_backup_04_10.cloned_deal_ticket_table b
+                ON b.tenant_id = t.tenant_id AND b.business_unit = t.business_unit AND b.trade_id = t.trade_id AND b.is_latest_version = 1
+             WHERE t.tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1)
+               AND t.business_unit = :bu AND t.is_latest_version = 1
+               AND upper(split_part(t.contract_number, '_', 1)) IN ('MAN', 'DCS')
+               AND (b.trade_id IS NULL OR upper(split_part(t.contract_number, '_', 1)) = 'DCS')
+             ORDER BY t.contract_number
+             LIMIT 200
+        ]]>
+    </sql>
+
+    <sql id="q2-new-deals-by-creator" db="postgres-dev" timeout="600" export="full">
+        <![CDATA[
+            SELECT t.created_by, CAST(t.created_timestamp AS date) AS created_day, COUNT(*) AS n_deals,
+                   MIN(t.transaction_date) AS first_transaction_date, MAX(t.transaction_date) AS last_transaction_date
+              FROM opera.cloned_deal_ticket_table t
+             WHERE t.tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1)
+               AND t.business_unit = :bu AND t.is_latest_version = 1 AND t.transaction_date < :valueDate
+               AND NOT EXISTS (SELECT 1 FROM opera_backup_04_10.cloned_deal_ticket_table b
+                                WHERE b.tenant_id = t.tenant_id AND b.business_unit = t.business_unit
+                                  AND b.trade_id = t.trade_id AND b.is_latest_version = 1)
+             GROUP BY 1, 2
+             ORDER BY n_deals DESC
+             LIMIT 50
+        ]]>
+    </sql>
+
+    <compress id="bundle" file="rrr-new-deals-cfs.zip">
+        <include ref="q1-deals-man-dcs-snd"/>
+        <include ref="q2-new-deals-by-creator"/>
+    </compress>
+</rules>
