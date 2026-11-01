@@ -1,0 +1,120 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Does the migration copy (postgres-dev schema opera_backup_04_10) hold the EXACT legacy values? Legacy MySQL dbsystemuat against the copy, no tolerance (absTol 0).
+     Two inputs of the RRR, CFS and ORM:
+       rrr_report_table, settlement date 30-Sep-2026 (previous day for FTD P and L)
+       grasa_10dpie_rrr_table, settlement date 01-Oct-2026 (PIE)
+     Any difference here means restoring from the copy cannot make the report bit-exact for that client; the value has to come from legacy itself.
+     Read-only SELECTs only. -->
+<rules name="rrr-legacy-vs-copy-bitexact">
+    <parameters>
+        <param name="prevCob" type="date" value="2026-09-30"/>
+        <param name="cob" type="date" value="2026-10-01"/>
+    </parameters>
+
+    <sql id="legacy-prev-cfs" db="mysql-oprdb02" timeout="300" fetchSize="2000">
+        <![CDATA[
+            SELECT UPPER(TRIM(client_code)) AS client_code, mtm, cash_balance, account_balance, threshold,
+                   excess_deficit, pie_5d, pfe_5d, ftd_pnL AS ftd_pnl
+              FROM dbsystemuat.rrr_report_table_cfs WHERE cob_date = :prevCob
+        ]]>
+    </sql>
+    <sql id="copy-prev-cfs" db="postgres-dev" timeout="300" fetchSize="2000">
+        <![CDATA[
+            SELECT UPPER(TRIM(client_code)) AS client_code, mtm, cash_balance, account_balance, threshold,
+                   excess_deficit, pie_5d, pfe_5d, ftd_pnl
+              FROM opera_backup_04_10.rrr_report_table
+             WHERE business_unit = 'CFS' AND cob_date = :prevCob
+        ]]>
+    </sql>
+    <sql id="legacy-prev-orm" db="mysql-oprdb02" timeout="300" fetchSize="2000">
+        <![CDATA[
+            SELECT UPPER(TRIM(client_code)) AS client_code, mtm, cash_balance, account_balance, threshold,
+                   excess_deficit, pie_5d, pfe_5d, ftd_pnL AS ftd_pnl
+              FROM dbsystemuat.rrr_report_table_orm WHERE cob_date = :prevCob
+        ]]>
+    </sql>
+    <sql id="copy-prev-orm" db="postgres-dev" timeout="300" fetchSize="2000">
+        <![CDATA[
+            SELECT UPPER(TRIM(client_code)) AS client_code, mtm, cash_balance, account_balance, threshold,
+                   excess_deficit, pie_5d, pfe_5d, ftd_pnl
+              FROM opera_backup_04_10.rrr_report_table
+             WHERE business_unit = 'ORM' AND cob_date = :prevCob
+        ]]>
+    </sql>
+    <sql id="legacy-pie-cfs" db="mysql-oprdb02" timeout="300" fetchSize="2000">
+        <![CDATA[
+            SELECT UPPER(TRIM(client_code)) AS client_code, UPPER(TRIM(product_code)) AS product_code,
+                   positive_bump, negative_bump, pnl_10d_pie, delta_10d_pie, total_delta
+              FROM dbsystemuat.grasa_10dpie_rrr_table_cfs WHERE cob_date = :cob
+        ]]>
+    </sql>
+    <sql id="copy-pie-cfs" db="postgres-dev" timeout="300" fetchSize="2000">
+        <![CDATA[
+            SELECT UPPER(TRIM(client_code)) AS client_code, UPPER(TRIM(product_code)) AS product_code,
+                   positive_bump, negative_bump, pnl_10d_pie, delta_10d_pie, total_delta
+              FROM opera_backup_04_10.grasa_10dpie_rrr_table
+             WHERE business_unit = 'CFS' AND cob_date = :cob
+        ]]>
+    </sql>
+    <sql id="legacy-pie-orm" db="mysql-oprdb02" timeout="300" fetchSize="2000">
+        <![CDATA[
+            SELECT UPPER(TRIM(client_code)) AS client_code, UPPER(TRIM(product_code)) AS product_code,
+                   positive_bump, negative_bump, pnl_10d_pie, delta_10d_pie, total_delta
+              FROM dbsystemuat.grasa_10dpie_rrr_table_orm WHERE cob_date = :cob
+        ]]>
+    </sql>
+    <sql id="copy-pie-orm" db="postgres-dev" timeout="300" fetchSize="2000">
+        <![CDATA[
+            SELECT UPPER(TRIM(client_code)) AS client_code, UPPER(TRIM(product_code)) AS product_code,
+                   positive_bump, negative_bump, pnl_10d_pie, delta_10d_pie, total_delta
+              FROM opera_backup_04_10.grasa_10dpie_rrr_table
+             WHERE business_unit = 'ORM' AND cob_date = :cob
+        ]]>
+    </sql>
+
+    <compare id="prev-cfs" source="legacy-prev-cfs" target="copy-prev-cfs">
+        <key columns="client_code"/>
+        <column name="mtm" absTol="0" nullAsZero="true"/>
+        <column name="cash_balance" absTol="0" nullAsZero="true"/>
+        <column name="account_balance" absTol="0" nullAsZero="true"/>
+        <column name="threshold" absTol="0" nullAsZero="true"/>
+        <column name="excess_deficit" absTol="0" nullAsZero="true"/>
+        <column name="pie_5d" absTol="0" nullAsZero="true"/>
+        <column name="pfe_5d" absTol="0" nullAsZero="true"/>
+        <column name="ftd_pnl" absTol="0" nullAsZero="true"/>
+    </compare>
+    <compare id="prev-orm" source="legacy-prev-orm" target="copy-prev-orm">
+        <key columns="client_code"/>
+        <column name="mtm" absTol="0" nullAsZero="true"/>
+        <column name="cash_balance" absTol="0" nullAsZero="true"/>
+        <column name="account_balance" absTol="0" nullAsZero="true"/>
+        <column name="threshold" absTol="0" nullAsZero="true"/>
+        <column name="excess_deficit" absTol="0" nullAsZero="true"/>
+        <column name="pie_5d" absTol="0" nullAsZero="true"/>
+        <column name="pfe_5d" absTol="0" nullAsZero="true"/>
+        <column name="ftd_pnl" absTol="0" nullAsZero="true"/>
+    </compare>
+    <compare id="pie-cfs" source="legacy-pie-cfs" target="copy-pie-cfs">
+        <key columns="client_code,product_code"/>
+        <column name="positive_bump" absTol="0" nullAsZero="true"/>
+        <column name="negative_bump" absTol="0" nullAsZero="true"/>
+        <column name="pnl_10d_pie" absTol="0" nullAsZero="true"/>
+        <column name="delta_10d_pie" absTol="0" nullAsZero="true"/>
+        <column name="total_delta" absTol="0" nullAsZero="true"/>
+    </compare>
+    <compare id="pie-orm" source="legacy-pie-orm" target="copy-pie-orm">
+        <key columns="client_code,product_code"/>
+        <column name="positive_bump" absTol="0" nullAsZero="true"/>
+        <column name="negative_bump" absTol="0" nullAsZero="true"/>
+        <column name="pnl_10d_pie" absTol="0" nullAsZero="true"/>
+        <column name="delta_10d_pie" absTol="0" nullAsZero="true"/>
+        <column name="total_delta" absTol="0" nullAsZero="true"/>
+    </compare>
+
+    <compress id="bundle" file="rrr-legacy-vs-copy-bitexact.zip">
+        <include ref="prev-cfs"/>
+        <include ref="prev-orm"/>
+        <include ref="pie-cfs"/>
+        <include ref="pie-orm"/>
+    </compress>
+</rules>
