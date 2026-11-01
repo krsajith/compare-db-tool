@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Which RrrReport template is on prod now (read-only). One row per business unit with the sha256 of the stored template.
+     version: NEW = templates/rrr/RrrReport.html of this repo (sha c80d5414...), OLD = the version the prod upload rule expects to replace (sha 093acd73...), OTHER = neither.
+     Run with: .\compare.ps1 -r rules\rrr-report-template-check-prod.xml -allow-prod -->
+<rules name="rrr-report-template-check-prod">
+    <sql id="template-version" db="postgres-prod" timeout="120">
+        <![CDATA[
+            SELECT business_unit, uuid::text AS uuid,
+                   encode(sha256(document_content), 'hex') AS sha256,
+                   CASE encode(sha256(document_content), 'hex')
+                        WHEN 'c80d5414ec896ae3571b672a244abaae342856681825b1c68698d69f21a973d1' THEN 'NEW'
+                        WHEN '093acd7303d7463170bf93ce093aa90f8935932390a5ae58d119ed2ebece9531' THEN 'OLD'
+                        ELSE 'OTHER' END AS version,
+                   updated_by, updated_timestamp
+              FROM opera.oga_doctemplatemaster_doctemplatemaster
+             WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113'
+               AND lower(doc_template_name) = 'rrrreport'
+             ORDER BY business_unit
+        ]]>
+    </sql>
+    <compress id="bundle" file="rrr-report-template-check-prod.zip">
+        <include ref="template-version"/>
+    </compress>
+</rules>
