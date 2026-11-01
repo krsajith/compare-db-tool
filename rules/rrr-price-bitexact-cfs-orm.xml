@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- RRR price check, bit-exact, BU CFS and ORM, value date 02-Oct-2026: settle prices now in schema opera against the migration copy
+     in schema opera_backup_04_10. Values are compared as text (double precision cast to text gives the shortest exact representation), no tolerance.
+     One plain query, so the full list of differing securities is exported (the engine=db compare only exports a capped sample).
+     Read-only SELECTs only. -->
+<rules name="rrr-price-bitexact-cfs-orm">
+    <parameters>
+        <param name="valueDate" type="date" value="2026-10-02"/>
+    </parameters>
+
+    <sql id="security-price-diff" db="postgres-dev" timeout="600" fetchSize="5000">
+        <![CDATA[
+            SELECT coalesce(n.business_unit, o.business_unit) AS business_unit,
+                   coalesce(n.security_id, o.security_id) AS security_id,
+                   o.settle_price::text AS backup_price,
+                   n.settle_price::text AS current_price,
+                   n.updated_by, n.updated_timestamp
+              FROM (SELECT * FROM opera.security_settlement_value_table
+                     WHERE business_unit IN ('CFS', 'ORM') AND value_date = :valueDate) n
+              FULL JOIN (SELECT * FROM opera_backup_04_10.security_settlement_value_table
+                     WHERE business_unit IN ('CFS', 'ORM') AND value_date = :valueDate) o
+                ON o.tenant_id = n.tenant_id AND o.business_unit = n.business_unit AND o.security_id = n.security_id
+             WHERE n.settle_price IS DISTINCT FROM o.settle_price
+                OR n.settle_price::text IS DISTINCT FROM o.settle_price::text
+             ORDER BY 1, 2
+        ]]>
+    </sql>
+    <sql id="underlying-price-diff" db="postgres-dev" timeout="600" fetchSize="5000">
+        <![CDATA[
+            SELECT coalesce(n.business_unit, o.business_unit) AS business_unit,
+                   to_jsonb(coalesce(n, o))->>'underlying_id' AS underlying_id,
+                   to_jsonb(o)->>'settle_value' AS backup_value,
+                   to_jsonb(n)->>'settle_value' AS current_value
+              FROM (SELECT * FROM opera.underlying_settle_value_table
+                     WHERE business_unit IN ('CFS', 'ORM') AND value_date = :valueDate) n
+              FULL JOIN (SELECT * FROM opera_backup_04_10.underlying_settle_value_table
+                     WHERE business_unit IN ('CFS', 'ORM') AND value_date = :valueDate) o
+                ON o.uuid = n.uuid
+             WHERE to_jsonb(n)::text IS DISTINCT FROM to_jsonb(o)::text
+             ORDER BY 1, 2
+             LIMIT 2000
+        ]]>
+    </sql>
+    <compress id="bundle" file="rrr-price-bitexact-cfs-orm.zip">
+        <include ref="security-price-diff"/>
+        <include ref="underlying-price-diff"/>
+    </compress>
+</rules>
