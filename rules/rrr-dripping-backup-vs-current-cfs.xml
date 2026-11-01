@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- RRR dripping check, BU CFS, value date 02-Oct-2026: the dripping rows in the migration copy (schema opera_backup_04_10, equal to legacy MySQL for
+     this date, see the evidence run of 01-Nov-2026) against the current rows (schema opera). Run it after the dripping calculation has been re-run in the
+     application for this date (see analysis/rrr-parity-2026-10-30/06_dripping_cfs_20261002.sql, option A). Equal rows mean the new calculation reproduces
+     legacy; different rows are a calculation difference to investigate. Both sides are Postgres, so the comparison runs inside the database.
+     Read-only SELECTs only. -->
+<rules name="rrr-dripping-backup-vs-current-cfs">
+    <parameters>
+        <param name="bu" type="string" value="CFS"/>
+        <param name="valueDate" type="date" value="2026-10-02"/>
+    </parameters>
+
+    <sql id="dripping-migrated" db="postgres-dev" timeout="120">
+        <![CDATA[
+            SELECT lower(trim(contract_number)) AS contract_number,
+                   CAST(mtm_post_dripping_today AS numeric(30, 6)) AS mtm_post_dripping_today,
+                   CAST(mtm_post_dripping_today_usd AS numeric(30, 6)) AS mtm_post_dripping_today_usd
+              FROM opera_backup_04_10.client_dripping_table
+             WHERE tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1)
+               AND business_unit = :bu AND value_date = :valueDate
+        ]]>
+    </sql>
+    <sql id="dripping-current" db="postgres-dev" timeout="120">
+        <![CDATA[
+            SELECT lower(trim(contract_number)) AS contract_number,
+                   CAST(mtm_post_dripping_today AS numeric(30, 6)) AS mtm_post_dripping_today,
+                   CAST(mtm_post_dripping_today_usd AS numeric(30, 6)) AS mtm_post_dripping_today_usd
+              FROM opera.client_dripping_table
+             WHERE tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1)
+               AND business_unit = :bu AND value_date = :valueDate
+        ]]>
+    </sql>
+    <compare id="dripping" source="dripping-migrated" target="dripping-current" engine="db">
+        <key columns="contract_number"/>
+        <column name="mtm_post_dripping_today" absTol="1" nullAsZero="true"/>
+        <column name="mtm_post_dripping_today_usd" absTol="1" nullAsZero="true"/>
+    </compare>
+
+    <compress id="bundle" file="rrr-dripping-backup-vs-current-cfs.zip">
+        <include ref="dripping"/>
+    </compress>
+</rules>
