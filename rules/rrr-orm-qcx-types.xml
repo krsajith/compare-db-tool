@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- RRR ORM client QCX, derivative types. Export only, read-only SELECTs. The probe of 1-Nov-2026 showed that the position function returns 12 FX option rows
+     for QCX (contract QCX_AUD_001, derivative types fx_amer_up_out_call and fx_amer_up_out_put) summing to -18,328.05, which is exactly the legacy report value,
+     but the new report shows 0. The legacy MATLAB MTM function counts only fx_vanilla_call, fx_vanilla_put and types starting with amer_ or euro_, so a type
+     starting with fx_amer_ is not counted by either side unless legacy held these securities under another derivative type.
+     Q1 shows the derivative type of the QCX securities in legacy MySQL today (the legacy cache still holds them: maturities after 30-Oct-2026), Q2 the type in
+     the migration copy and Q3 the type in the current system. Read-only SELECTs only. -->
+<rules name="rrr-orm-qcx-types">
+    <parameters>
+        <param name="bu" type="string" value="ORM"/>
+    </parameters>
+
+    <sql id="q1-legacy-cache-types" db="mysql-oprdb02" timeout="300" export="full">
+        <![CDATA[
+            SELECT derivative_type, product_code, COUNT(*) AS n_rows, MIN(contract_number) AS example_contract, MIN(maturity_date) AS first_maturity
+              FROM dbsystemuat.helper_client_statement_report_view_cache_table_orm
+             WHERE SUBSTRING_INDEX(contract_number, '_', 1) = 'QCX'
+             GROUP BY derivative_type, product_code
+        ]]>
+    </sql>
+    <sql id="q1b-legacy-security-types" db="mysql-oprdb02" timeout="300" export="full">
+        <![CDATA[
+            SELECT derivative_type, product_code, COUNT(*) AS n_securities, MIN(security_id) AS example_security
+              FROM dbsystemuat.cloned_security_info_table_orm
+             WHERE security_id LIKE 'CR ADDUSD 2026%' OR security_id LIKE 'CR ADDUSD 2027%'
+             GROUP BY derivative_type, product_code
+        ]]>
+    </sql>
+    <sql id="q2-migration-copy-types" db="postgres-dev" timeout="300" export="full">
+        <![CDATA[
+            SELECT derivative_type, product_code, COUNT(*) AS n_securities, MIN(security_id) AS example_security
+              FROM opera_backup_04_10.cloned_security_info_table
+             WHERE tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1)
+               AND business_unit = :bu AND (security_id LIKE 'CR ADDUSD 2026%' OR security_id LIKE 'CR ADDUSD 2027%')
+             GROUP BY derivative_type, product_code
+        ]]>
+    </sql>
+    <sql id="q3-current-types" db="postgres-dev" timeout="300" export="full">
+        <![CDATA[
+            SELECT derivative_type, product_code, COUNT(*) AS n_securities, MIN(security_id) AS example_security,
+                   MIN(created_by) AS first_creator, MIN(created_timestamp) AS first_created
+              FROM opera.cloned_security_info_table
+             WHERE tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1)
+               AND business_unit = :bu AND (security_id LIKE 'CR ADDUSD 2026%' OR security_id LIKE 'CR ADDUSD 2027%')
+             GROUP BY derivative_type, product_code
+        ]]>
+    </sql>
+
+    <compress id="bundle" file="rrr-orm-qcx-types.zip">
+        <include ref="q1-legacy-cache-types"/>
+        <include ref="q1b-legacy-security-types"/>
+        <include ref="q2-migration-copy-types"/>
+        <include ref="q3-current-types"/>
+    </compress>
+</rules>
