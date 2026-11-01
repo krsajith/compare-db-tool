@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- RRR CFS clients ACM and IOL. After all other fixes the CFS report differs from legacy by +2.29 (ACM, legacy -975,703.74) and +1.62 (IOL, legacy -246,203.83),
+     while the position function equals the statement cache. The swap-leg hypothesis is dead (neither client has avg_swap_cc positions). Their positions are futures and
+     options; only unpaid premiums are recomputed in the report (original premium x lots x multiplier x factors), and since XOGA-605 the new system keeps the traded price at
+     full precision while legacy deals hold four decimals. Hypothesis (not proven): the unpaid premium differs at the fifth decimal of the price.
+     This rule compares, per trade, the premium columns of the legacy cache today (value date 30-Oct-2026; a premium does not depend on the date, so trades still live can be matched)
+     with the new cache on the report date. Streaming comparison across the two databases. Read-only SELECTs only. -->
+<rules name="rrr-premium-precision-cfs">
+    <parameters>
+        <param name="bu" type="string" value="CFS"/>
+        <param name="valueDate" type="date" value="2026-10-02"/>
+    </parameters>
+
+    <sql id="premium-legacy" db="mysql-oprdb02" timeout="600" fetchSize="5000">
+        <![CDATA[
+            SELECT TRIM(trade_id) AS trade_id, contract_number, derivative_type, is_premium_paid, active_lots, mult_factor, nc_factor, fx_nc_factor,
+                   premium_paid_usd, premium_paid_nc, traded_price
+              FROM dbsystemuat.helper_client_statement_report_view_cache_table_cfs
+             WHERE SUBSTRING_INDEX(contract_number, '_', 1) IN ('ACM', 'IOL')
+        ]]>
+    </sql>
+    <sql id="premium-new" db="postgres-dev" timeout="600" fetchSize="5000">
+        <![CDATA[
+            SELECT trim(trade_id) AS trade_id, contract_number, derivative_type, is_premium_paid, active_lots, mult_factor, nc_factor, fx_nc_factor,
+                   premium_paid_usd, premium_paid_nc, traded_price
+              FROM opera.helper_client_statement_report_view_cache_table
+             WHERE tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1)
+               AND business_unit = :bu AND value_date = :valueDate AND upper(split_part(contract_number, '_', 1)) IN ('ACM', 'IOL')
+        ]]>
+    </sql>
+    <compare id="premium" source="premium-legacy" target="premium-new" export="full">
+        <key columns="trade_id"/>
+        <column name="contract_number" trim="true"/>
+        <column name="derivative_type" trim="true" caseInsensitive="true"/>
+        <column name="is_premium_paid" absTol="0.5" nullAsZero="true"/>
+        <column name="active_lots" absTol="0.0001" nullAsZero="true"/>
+        <column name="mult_factor" absTol="0.000001" nullAsZero="true"/>
+        <column name="nc_factor" absTol="0.000001" nullAsZero="true"/>
+        <column name="fx_nc_factor" absTol="0.000001" nullAsZero="true"/>
+        <column name="premium_paid_usd" absTol="0.0001" nullAsZero="true"/>
+        <column name="premium_paid_nc" absTol="0.0001" nullAsZero="true"/>
+        <column name="traded_price" absTol="0.00001" nullAsZero="true"/>
+        <breakdown columns="derivative_type" top="10"/>
+    </compare>
+
+    <compress id="bundle" file="rrr-premium-precision-cfs.zip">
+        <include ref="premium"/>
+    </compress>
+</rules>
