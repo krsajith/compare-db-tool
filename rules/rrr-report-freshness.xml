@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- RRR report freshness, all business units, export only. The parity rules compare the rows that the report generation WRITES into
+     rrr_report_table, so a code deployment changes nothing until the report is generated again. This shows, for the settlement date and the
+     previous settlement date, how many rows exist per business unit and when they were last written and by whom, next to the database clock.
+     Read it right after generating a report: the last written time of the settlement date must be after the generation. Read-only SELECTs. -->
+<rules name="rrr-report-freshness">
+    <parameters>
+        <param name="tenantBu" type="string" value="CFS"/>
+        <param name="cob" type="date" value="2026-10-01"/>
+        <param name="prevCob" type="date" value="2026-09-30"/>
+    </parameters>
+
+    <sql id="report-rows-freshness" db="postgres-dev" timeout="120" export="full">
+        <![CDATA[
+            SELECT business_unit, cob_date, COUNT(*) AS n_rows, MIN(updated_timestamp) AS first_written, MAX(updated_timestamp) AS last_written,
+                   MAX(updated_by) AS last_writer, now() AS database_clock_now
+              FROM opera.rrr_report_table
+             WHERE tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :tenantBu LIMIT 1)
+               AND cob_date IN (:cob, :prevCob)
+             GROUP BY business_unit, cob_date
+             ORDER BY business_unit, cob_date
+        ]]>
+    </sql>
+
+    <sql id="report-sample-rows" db="postgres-dev" timeout="120" export="full">
+        <![CDATA[
+            SELECT business_unit, trim(client_code) AS client_code, mtm, cash_balance, account_status, updated_by, updated_timestamp
+              FROM opera.rrr_report_table
+             WHERE tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :tenantBu LIMIT 1)
+               AND cob_date = :cob AND business_unit = 'CFS' AND trim(client_code) IN ('GBS', 'VCI', 'ZUT', 'SCB', 'FEA', 'MDL')
+             ORDER BY client_code
+        ]]>
+    </sql>
+
+    <compress id="bundle" file="rrr-report-freshness.zip">
+        <include ref="report-rows-freshness"/>
+        <include ref="report-sample-rows"/>
+    </compress>
+</rules>
