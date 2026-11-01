@@ -1,0 +1,19 @@
+{
+  "db": "postgres-prod",
+  "schema": "opera",
+  "tenantId": "227cd5f5-4498-4dba-bda9-05b8edc41113",
+  "businessApplication": "RrrReport",
+  "updatedBy": "compare-db-tool",
+  "mode": "update",
+  "templates": [
+    { "docTemplateName": "RrrReport", "businessUnit": "CFS", "file": "rrr/RrrReport.html",
+      "uuid": "026dbe34-9a4a-4ebd-8ae6-d73af4c1de61",
+      "expectedSha256": "093acd7303d7463170bf93ce093aa90f8935932390a5ae58d119ed2ebece9531" },
+    { "docTemplateName": "RrrReport", "businessUnit": "ORM", "file": "rrr/RrrReport.html",
+      "uuid": "169b03aa-216c-454f-ac5d-3a6f071de1fe",
+      "expectedSha256": "093acd7303d7463170bf93ce093aa90f8935932390a5ae58d119ed2ebece9531" },
+    { "docTemplateName": "RrrReport", "businessUnit": "RMC", "file": "rrr/RrrReport.html",
+      "uuid": "a7e4b222-2761-4bd1-8b66-43dcacb2d201",
+      "expectedSha256": "093acd7303d7463170bf93ce093aa90f8935932390a5ae58d119ed2ebece9531" }
+  ]
+}
