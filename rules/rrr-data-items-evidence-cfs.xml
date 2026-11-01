@@ -1,0 +1,172 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- RRR data items evidence, BU CFS. Export only, no comparison. Purpose: for every data difference found in the parity work, show
+     who changed the value and when, and what the true value is, so each correction can be written as a genuine fix with a reason
+     (not as a way to match legacy). Read-only SELECTs. Sources: current Postgres (schema opera), the migration copy
+     (schema opera_backup_04_10, written 03-Oct-2026), legacy MySQL (OPRDB02, schema dbsystemuat, moved on since).
+     Items: (1) client status edits, 13 clients that differ from legacy and 5 clients edited in the new system,
+     (2) six counterparty names damaged by the migration (bytes shown in hex so the true characters can be read),
+     (3) three clients (AAE, MFA, BUE) present in legacy only, with their threshold rows and audit history,
+     (4) letter case of spot ids, (5) dripping rows for value date 02-Oct-2026 in the three databases. -->
+<rules name="rrr-data-items-evidence-cfs">
+    <parameters>
+        <param name="bu" type="string" value="CFS"/>
+        <param name="valueDate" type="date" value="2026-10-02"/>
+        <param name="cob" type="date" value="2026-10-01"/>
+    </parameters>
+
+    <!-- 1 and 2: the client master rows in focus, current and migration copy, with who and when -->
+    <sql id="ev-master-current" db="postgres-dev" timeout="300" export="full">
+        <![CDATA[
+            SELECT trim(client_code) AS client_code, client_status, counterparty_parent, client_name, region, trade_category,
+                   created_by, created_timestamp, updated_by, updated_timestamp, legacy_id,
+                   encode(convert_to(coalesce(counterparty_parent, ''), 'UTF8'), 'hex') AS counterparty_parent_hex
+              FROM opera.client_master_data
+             WHERE tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1)
+               AND business_unit = :bu AND trim(client_code) IN ('AAC', 'AAI', 'AAL', 'AST', 'BCG', 'COP', 'CPS', 'CPT', 'DBG', 'DCS', 'DFI', 'EXP', 'IPP', 'JBC', 'LIT', 'MSF', 'NTG', 'NTS', 'SLC', 'SMT', 'SND', 'TER', 'VIT', 'ZMI')
+             ORDER BY client_code
+        ]]>
+    </sql>
+    <sql id="ev-master-backup" db="postgres-dev" timeout="300" export="full">
+        <![CDATA[
+            SELECT trim(client_code) AS client_code, client_status, counterparty_parent, client_name, created_by, created_timestamp,
+                   updated_by, updated_timestamp, encode(convert_to(coalesce(counterparty_parent, ''), 'UTF8'), 'hex') AS counterparty_parent_hex
+              FROM opera_backup_04_10.client_master_data
+             WHERE tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1)
+               AND business_unit = :bu AND trim(client_code) IN ('AAC', 'AAI', 'AAL', 'AST', 'BCG', 'COP', 'CPS', 'CPT', 'DBG', 'DCS', 'DFI', 'EXP', 'IPP', 'JBC', 'LIT', 'MSF', 'NTG', 'NTS', 'SLC', 'SMT', 'SND', 'TER', 'VIT', 'ZMI')
+             ORDER BY client_code
+        ]]>
+    </sql>
+    <sql id="ev-master-legacy" db="mysql-oprdb02" timeout="300" export="full">
+        <![CDATA[
+            SELECT TRIM(client_code) AS client_code, client_status, counterparty_parent, client_name,
+                   HEX(counterparty_parent) AS counterparty_parent_hex_in_legacy_charset,
+                   CHARSET(counterparty_parent) AS value_charset, CHAR_LENGTH(counterparty_parent) AS chars, LENGTH(counterparty_parent) AS bytes
+              FROM dbsystemuat.client_master_data_cfs
+             WHERE TRIM(client_code) IN ('AAC', 'AAI', 'AAL', 'AST', 'BCG', 'COP', 'CPS', 'CPT', 'DBG', 'DCS', 'DFI', 'EXP', 'IPP', 'JBC', 'LIT', 'MSF', 'NTG', 'NTS', 'SLC', 'SMT', 'SND', 'TER', 'VIT', 'ZMI')
+             ORDER BY client_code
+        ]]>
+    </sql>
+    <!-- Who edits client_status in the new system, and the case convention the rows actually have -->
+    <sql id="ev-status-profile-current" db="postgres-dev" timeout="300" export="full">
+        <![CDATA[
+            SELECT client_status, updated_by, CAST(updated_timestamp AS date) AS updated_day, COUNT(*) AS n_rows
+              FROM opera.client_master_data
+             WHERE tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1)
+               AND business_unit = :bu
+             GROUP BY 1, 2, 3
+             ORDER BY n_rows DESC
+             LIMIT 40
+        ]]>
+    </sql>
+    <sql id="ev-status-profile-legacy" db="mysql-oprdb02" timeout="300" export="full">
+        <![CDATA[
+            SELECT client_status, COUNT(*) AS n_rows
+              FROM dbsystemuat.client_master_data_cfs
+             GROUP BY client_status
+             ORDER BY n_rows DESC
+        ]]>
+    </sql>
+
+    <!-- 3: the clients that exist only in legacy: master row, threshold row, audit history -->
+    <sql id="ev-missing-legacy-master" db="mysql-oprdb02" timeout="120" export="full">
+        <![CDATA[
+            SELECT * FROM dbsystemuat.client_master_data_cfs WHERE TRIM(client_code) IN ('AAE', 'MFA', 'BUE')
+        ]]>
+    </sql>
+    <sql id="ev-missing-legacy-threshold" db="mysql-oprdb02" timeout="120" export="full">
+        <![CDATA[
+            SELECT * FROM dbsystemuat.client_threshold_master_table_cfs WHERE TRIM(client_code) IN ('AAE', 'MFA', 'BUE')
+        ]]>
+    </sql>
+    <sql id="ev-missing-legacy-audit" db="mysql-oprdb02" timeout="120" export="full">
+        <![CDATA[
+            SELECT client_code, client_name, counterparty_parent, version_no, version_created_by, version_timestamp, version_comments
+              FROM dbsystemuat.client_master_data_audit_table_cfs
+             WHERE TRIM(client_code) IN ('AAE', 'MFA', 'BUE')
+             ORDER BY client_code, version_no
+        ]]>
+    </sql>
+    <sql id="ev-missing-current-any-bu" db="postgres-dev" timeout="120" export="full">
+        <![CDATA[
+            SELECT business_unit, trim(client_code) AS client_code, client_status, counterparty_parent, created_by, created_timestamp
+              FROM opera.client_master_data
+             WHERE tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1)
+               AND trim(client_code) IN ('AAE', 'MFA', 'BUE')
+             ORDER BY 1, 2
+        ]]>
+    </sql>
+
+    <!-- 4: spot ids that differ only by letter case between the mapping and the underlying values (open item of the 14-Oct statement handoff) -->
+    <sql id="ev-spot-case" db="postgres-dev" timeout="300" export="full">
+        <![CDATA[
+            SELECT m.currency, m.spot AS spot_in_mapping, u.underlying_id AS id_in_underlying_values, COUNT(*) AS n_underlying_rows
+              FROM opera.currency_spot_mapping_table m
+              JOIN opera.underlying_settle_value_table u
+                ON u.tenant_id = m.tenant_id AND lower(u.underlying_id) = lower(m.spot)
+             WHERE m.tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1)
+               AND u.value_date = :valueDate AND u.underlying_id <> m.spot
+             GROUP BY 1, 2, 3
+             ORDER BY 1
+             LIMIT 50
+        ]]>
+    </sql>
+    <sql id="ev-spot-legacy" db="mysql-oprdb02" timeout="120" export="full">
+        <![CDATA[
+            SELECT currency, spot, quantotype FROM dbsystemuat.currency_spot_mapping_table ORDER BY currency
+        ]]>
+    </sql>
+    <sql id="ev-spot-current" db="postgres-dev" timeout="120" export="full">
+        <![CDATA[
+            SELECT currency, spot, quantotype, created_by, created_timestamp, updated_by, updated_timestamp
+              FROM opera.currency_spot_mapping_table
+             WHERE tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1)
+             ORDER BY currency
+        ]]>
+    </sql>
+
+    <!-- 5: dripping rows for the report date in the three databases (legacy has 14 rows, current dev 11) -->
+    <sql id="ev-dripping-legacy" db="mysql-oprdb02" timeout="120" export="full">
+        <![CDATA[
+            SELECT LOWER(TRIM(contract_number)) AS contract_number, settle_date, value_date, mtm_post_dripping_today, mtm_post_dripping_today_USD AS mtm_post_dripping_today_usd
+              FROM dbsystemuat.client_dripping_table_cfs WHERE settle_date = :cob ORDER BY 1
+        ]]>
+    </sql>
+    <sql id="ev-dripping-backup" db="postgres-dev" timeout="120" export="full">
+        <![CDATA[
+            SELECT lower(trim(contract_number)) AS contract_number, value_date, mtm_post_dripping_today, mtm_post_dripping_today_usd,
+                   created_by, created_timestamp, updated_by, updated_timestamp
+              FROM opera_backup_04_10.client_dripping_table
+             WHERE tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1)
+               AND business_unit = :bu AND value_date = :valueDate
+             ORDER BY 1
+        ]]>
+    </sql>
+    <sql id="ev-dripping-current" db="postgres-dev" timeout="120" export="full">
+        <![CDATA[
+            SELECT lower(trim(contract_number)) AS contract_number, value_date, mtm_post_dripping_today, mtm_post_dripping_today_usd,
+                   created_by, created_timestamp, updated_by, updated_timestamp
+              FROM opera.client_dripping_table
+             WHERE tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1)
+               AND business_unit = :bu AND value_date = :valueDate
+             ORDER BY 1
+        ]]>
+    </sql>
+
+    <compress id="bundle" file="rrr-data-items-evidence-cfs.zip">
+        <include ref="ev-master-current"/>
+        <include ref="ev-master-backup"/>
+        <include ref="ev-master-legacy"/>
+        <include ref="ev-status-profile-current"/>
+        <include ref="ev-status-profile-legacy"/>
+        <include ref="ev-missing-legacy-master"/>
+        <include ref="ev-missing-legacy-threshold"/>
+        <include ref="ev-missing-legacy-audit"/>
+        <include ref="ev-missing-current-any-bu"/>
+        <include ref="ev-spot-case"/>
+        <include ref="ev-spot-legacy"/>
+        <include ref="ev-spot-current"/>
+        <include ref="ev-dripping-legacy"/>
+        <include ref="ev-dripping-backup"/>
+        <include ref="ev-dripping-current"/>
+    </compress>
+</rules>
