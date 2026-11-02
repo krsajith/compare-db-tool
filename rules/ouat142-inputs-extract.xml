@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- OUAT-142 normal-options parser: fetch ONLY the DB reference data the pipeline reads for settle date 2026-10-01,
+     so the parser step can be replayed offline against the NAMR/Euro/Asia dumps with the real compute-implied-vol.js.
+     Sizes measured on postgres-dev (single tenant): vol_id 1,055 rows, settle values 3,074, underlying list 3,666,
+     product master 17,680 (2 columns), option conv 9, matlab_query 1. Total well under 2 MB.
+     Query text copied from normal-options-pipeline-config.json (referenceRegistry); the price query reproduces the body of
+     opera.sp_future_price_option_parser as a plain SELECT so no function permission is needed.
+     Read-only SELECTs. postgres-dev only. Never prod. maxRows is a safety cap, a capped query is marked PARTIAL. -->
+<rules name="ouat142-inputs-extract">
+    <parameters>
+        <param name="settleDate" type="date" value="2026-10-01"/>
+        <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+    </parameters>
+
+    <!-- volIdTable: inner-join table, ticker -> vol_id and DB expiry -->
+    <sql id="ref-vol-id" db="postgres-dev" timeout="120" maxRows="20000" export="full">
+        <![CDATA[
+            SELECT * FROM opera.vol_id_table
+            WHERE tenant_id = :tenant
+              AND expiry_date >= (SELECT CAST(min(g) AS date)
+                                  FROM (SELECT g FROM generate_series(CAST(:settleDate AS date) - 10, CAST(:settleDate AS date) - 1, interval '1 day') AS g
+                                        WHERE extract(isodow FROM g) < 6 ORDER BY g DESC LIMIT 3) t)
+            ORDER BY bbg_opt_ticker, vol_id DESC
+        ]]>
+    </sql>
+
+    <!-- productMasterTable: option tick size -->
+    <sql id="ref-product-master" db="postgres-dev" timeout="120" maxRows="50000" export="full">
+        <![CDATA[
+            SELECT invenio_product_code, option_tick_size FROM opera.product_master_table
+            WHERE tenant_id = :tenant AND asset_class NOT IN ('index', 'currency', 'bond', 'money market')
+        ]]>
+    </sql>
+
+    <!-- optionConvTable: price conversion factor and operator -->
+    <sql id="ref-option-conv" db="postgres-dev" timeout="60" maxRows="1000" export="full">
+        <![CDATA[
+            SELECT *, TRIM(product_code) || ' ' AS product_code_space FROM opera.marketdata_option_conv_table
+        ]]>
+    </sql>
+
+    <!-- matlabQueryTable: exceptional products list -->
+    <sql id="ref-matlab-query" db="postgres-dev" timeout="60" maxRows="100" export="full">
+        <![CDATA[
+            SELECT query_code FROM opera.matlab_query_table WHERE query_unique_name = 'option_maturity'
+        ]]>
+    </sql>
+
+    <!-- underlyingListTable: bbg underlying id to product code -->
+    <sql id="ref-underlying-list" db="postgres-dev" timeout="120" maxRows="20000" export="full">
+        <![CDATA[
+            SELECT bbg_underlying_id, invenio_product_code FROM opera.underlying_list_table
+            WHERE tenant_id = :tenant AND expiry_date >= CAST(:settleDate AS date)
+              AND bbg_underlying_id IS NOT NULL AND bbg_underlying_id <> ''
+            ORDER BY bbg_underlying_id, expiry_date
+        ]]>
+    </sql>
+
+    <!-- resolveUnderlyingPrice: body of opera.sp_future_price_option_parser(settle_date, tenant) as a plain SELECT -->
+    <sql id="ref-underlying-price" db="postgres-dev" timeout="180" maxRows="20000" export="full">
+        <![CDATA[
+            SELECT ul.underlying_id, ul.bbg_underlying_id, sv.settle_value, ul.expiry_date
+            FROM opera.underlying_list_table ul
+            LEFT OUTER JOIN (SELECT underlying_id, settle_value
+                             FROM opera.underlying_settle_value_table
+                             WHERE tenant_id = :tenant AND settlement_date = CAST(:settleDate AS date)) sv
+                   ON sv.underlying_id = ul.underlying_id
+            WHERE ul.tenant_id = :tenant
+              AND ul.asset_class NOT IN ('bond', 'commodity index swap', 'currency', 'equity', 'equity_swaps', 'index', 'money market')
+              AND ul.expiry_date >= CAST(:settleDate AS date)
+        ]]>
+    </sql>
+
+    <compress id="bundle" file="ouat142-inputs-extract.zip">
+        <include ref="ref-vol-id"/>
+        <include ref="ref-product-master"/>
+        <include ref="ref-option-conv"/>
+        <include ref="ref-matlab-query"/>
+        <include ref="ref-underlying-list"/>
+        <include ref="ref-underlying-price"/>
+    </compress>
+</rules>
