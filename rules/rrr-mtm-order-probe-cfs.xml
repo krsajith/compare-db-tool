@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- RRR CFS probe, value date 02-Oct-2026, clients JUP and VCI: every input of their MTM as exact text (double::text is the shortest exact form),
+     so the MTM can be recomputed offline with the MATLAB structure (14 subtotals, RRR_calculate_MTM.m) in several row orders and compared bit for bit
+     with the legacy Excel. Question answered: is the remaining last-digit FTD difference caused by the order of addition, by the premium formula, or by an input.
+     Plain queries (full export, no tolerance). Read-only SELECTs; the function call needs the temp-table mode. -->
+<rules name="rrr-mtm-order-probe-cfs">
+    <parameters>
+        <param name="bu" type="string" value="CFS"/>
+        <param name="valueDate" type="date" value="2026-10-02"/>
+    </parameters>
+
+    <sql id="fn-rows" db="postgres-dev" timeout="900" fetchSize="5000" tempTables="true">
+        <![CDATA[
+            SELECT row_number() OVER () AS fn_order, p.trade_id, p.contract_number, p.client_code, p.product_code, p.derivative_type,
+                   p.opt_periodicity, p.is_premium_paid,
+                   p.active_lots::text AS active_lots, p.mult_factor::text AS mult_factor, p.original_premium::text AS original_premium,
+                   p.nc_factor::text AS nc_factor, p.fx_nc_factor::text AS fx_nc_factor,
+                   p.mtm_usd::text AS mtm_usd, p.mtm_nc::text AS mtm_nc, p.mkt_value_usd::text AS mkt_value_usd, p.mkt_value_nc::text AS mkt_value_nc,
+                   p.fixing_date
+              FROM opera.fn_client_statement_position_rows_v2(
+                       (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1),
+                       CAST(:bu AS text), CAST(:valueDate AS date),
+                       CAST('["JUP","VCI"]' AS jsonb)) p
+        ]]>
+    </sql>
+    <sql id="cache-rows" db="postgres-dev" timeout="600" fetchSize="5000">
+        <![CDATA[
+            SELECT c.uuid::text AS uuid, c.trade_id, c.contract_number, c.client_code, c.derivative_type, c.is_premium_paid,
+                   c.active_lots::text AS active_lots, c.premium_paid_usd::text AS premium_paid_usd, c.premium_paid_nc::text AS premium_paid_nc,
+                   c.mtm_usd::text AS mtm_usd, c.mkt_value_usd::text AS mkt_value_usd,
+                   c.created_timestamp, c.created_by
+              FROM opera.helper_client_statement_report_view_cache_table c
+             WHERE c.tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1)
+               AND c.business_unit = :bu AND c.value_date = :valueDate AND c.contract_number IS NOT NULL
+               AND upper(split_part(c.contract_number, '_', 1)) IN ('JUP', 'VCI')
+             ORDER BY c.created_timestamp, c.uuid
+        ]]>
+    </sql>
+    <sql id="dripping-rows" db="postgres-dev" timeout="300">
+        <![CDATA[
+            SELECT d.contract_number, d.mtm_post_dripping_today_usd::text AS mtm_post_dripping_today_usd,
+                   d.mtm_post_dripping_today::text AS mtm_post_dripping_today
+              FROM opera.client_dripping_table d
+             WHERE d.tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1)
+               AND d.business_unit = :bu AND d.value_date = :valueDate
+               AND upper(split_part(d.contract_number, '_', 1)) IN ('JUP', 'VCI')
+        ]]>
+    </sql>
+    <sql id="report-rows" db="postgres-dev" timeout="300">
+        <![CDATA[
+            SELECT r.cob_date, r.client_code, r.mtm::text AS mtm, r.ftd_pnl::text AS ftd_pnl, r.updated_timestamp
+              FROM opera.rrr_report_table r
+             WHERE r.tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1)
+               AND r.business_unit = :bu AND r.cob_date IN (DATE '2026-09-30', DATE '2026-10-01')
+               AND upper(trim(r.client_code)) IN ('JUP', 'VCI')
+             ORDER BY 2, 1
+        ]]>
+    </sql>
+
+    <compress id="bundle" file="rrr-mtm-order-probe-cfs.zip">
+        <include ref="fn-rows"/>
+        <include ref="cache-rows"/>
+        <include ref="dripping-rows"/>
+        <include ref="report-rows"/>
+    </compress>
+</rules>
