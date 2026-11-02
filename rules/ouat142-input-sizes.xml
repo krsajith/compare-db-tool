@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- OUAT-142 normal-options parser: how big are the DB inputs the pipeline reads, so we fetch only what is needed.
+     Pipeline reference tables (normal-options-pipeline-config.json): vol_id_table, product_master_table,
+     marketdata_option_conv_table, underlying_list_table (+ underlying_settle_value_table via sp_future_price_option_parser),
+     matlab_query_table. Read-only SELECTs, catalog estimates plus small filtered counts, no full scans of large tables.
+     Run on postgres-dev first; use datasource override by copying this file and changing db= for postgres-uat. Never prod. -->
+<rules name="ouat142-input-sizes">
+    <parameters>
+        <param name="cob" type="date" value="2026-10-01"/>
+    </parameters>
+
+    <!-- 1. Catalog size and estimated rows of the pipeline tables (no table scan) -->
+    <sql id="table-sizes" db="postgres-dev" timeout="60" export="full">
+        <![CDATA[
+            SELECT n.nspname AS schema_name, c.relname AS table_name, c.reltuples::bigint AS est_rows,
+                   pg_size_pretty(pg_total_relation_size(c.oid)) AS total_size
+            FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE c.relkind IN ('r', 'p') AND n.nspname = 'opera'
+              AND c.relname IN ('vol_id_table', 'product_master_table', 'marketdata_option_conv_table',
+                                'underlying_list_table', 'underlying_settle_value_table', 'matlab_query_table')
+            ORDER BY c.relname
+        ]]>
+    </sql>
+
+    <!-- 2. vol_id_table: rows per tenant, total and the slice the pipeline reads (expiry >= cob - 10 days) -->
+    <sql id="vol-id-by-tenant" db="postgres-dev" timeout="120" export="full">
+        <![CDATA[
+            SELECT tenant_id, COUNT(*) AS total_rows,
+                   COUNT(*) FILTER (WHERE expiry_date >= CAST(:cob AS date) - 10) AS rows_read_by_pipeline
+            FROM opera.vol_id_table
+            GROUP BY tenant_id
+            ORDER BY total_rows DESC
+        ]]>
+    </sql>
+
+    <!-- 3. Futures settle prices for the COB per tenant (the stored procedure input) -->
+    <sql id="settle-values-cob" db="postgres-dev" timeout="120" export="full">
+        <![CDATA[
+            SELECT tenant_id, COUNT(*) AS settle_rows
+            FROM opera.underlying_settle_value_table
+            WHERE settlement_date = CAST(:cob AS date)
+            GROUP BY tenant_id
+        ]]>
+    </sql>
+
+    <!-- 4. underlying_list_table live on the COB per tenant -->
+    <sql id="underlying-list-cob" db="postgres-dev" timeout="120" export="full">
+        <![CDATA[
+            SELECT tenant_id, COUNT(*) AS live_rows
+            FROM opera.underlying_list_table
+            WHERE expiry_date >= CAST(:cob AS date)
+            GROUP BY tenant_id
+        ]]>
+    </sql>
+
+    <!-- 5. product master (tick size) and option conversion per tenant -->
+    <sql id="product-master-by-tenant" db="postgres-dev" timeout="120" export="full">
+        <![CDATA[
+            SELECT tenant_id, COUNT(*) AS rows_total, COUNT(option_tick_size) AS with_tick
+            FROM opera.product_master_table
+            WHERE asset_class NOT IN ('index', 'currency', 'bond', 'money market')
+            GROUP BY tenant_id
+        ]]>
+    </sql>
+    <sql id="option-conv-by-tenant" db="postgres-dev" timeout="60" export="full">
+        <![CDATA[
+            SELECT tenant_id, COUNT(*) AS rows_total
+            FROM opera.marketdata_option_conv_table
+            GROUP BY tenant_id
+        ]]>
+    </sql>
+</rules>
