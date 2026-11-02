@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- RRR CFS probe, settlement date 01-Oct-2026: the FX inputs MATLAB uses for FX forward MTM (RRR_calculate_MTM.m 186-352), as exact text:
+     product currency of each 'CR <product>' code, the spot id and quantotype of each currency, and the spot values from 01-Jun to 01-Oct-2026
+     (an NDF already fixed uses the spot of its fixing date, otherwise the settlement date). Used with rrr-mtm-order-probe-all-cfs for the 10 FX clients.
+     Read-only SELECTs. -->
+<rules name="rrr-fx-rates-probe-cfs">
+    <sql id="product-currency" db="postgres-dev" timeout="300">
+        <![CDATA[
+            SELECT p.invenio_product_code, p.currency
+              FROM opera.product_master_table p
+             WHERE p.tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = 'CFS' LIMIT 1)
+               AND upper(p.invenio_product_code) LIKE 'CR %'
+        ]]>
+    </sql>
+    <sql id="currency-spot" db="postgres-dev" timeout="300">
+        <![CDATA[
+            SELECT m.currency, m.spot, m.quantotype
+              FROM opera.currency_spot_mapping_table m
+             WHERE m.tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = 'CFS' LIMIT 1)
+        ]]>
+    </sql>
+    <sql id="spot-values" db="postgres-dev" timeout="300">
+        <![CDATA[
+            SELECT u.underlying_id, u.settlement_date, u.value_date, u.settle_value::text AS settle_value
+              FROM opera.underlying_settle_value_table u
+             WHERE u.tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = 'CFS' LIMIT 1)
+               AND u.settlement_date BETWEEN DATE '2026-06-01' AND DATE '2026-10-01'
+               AND lower(trim(u.underlying_id)) IN (
+                   SELECT lower(trim(m.spot)) FROM opera.currency_spot_mapping_table m
+                    WHERE m.tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = 'CFS' LIMIT 1))
+        ]]>
+    </sql>
+    <compress id="bundle" file="rrr-fx-rates-probe-cfs.zip">
+        <include ref="product-currency"/>
+        <include ref="currency-spot"/>
+        <include ref="spot-values"/>
+    </compress>
+</rules>
