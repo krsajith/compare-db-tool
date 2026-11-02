@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- RRR CFS probe, value date 02-Oct-2026, ALL clients: every input of the client MTM as exact text, to rebuild each client's MTM offline the MATLAB way
+     (positions in trade_id order, 14 subtotals of RRR_calculate_MTM.m, premiums from premium_paid_usd) and count how many of the 578 clients match legacy bit for bit.
+     Checked on JUP and VCI on 2 Nov (both exact). Positions are those the Java reads: fn_client_statement_position_rows_v2 for all 3-letter CFS clients,
+     assigned to a client by contract prefix. Plain queries, full export. Read-only SELECTs; the function call needs the temp-table mode. -->
+<rules name="rrr-mtm-order-probe-all-cfs">
+    <parameters>
+        <param name="bu" type="string" value="CFS"/>
+        <param name="valueDate" type="date" value="2026-10-02"/>
+    </parameters>
+
+    <sql id="fn-rows" db="postgres-dev" timeout="1800" fetchSize="10000" tempTables="true">
+        <![CDATA[
+            SELECT row_number() OVER () AS fn_order, p.trade_id, p.contract_number, p.client_code, p.product_code, p.derivative_type,
+                   p.opt_periodicity, p.is_premium_paid,
+                   p.active_lots::text AS active_lots, p.mult_factor::text AS mult_factor, p.original_premium::text AS original_premium,
+                   p.nc_factor::text AS nc_factor, p.fx_nc_factor::text AS fx_nc_factor,
+                   p.mtm_usd::text AS mtm_usd, p.mtm_nc::text AS mtm_nc, p.mkt_value_usd::text AS mkt_value_usd, p.mkt_value_nc::text AS mkt_value_nc,
+                   p.fixing_date, p.counterparty_parent, booking.structure_name
+              FROM opera.fn_client_statement_position_rows_v2(
+                       (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1),
+                       CAST(:bu AS text), CAST(:valueDate AS date),
+                       (SELECT jsonb_agg(DISTINCT trim(m.client_code)) FROM opera.client_master_data m
+                         WHERE m.tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1)
+                           AND m.business_unit = :bu AND length(trim(m.client_code)) = 3)) p
+              LEFT JOIN (SELECT DISTINCT ON (lower(trim(b.contract_number))) lower(trim(b.contract_number)) AS contract_key, b.structure_name
+                           FROM opera.client_statement_booking_order_information_table b
+                          WHERE b.tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1)
+                            AND b.business_unit = :bu
+                          ORDER BY lower(trim(b.contract_number)), b.updated_timestamp DESC NULLS LAST) booking
+                ON booking.contract_key = lower(trim(p.contract_number))
+        ]]>
+    </sql>
+    <sql id="cache-rows" db="postgres-dev" timeout="900" fetchSize="10000">
+        <![CDATA[
+            SELECT c.trade_id, c.contract_number, c.derivative_type, c.is_premium_paid,
+                   c.premium_paid_usd::text AS premium_paid_usd, c.premium_paid_nc::text AS premium_paid_nc,
+                   c.mtm_usd::text AS mtm_usd, c.mtm_nc::text AS mtm_nc, c.mkt_value_usd::text AS mkt_value_usd
+              FROM opera.helper_client_statement_report_view_cache_table c
+             WHERE c.tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1)
+               AND c.business_unit = :bu AND c.value_date = :valueDate AND c.contract_number IS NOT NULL
+        ]]>
+    </sql>
+    <sql id="dripping-rows" db="postgres-dev" timeout="300">
+        <![CDATA[
+            SELECT d.*
+              FROM opera.client_dripping_table d
+             WHERE d.tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1)
+               AND d.business_unit = :bu AND d.value_date = :valueDate
+        ]]>
+    </sql>
+
+    <compress id="bundle" file="rrr-mtm-order-probe-all-cfs.zip">
+        <include ref="fn-rows"/>
+        <include ref="cache-rows"/>
+        <include ref="dripping-rows"/>
+    </compress>
+</rules>
