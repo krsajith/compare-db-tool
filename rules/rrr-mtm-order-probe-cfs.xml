@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- RRR CFS probe, value date 02-Oct-2026, clients JUP and VCI: every input of their MTM as exact text (double::text is the shortest exact form),
+<!-- RRR CFS probe, value date 02-Oct-2026, clients JUP and VCI (all positions whose contract starts with JUP_ or VCI_, as the Java assigns them): every input of their MTM as exact text (double::text is the shortest exact form),
      so the MTM can be recomputed offline with the MATLAB structure (14 subtotals, RRR_calculate_MTM.m) in several row orders and compared bit for bit
      with the legacy Excel. Question answered: is the remaining last-digit FTD difference caused by the order of addition, by the premium formula, or by an input.
      Plain queries (full export, no tolerance). Read-only SELECTs; the function call needs the temp-table mode. -->
@@ -16,11 +16,20 @@
                    p.active_lots::text AS active_lots, p.mult_factor::text AS mult_factor, p.original_premium::text AS original_premium,
                    p.nc_factor::text AS nc_factor, p.fx_nc_factor::text AS fx_nc_factor,
                    p.mtm_usd::text AS mtm_usd, p.mtm_nc::text AS mtm_nc, p.mkt_value_usd::text AS mkt_value_usd, p.mkt_value_nc::text AS mkt_value_nc,
-                   p.fixing_date
+                   p.fixing_date, p.counterparty_parent, booking.structure_name
               FROM opera.fn_client_statement_position_rows_v2(
                        (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1),
                        CAST(:bu AS text), CAST(:valueDate AS date),
-                       CAST('["JUP","VCI"]' AS jsonb)) p
+                       (SELECT jsonb_agg(DISTINCT trim(m.client_code)) FROM opera.client_master_data m
+                         WHERE m.tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1)
+                           AND m.business_unit = :bu AND length(trim(m.client_code)) = 3)) p
+              LEFT JOIN (SELECT DISTINCT ON (lower(trim(b.contract_number))) lower(trim(b.contract_number)) AS contract_key, b.structure_name
+                           FROM opera.client_statement_booking_order_information_table b
+                          WHERE b.tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = :bu LIMIT 1)
+                            AND b.business_unit = :bu
+                          ORDER BY lower(trim(b.contract_number)), b.updated_timestamp DESC NULLS LAST) booking
+                ON booking.contract_key = lower(trim(p.contract_number))
+             WHERE upper(split_part(trim(p.contract_number), '_', 1)) IN ('JUP', 'VCI')
         ]]>
     </sql>
     <sql id="cache-rows" db="postgres-dev" timeout="600" fetchSize="5000">
