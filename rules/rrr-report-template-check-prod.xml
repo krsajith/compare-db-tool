@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- Which RrrReport template is on prod now (read-only). One row per business unit with the sha256 of the stored template.
-     version: NEW = templates/rrr/RrrReport.html of this repo (sha c80d5414...), OLD = the version the prod upload rule expects to replace (sha 093acd73...), OTHER = neither.
+     version: NEW = templates/rrr/RrrReport.html of this repo with embedded Calibri (sha ab1cdd67...), PREVIOUS = legacy layout without Calibri (sha c80d5414...), OLD = the version the prod upload rule expects to replace (sha 093acd73...), OTHER = neither.
      Run with: .\compare.ps1 rules\rrr-report-template-check-prod.xml with the options rules and allow-prod -->
 <rules name="rrr-report-template-check-prod">
     <sql id="template-version" db="postgres-prod" timeout="120">
@@ -8,7 +8,8 @@
             SELECT business_unit, uuid::text AS uuid,
                    encode(sha256(document_content), 'hex') AS sha256,
                    CASE encode(sha256(document_content), 'hex')
-                        WHEN 'c80d5414ec896ae3571b672a244abaae342856681825b1c68698d69f21a973d1' THEN 'NEW'
+                        WHEN 'ab1cdd67ad3542b3098e8978999c2045543ee2ddf11f1d1826ddd418152957f3' THEN 'NEW'
+                        WHEN 'c80d5414ec896ae3571b672a244abaae342856681825b1c68698d69f21a973d1' THEN 'PREVIOUS'
                         WHEN '093acd7303d7463170bf93ce093aa90f8935932390a5ae58d119ed2ebece9531' THEN 'OLD'
                         ELSE 'OTHER' END AS version,
                    updated_by, updated_timestamp

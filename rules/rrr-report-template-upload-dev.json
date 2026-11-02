@@ -7,10 +7,10 @@
   "mode": "update",
   "templates": [
     { "docTemplateName": "RrrReport", "businessUnit": "CFS", "file": "rrr/RrrReport.html",
-      "expectedSha256": "093acd7303d7463170bf93ce093aa90f8935932390a5ae58d119ed2ebece9531" },
+      "expectedSha256": "c80d5414ec896ae3571b672a244abaae342856681825b1c68698d69f21a973d1" },
     { "docTemplateName": "RrrReport", "businessUnit": "ORM", "file": "rrr/RrrReport.html",
-      "expectedSha256": "093acd7303d7463170bf93ce093aa90f8935932390a5ae58d119ed2ebece9531" },
+      "expectedSha256": "c80d5414ec896ae3571b672a244abaae342856681825b1c68698d69f21a973d1" },
     { "docTemplateName": "RrrReport", "businessUnit": "RMC", "file": "rrr/RrrReport.html",
-      "expectedSha256": "093acd7303d7463170bf93ce093aa90f8935932390a5ae58d119ed2ebece9531" }
+      "expectedSha256": "c80d5414ec896ae3571b672a244abaae342856681825b1c68698d69f21a973d1" }
   ]
 }
