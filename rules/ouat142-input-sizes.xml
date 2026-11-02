@@ -69,4 +69,14 @@
             GROUP BY tenant_id
         ]]>
     </sql>
+
+    <!-- Single ZIP with every result CSV, its SQL and metadata, plus the run summary -->
+    <compress id="bundle" file="ouat142-input-sizes.zip">
+        <include ref="table-sizes"/>
+        <include ref="vol-id-by-tenant"/>
+        <include ref="settle-values-cob"/>
+        <include ref="underlying-list-cob"/>
+        <include ref="product-master-by-tenant"/>
+        <include ref="option-conv-by-tenant"/>
+    </compress>
 </rules>
