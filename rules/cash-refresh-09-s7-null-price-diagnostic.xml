@@ -1,0 +1,73 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<rules name="cash-refresh-09-s7-null-price-diagnostic">
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+    <param name="valueDate" type="date" value="2026-10-02"/>
+  </parameters>
+  <sql id="current-function-definition" db="postgres-dev" timeout="60" export="full"><![CDATA[
+    SELECT 'cash_balance_report_for_scope' AS function_key,
+           pg_get_functiondef('opera.fn_cash_balance_report_for_scope(character varying, character varying)'::regprocedure) AS definition
+  ]]></sql>
+  <sql id="backup-function-definition" db="postgres-dev" timeout="60" export="full"><![CDATA[
+    SELECT 'cash_balance_report_for_scope' AS function_key,
+           pg_get_functiondef('opera_backup_04_10.fn_cash_balance_report_for_scope(character varying, character varying)'::regprocedure) AS definition
+  ]]></sql>
+  <sql id="current-s7-keys" db="postgres-dev" timeout="90" fetchSize="100" export="full"><![CDATA[
+    SELECT d.trade_id,d.tenant_id,d.business_unit,d.security_id,
+           clone_si.derivative_type AS clone_derivative_type,
+           main_si.derivative_type AS main_derivative_type,
+           main_si.maturity_date,ssv.value_date AS ssv_value_date,ssv.settle_price,
+           CASE WHEN main_si.derivative_type IS NULL THEN false
+                WHEN lower(main_si.derivative_type) IN ('future','cs_future','fx_vanilla_call','fx_vanilla_put')
+                  THEN (v.value_date > main_si.maturity_date OR v.value_date <= main_si.maturity_date)
+                WHEN lower(main_si.derivative_type) NOT IN ('future','cs_future','fx_vanilla_call','fx_vanilla_put') THEN true
+                ELSE false END AS passes_s7_type_filter
+    FROM opera.cloned_deal_ticket_table d
+    LEFT JOIN opera.cloned_security_info_table clone_si
+      ON clone_si.tenant_id=d.tenant_id AND clone_si.business_unit=d.business_unit AND clone_si.security_id=d.security_id
+    LEFT JOIN opera.security_info_table main_si
+      ON main_si.tenant_id=d.tenant_id AND main_si.business_unit=d.business_unit AND main_si.security_id=d.security_id
+    LEFT JOIN opera.security_settlement_value_table ssv
+      ON ssv.tenant_id=d.tenant_id AND ssv.business_unit=d.business_unit AND ssv.security_id=d.security_id AND ssv.value_date=:valueDate
+    LEFT JOIN opera.valuation_date_table v
+      ON v.tenant_id=ssv.tenant_id AND v.business_unit=ssv.business_unit AND v.value_date=ssv.value_date
+    WHERE d.tenant_id=:tenant AND d.business_unit='CFS'
+      AND d.trade_id IN ('TR-FY-2026-732789','TR-FY-2026-810936','TR-FY-2026-687639','TR-FY-2026-687640','TR-FY-2026-697702','TR-FY-2026-806333','TR-FY-2026-810935')
+    ORDER BY d.trade_id
+  ]]></sql>
+  <sql id="backup-s7-keys" db="postgres-dev" timeout="90" fetchSize="100" export="full"><![CDATA[
+    SELECT d.trade_id,d.tenant_id,d.business_unit,d.security_id,
+           clone_si.derivative_type AS clone_derivative_type,
+           main_si.derivative_type AS main_derivative_type,
+           main_si.maturity_date,ssv.value_date AS ssv_value_date,ssv.settle_price,
+           CASE WHEN main_si.derivative_type IS NULL THEN false
+                WHEN lower(main_si.derivative_type) IN ('future','cs_future','fx_vanilla_call','fx_vanilla_put')
+                  THEN (v.value_date > main_si.maturity_date OR v.value_date <= main_si.maturity_date)
+                WHEN lower(main_si.derivative_type) NOT IN ('future','cs_future','fx_vanilla_call','fx_vanilla_put') THEN true
+                ELSE false END AS passes_s7_type_filter
+    FROM opera_backup_04_10.cloned_deal_ticket_table d
+    LEFT JOIN opera_backup_04_10.cloned_security_info_table clone_si
+      ON clone_si.tenant_id=d.tenant_id AND clone_si.business_unit=d.business_unit AND clone_si.security_id=d.security_id
+    LEFT JOIN opera_backup_04_10.security_info_table main_si
+      ON main_si.tenant_id=d.tenant_id AND main_si.business_unit=d.business_unit AND main_si.security_id=d.security_id
+    LEFT JOIN opera_backup_04_10.security_settlement_value_table ssv
+      ON ssv.tenant_id=d.tenant_id AND ssv.business_unit=d.business_unit AND ssv.security_id=d.security_id AND ssv.value_date=:valueDate
+    LEFT JOIN opera_backup_04_10.valuation_date_table v
+      ON v.tenant_id=ssv.tenant_id AND v.business_unit=ssv.business_unit AND v.value_date=ssv.value_date
+    WHERE d.tenant_id=:tenant AND d.business_unit='CFS'
+      AND d.trade_id IN ('TR-FY-2026-732789','TR-FY-2026-810936','TR-FY-2026-687639','TR-FY-2026-687640','TR-FY-2026-697702','TR-FY-2026-806333','TR-FY-2026-810935')
+    ORDER BY d.trade_id
+  ]]></sql>
+  <compare id="function-definition-parity" source="current-function-definition" target="backup-function-definition" export="full">
+    <key columns="function_key"/>
+    <column name="definition"/>
+  </compare>
+  <compare id="s7-source-parity" source="current-s7-keys" target="backup-s7-keys" export="full">
+    <key columns="trade_id,ssv_value_date"/>
+  </compare>
+  <compress id="bundle" file="cash-refresh-09-s7-null-price-diagnostic.zip">
+    <include ref="current-function-definition"/><include ref="backup-function-definition"/>
+    <include ref="function-definition-parity"/>
+    <include ref="current-s7-keys"/><include ref="backup-s7-keys"/><include ref="s7-source-parity"/>
+  </compress>
+</rules>
