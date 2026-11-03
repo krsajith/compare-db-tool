@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Cash refresh 12: read-only check after the cash-refresh-restore-cfs-ssv-20261002 restore was applied.
+     Expect CFS only 2026-10-02 with 314,822 rows, equal to the 04-Oct copy and MySQL history, target security 5.2204. -->
+<rules name="cash-refresh-12-verify-restore-cfs">
+  <parameters>
+    <param name="valueDate" type="date" value="2026-10-02"/>
+  </parameters>
+
+  <sql id="pg-current-ssv-cfs" db="postgres-dev" timeout="180" fetchSize="500" export="sample"><![CDATA[
+    SELECT security_id, value_date, settle_price
+    FROM opera.security_settlement_value_table
+    WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113'
+      AND business_unit = 'CFS'
+  ]]></sql>
+
+  <sql id="pg-backup-ssv-cfs" db="postgres-dev" timeout="180" fetchSize="500" export="sample"><![CDATA[
+    SELECT security_id, value_date, settle_price
+    FROM opera_backup_04_10.security_settlement_value_table
+    WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113'
+      AND business_unit = 'CFS' AND value_date = :valueDate
+  ]]></sql>
+
+  <sql id="mysql-history-ssv-cfs" db="mysql-oprdb02" timeout="300" fetchSize="500" export="sample"><![CDATA[
+    SELECT security_id, value_date, settle_price
+    FROM dbsystemuat.historical_security_settlement_value_table_cfs
+    WHERE value_date = :valueDate
+  ]]></sql>
+
+  <sql id="pg-current-by-date" db="postgres-dev" timeout="120" fetchSize="50" export="full"><![CDATA[
+    SELECT value_date, count(*) AS row_count
+    FROM opera.security_settlement_value_table
+    WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND business_unit = 'CFS'
+    GROUP BY value_date ORDER BY value_date
+  ]]></sql>
+
+  <sql id="pg-target-security" db="postgres-dev" timeout="60" fetchSize="50" export="full"><![CDATA[
+    SELECT security_id, value_date, settle_price
+    FROM opera.security_settlement_value_table
+    WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND business_unit = 'CFS'
+      AND security_id = 'CR BCNUSD NDF 20261001'
+  ]]></sql>
+
+  <compare id="current-vs-backup-copy" source="pg-backup-ssv-cfs" target="pg-current-ssv-cfs">
+    <key columns="security_id,value_date"/>
+    <column name="settle_price"/>
+  </compare>
+
+  <compare id="current-vs-mysql-history" source="mysql-history-ssv-cfs" target="pg-current-ssv-cfs">
+    <key columns="security_id,value_date"/>
+    <column name="settle_price"/>
+  </compare>
+
+  <compress id="bundle" file="cash-refresh-12-verify-restore-cfs.zip">
+    <include ref="pg-current-by-date"/>
+    <include ref="pg-target-security"/>
+    <include ref="current-vs-backup-copy"/>
+    <include ref="current-vs-mysql-history"/>
+  </compress>
+</rules>

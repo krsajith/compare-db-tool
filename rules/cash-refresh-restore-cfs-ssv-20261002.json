@@ -1,0 +1,18 @@
+{
+  "name": "cash-refresh-restore-cfs-ssv-20261002",
+  "db": "postgres-dev",
+  "backupSchema": "parity_work",
+  "description": "Puts back the CFS per-security settlement values of 02-Oct-2026 in opera.security_settlement_value_table from the 04-Oct migration copy. On 3-Nov 06:51 user taznain loaded 07-Jul-2026 for CFS (245,109 rows) and the engine's tenant+BU delete removed 02-Oct, so S7 found no price for the NDFs and the OCF/OGB FX_FORWARD_NDF fixing groups disappeared. The 02-Oct copy equals MySQL historical_security_settlement_value_table_cfs (314,822 rows, 80 NDF prices, 0 differences; rule cash-refresh-11). Scope is every CFS row, so the 07-Jul rows are removed (deleteExtra); they are saved in the backup table. Other business units are not touched.",
+  "steps": [
+    {
+      "id": "cfs-prices-1002",
+      "table": "opera.security_settlement_value_table",
+      "from": "opera_backup_04_10.security_settlement_value_table",
+      "where": "tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND business_unit = 'CFS'",
+      "referenceWhere": "value_date = DATE '2026-10-02'",
+      "key": ["tenant_id", "business_unit", "security_id", "value_date"],
+      "deleteExtra": true,
+      "note": "expect target before = 245109 (07-Jul), reference = 314822 (02-Oct), inserted 314822, removed 245109, target after = 314822"
+    }
+  ]
+}
