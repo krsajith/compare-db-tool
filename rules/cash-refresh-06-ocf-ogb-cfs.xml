@@ -1,0 +1,139 @@
+<?xml version="1.0" encoding="utf-8"?>
+<rules name="cash-refresh-06-ocf-ogb-cfs">
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+    <param name="valueDate" type="date" value="2026-10-02"/>
+    <param name="cob" type="date" value="2026-10-01"/>
+  </parameters>
+  <sql id="backup-targeted" db="postgres-dev" timeout="60" fetchSize="100" export="full">
+WITH candidates AS (
+ SELECT d.trade_id, left(d.contract_number,3) AS client_code, d.contract_number,
+        d.security_id, d.subportfolio, d.counterparty_parent,
+        d.is_latest_version, d.transaction_date, d.netting_status, d.netting_date,
+        d.original_lots, d.active_lots AS cloned_active_lots, d.premium AS deal_premium,
+        s.derivative_type, s.product_code AS invenio_product_code,
+        s.maturity_date, s.currency AS security_currency, pm.bbg_product_code,
+        p.is_premium_paid, p.transaction_date AS premium_paid_date
+ FROM opera_backup_04_10.cloned_deal_ticket_table d
+ LEFT JOIN opera_backup_04_10.cloned_security_info_table s ON s.tenant_id=d.tenant_id AND s.business_unit=d.business_unit AND s.security_id=d.security_id
+ LEFT JOIN opera_backup_04_10.rms_premium_paid_table p ON p.tenant_id=d.tenant_id AND p.business_unit=d.business_unit AND p.trade_id=d.trade_id
+ LEFT JOIN opera_backup_04_10.product_master_table pm ON pm.tenant_id=s.tenant_id AND pm.invenio_product_code=s.product_code
+ WHERE d.tenant_id=:tenant AND d.business_unit='CFS'
+   AND left(d.contract_number,3) IN ('OCF','OGB')
+   AND upper(s.derivative_type)='FX_FORWARD_NDF'
+   AND upper(pm.bbg_product_code)='USDBRL'
+), scoped AS (
+ SELECT c.*,
+   (c.is_latest_version=1 AND lower(c.subportfolio) LIKE 'rms%'
+    AND lower(c.subportfolio) NOT LIKE '%oid'
+    AND lower(c.counterparty_parent) NOT LIKE 'jpm%') AS s1_pass,
+   (c.transaction_date &lt; :valueDate) AS pre_value_date,
+   (c.is_premium_paid=1 AND c.premium_paid_date=:cob) AS paid_on_cob,
+   (c.maturity_date=:cob AND (c.is_premium_paid=0 OR c.is_premium_paid IS NULL)
+      AND lower(c.netting_status) IN ('not_netted','partially_netted')) AS unpaid_maturity_event,
+   (lower(c.netting_status) IN ('fully_netted','partially_netted')
+      AND c.netting_date=:valueDate) AS netting_event
+ FROM candidates c
+), gates AS (
+ SELECT x.*,
+   (x.s1_pass AND x.pre_value_date
+    AND (x.paid_on_cob OR x.unpaid_maturity_event OR x.netting_event)) AS s2_cash_event_pass,
+   fy.financial_year AS matching_financial_year,
+   (fy.trade_id IS NOT NULL) AS s4_fy_premium_pass,
+   lots.value_date AS latest_lots_date, lots.active_lots AS latest_active_lots,
+   (lots.trade_id IS NOT NULL) AS s3_active_lots_pass
+ FROM scoped x
+ LEFT JOIN LATERAL (
+    SELECT y.financial_year FROM opera_backup_04_10.financial_year_table y
+    WHERE y.tenant_id=:tenant AND y.start_date&lt;=:cob AND y.end_date&gt;=:cob
+    ORDER BY y.start_date DESC LIMIT 1) fydate ON true
+ LEFT JOIN LATERAL (
+    SELECT pf.trade_id,pf.financial_year FROM opera_backup_04_10.premium_fy_table pf
+    WHERE pf.tenant_id=:tenant AND pf.business_unit='CFS' AND pf.trade_id=x.trade_id
+      AND pf.financial_year=fydate.financial_year LIMIT 1) fy ON true
+ LEFT JOIN LATERAL (
+    SELECT al.trade_id,al.value_date,al.active_lots FROM opera_backup_04_10.deal_active_lots_table al
+    WHERE al.tenant_id=:tenant AND al.business_unit='CFS' AND al.trade_id=x.trade_id
+      AND al.value_date&lt;=:valueDate ORDER BY al.value_date DESC LIMIT 1) lots ON true
+)
+SELECT 'backup' AS snapshot, trade_id,client_code,contract_number,security_id,
+ derivative_type,invenio_product_code,bbg_product_code,security_currency,
+ subportfolio,counterparty_parent,is_latest_version,s1_pass,transaction_date,pre_value_date,
+ maturity_date,netting_status,netting_date,is_premium_paid,premium_paid_date,
+ paid_on_cob,unpaid_maturity_event,netting_event,s2_cash_event_pass,
+ matching_financial_year,s4_fy_premium_pass,latest_lots_date,latest_active_lots,
+ s3_active_lots_pass,
+ (s1_pass AND pre_value_date AND (paid_on_cob OR unpaid_maturity_event OR netting_event)
+   AND s4_fy_premium_pass AND s3_active_lots_pass) AS core_report_eligible
+FROM gates ORDER BY client_code,trade_id
+</sql>
+  <sql id="current-targeted" db="postgres-dev" timeout="60" fetchSize="100" export="full">
+WITH candidates AS (
+ SELECT d.trade_id, left(d.contract_number,3) AS client_code, d.contract_number,
+        d.security_id, d.subportfolio, d.counterparty_parent,
+        d.is_latest_version, d.transaction_date, d.netting_status, d.netting_date,
+        d.original_lots, d.active_lots AS cloned_active_lots, d.premium AS deal_premium,
+        s.derivative_type, s.product_code AS invenio_product_code,
+        s.maturity_date, s.currency AS security_currency, pm.bbg_product_code,
+        p.is_premium_paid, p.transaction_date AS premium_paid_date
+ FROM opera.cloned_deal_ticket_table d
+ LEFT JOIN opera.cloned_security_info_table s ON s.tenant_id=d.tenant_id AND s.business_unit=d.business_unit AND s.security_id=d.security_id
+ LEFT JOIN opera.rms_premium_paid_table p ON p.tenant_id=d.tenant_id AND p.business_unit=d.business_unit AND p.trade_id=d.trade_id
+ LEFT JOIN opera.product_master_table pm ON pm.tenant_id=s.tenant_id AND pm.invenio_product_code=s.product_code
+ WHERE d.tenant_id=:tenant AND d.business_unit='CFS'
+   AND left(d.contract_number,3) IN ('OCF','OGB')
+   AND upper(s.derivative_type)='FX_FORWARD_NDF'
+   AND upper(pm.bbg_product_code)='USDBRL'
+), scoped AS (
+ SELECT c.*,
+   (c.is_latest_version=1 AND lower(c.subportfolio) LIKE 'rms%'
+    AND lower(c.subportfolio) NOT LIKE '%oid'
+    AND lower(c.counterparty_parent) NOT LIKE 'jpm%') AS s1_pass,
+   (c.transaction_date &lt; :valueDate) AS pre_value_date,
+   (c.is_premium_paid=1 AND c.premium_paid_date=:cob) AS paid_on_cob,
+   (c.maturity_date=:cob AND (c.is_premium_paid=0 OR c.is_premium_paid IS NULL)
+      AND lower(c.netting_status) IN ('not_netted','partially_netted')) AS unpaid_maturity_event,
+   (lower(c.netting_status) IN ('fully_netted','partially_netted')
+      AND c.netting_date=:valueDate) AS netting_event
+ FROM candidates c
+), gates AS (
+ SELECT x.*,
+   (x.s1_pass AND x.pre_value_date
+    AND (x.paid_on_cob OR x.unpaid_maturity_event OR x.netting_event)) AS s2_cash_event_pass,
+   fy.financial_year AS matching_financial_year,
+   (fy.trade_id IS NOT NULL) AS s4_fy_premium_pass,
+   lots.value_date AS latest_lots_date, lots.active_lots AS latest_active_lots,
+   (lots.trade_id IS NOT NULL) AS s3_active_lots_pass
+ FROM scoped x
+ LEFT JOIN LATERAL (
+    SELECT y.financial_year FROM opera.financial_year_table y
+    WHERE y.tenant_id=:tenant AND y.start_date&lt;=:cob AND y.end_date&gt;=:cob
+    ORDER BY y.start_date DESC LIMIT 1) fydate ON true
+ LEFT JOIN LATERAL (
+    SELECT pf.trade_id,pf.financial_year FROM opera.premium_fy_table pf
+    WHERE pf.tenant_id=:tenant AND pf.business_unit='CFS' AND pf.trade_id=x.trade_id
+      AND pf.financial_year=fydate.financial_year LIMIT 1) fy ON true
+ LEFT JOIN LATERAL (
+    SELECT al.trade_id,al.value_date,al.active_lots FROM opera.deal_active_lots_table al
+    WHERE al.tenant_id=:tenant AND al.business_unit='CFS' AND al.trade_id=x.trade_id
+      AND al.value_date&lt;=:valueDate ORDER BY al.value_date DESC LIMIT 1) lots ON true
+)
+SELECT 'current' AS snapshot, trade_id,client_code,contract_number,security_id,
+ derivative_type,invenio_product_code,bbg_product_code,security_currency,
+ subportfolio,counterparty_parent,is_latest_version,s1_pass,transaction_date,pre_value_date,
+ maturity_date,netting_status,netting_date,is_premium_paid,premium_paid_date,
+ paid_on_cob,unpaid_maturity_event,netting_event,s2_cash_event_pass,
+ matching_financial_year,s4_fy_premium_pass,latest_lots_date,latest_active_lots,
+ s3_active_lots_pass,
+ (s1_pass AND pre_value_date AND (paid_on_cob OR unpaid_maturity_event OR netting_event)
+   AND s4_fy_premium_pass AND s3_active_lots_pass) AS core_report_eligible
+FROM gates ORDER BY client_code,trade_id
+</sql>
+  <compare id="ocf-ogb-two-row-inputs" source="backup-targeted" target="current-targeted" export="full">
+    <key columns="client_code,trade_id"/>
+    <breakdown columns="snapshot,client_code,core_report_eligible" top="10"/>
+  </compare>
+  <compress id="targeted-bundle" file="cash-refresh-06-ocf-ogb-cfs.zip">
+    <include ref="ocf-ogb-two-row-inputs"/>
+  </compress>
+</rules>
