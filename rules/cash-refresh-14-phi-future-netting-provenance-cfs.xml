@@ -1,0 +1,188 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Cash refresh 14: where does the extra PHI / FUTURE / KO / MYR row of COB 1-Oct come from, who created it and when?
+     Security CM KO K27. Six trades (TR-FY-2026-802053 ...) and six NET- trades, all fully_netted with netting_date 2026-10-02 in Opera.
+     Legacy views only show the current valuation date, so this rule reads the base tables directly.
+     Questions: do these trades and their netting exist in legacy MySQL, with which status and date; in Opera current vs the 04-Oct copy;
+     which user created the netting and the NET- trades, and when. Read-only. -->
+<rules name="cash-refresh-14-phi-future-netting-provenance-cfs">
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+    <param name="valueDate" type="date" value="2026-10-02"/>
+    <param name="securityId" type="string" value="CM KO K27"/>
+  </parameters>
+
+  <!-- ===== legacy MySQL (no audit columns in the legacy tables) ===== -->
+  <sql id="legacy-deals" db="mysql-oprdb02" timeout="120" fetchSize="100" export="full"><![CDATA[
+    SELECT trade_id, parent_trade_id, subportfolio, contract_number, transaction_date, security_id,
+           original_lots, active_lots, netting_date, netting_status, netted_lots, netting_id,
+           trade_source, trade_category, trader_name, deal_status
+    FROM dbsystemuat.cloned_deal_ticket_table_cfs
+    WHERE trade_id IN (
+      'TR-FY-2026-802053','TR-FY-2026-802055','TR-FY-2026-813084','TR-FY-2026-813196','TR-FY-2026-815920','TR-FY-2026-815921',
+      'NET-15251-7849-TR-FY-2026-802053','NET-15251-7849-TR-FY-2026-802055','NET-15251-7849-TR-FY-2026-813084',
+      'NET-15251-7849-TR-FY-2026-813196','NET-15251-7849-TR-FY-2026-815920','NET-15251-7849-TR-FY-2026-815921')
+    ORDER BY trade_id
+  ]]></sql>
+
+  <sql id="legacy-netting" db="mysql-oprdb02" timeout="120" fetchSize="100" export="full"><![CDATA[
+    SELECT netting_date, netting_id, trade_id, security_id, group_type, subportfolio, contract_number,
+           derivative_type, netting_status, netted_lots, active_lots
+    FROM dbsystemuat.netting_id_table_cfs
+    WHERE trade_id IN (
+      'TR-FY-2026-802053','TR-FY-2026-802055','TR-FY-2026-813084','TR-FY-2026-813196','TR-FY-2026-815920','TR-FY-2026-815921',
+      'NET-15251-7849-TR-FY-2026-802053','NET-15251-7849-TR-FY-2026-802055','NET-15251-7849-TR-FY-2026-813084',
+      'NET-15251-7849-TR-FY-2026-813196','NET-15251-7849-TR-FY-2026-815920','NET-15251-7849-TR-FY-2026-815921')
+    ORDER BY trade_id
+  ]]></sql>
+
+  <sql id="legacy-netting-cancelled" db="mysql-oprdb02" timeout="120" fetchSize="100" export="full"><![CDATA[
+    SELECT *
+    FROM dbsystemuat.netting_id_cancelled_table_cfs
+    WHERE trade_id IN (
+      'TR-FY-2026-802053','TR-FY-2026-802055','TR-FY-2026-813084','TR-FY-2026-813196','TR-FY-2026-815920','TR-FY-2026-815921',
+      'NET-15251-7849-TR-FY-2026-802053','NET-15251-7849-TR-FY-2026-802055','NET-15251-7849-TR-FY-2026-813084',
+      'NET-15251-7849-TR-FY-2026-813196','NET-15251-7849-TR-FY-2026-815920','NET-15251-7849-TR-FY-2026-815921')
+    ORDER BY trade_id
+  ]]></sql>
+
+  <!-- all CFS netting of this security on the value date: does legacy know a netting on 2 Oct for it at all -->
+  <sql id="legacy-netting-by-date" db="mysql-oprdb02" timeout="120" fetchSize="100" export="full"><![CDATA[
+    SELECT netting_date, netting_id, count(*) AS trades, sum(netted_lots) AS netted_lots
+    FROM dbsystemuat.netting_id_table_cfs
+    WHERE netting_date = :valueDate AND security_id = :securityId
+    GROUP BY netting_date, netting_id
+    ORDER BY netting_id
+  ]]></sql>
+
+  <!-- ===== Opera current ===== -->
+  <sql id="opera-deals" db="postgres-dev" timeout="120" fetchSize="100" export="full"><![CDATA[
+    SELECT trade_id, parent_trade_id, subportfolio, contract_number, transaction_date, security_id,
+           original_lots, active_lots, netting_date, netting_status, netted_lots, netting_id, is_latest_version,
+           created_by, created_timestamp, updated_by, updated_timestamp
+    FROM opera.cloned_deal_ticket_table
+    WHERE tenant_id = :tenant AND business_unit = 'CFS'
+      AND trade_id IN (
+      'TR-FY-2026-802053','TR-FY-2026-802055','TR-FY-2026-813084','TR-FY-2026-813196','TR-FY-2026-815920','TR-FY-2026-815921',
+      'NET-15251-7849-TR-FY-2026-802053','NET-15251-7849-TR-FY-2026-802055','NET-15251-7849-TR-FY-2026-813084',
+      'NET-15251-7849-TR-FY-2026-813196','NET-15251-7849-TR-FY-2026-815920','NET-15251-7849-TR-FY-2026-815921')
+    ORDER BY trade_id
+  ]]></sql>
+
+  <sql id="opera-netting" db="postgres-dev" timeout="120" fetchSize="100" export="full"><![CDATA[
+    SELECT netting_date, netting_id, trade_id, security_id, netting_status, netted_lots, active_lots,
+           created_by, created_timestamp, updated_by, updated_timestamp
+    FROM opera.netting_id_table
+    WHERE tenant_id = :tenant AND business_unit = 'CFS'
+      AND trade_id IN (
+      'TR-FY-2026-802053','TR-FY-2026-802055','TR-FY-2026-813084','TR-FY-2026-813196','TR-FY-2026-815920','TR-FY-2026-815921',
+      'NET-15251-7849-TR-FY-2026-802053','NET-15251-7849-TR-FY-2026-802055','NET-15251-7849-TR-FY-2026-813084',
+      'NET-15251-7849-TR-FY-2026-813196','NET-15251-7849-TR-FY-2026-815920','NET-15251-7849-TR-FY-2026-815921')
+    ORDER BY trade_id
+  ]]></sql>
+
+  <!-- who netted, and when: the Opera netting history (has audit columns) -->
+  <sql id="opera-netting-history" db="postgres-dev" timeout="120" fetchSize="100" export="full"><![CDATA[
+    SELECT netting_date, netting_id, trade_id, security_id, netting_status, netted_lots, active_lots,
+           created_by, created_timestamp, updated_by, updated_timestamp
+    FROM opera.netting_history_table
+    WHERE tenant_id = :tenant AND business_unit = 'CFS'
+      AND trade_id IN (
+      'TR-FY-2026-802053','TR-FY-2026-802055','TR-FY-2026-813084','TR-FY-2026-813196','TR-FY-2026-815920','TR-FY-2026-815921',
+      'NET-15251-7849-TR-FY-2026-802053','NET-15251-7849-TR-FY-2026-802055','NET-15251-7849-TR-FY-2026-813084',
+      'NET-15251-7849-TR-FY-2026-813196','NET-15251-7849-TR-FY-2026-815920','NET-15251-7849-TR-FY-2026-815921')
+    ORDER BY created_timestamp, trade_id
+  ]]></sql>
+
+  <sql id="opera-netting-cancelled-history" db="postgres-dev" timeout="120" fetchSize="100" export="full"><![CDATA[
+    SELECT netting_date, netting_id, trade_id, security_id, netting_status, netted_lots, active_lots,
+           created_by, created_timestamp, updated_by, updated_timestamp
+    FROM opera.cancelled_netting_history_table
+    WHERE tenant_id = :tenant AND business_unit = 'CFS'
+      AND trade_id IN (
+      'TR-FY-2026-802053','TR-FY-2026-802055','TR-FY-2026-813084','TR-FY-2026-813196','TR-FY-2026-815920','TR-FY-2026-815921',
+      'NET-15251-7849-TR-FY-2026-802053','NET-15251-7849-TR-FY-2026-802055','NET-15251-7849-TR-FY-2026-813084',
+      'NET-15251-7849-TR-FY-2026-813196','NET-15251-7849-TR-FY-2026-815920','NET-15251-7849-TR-FY-2026-815921')
+    ORDER BY created_timestamp, trade_id
+  ]]></sql>
+
+  <!-- every netting of this security on the value date, grouped by who did it and when -->
+  <sql id="opera-netting-by-date" db="postgres-dev" timeout="120" fetchSize="100" export="full"><![CDATA[
+    SELECT netting_date, netting_id, created_by, min(created_timestamp) AS first_created,
+           max(created_timestamp) AS last_created, count(*) AS trades, sum(netted_lots) AS netted_lots
+    FROM opera.netting_history_table
+    WHERE tenant_id = :tenant AND business_unit = 'CFS'
+      AND netting_date = :valueDate AND security_id = :securityId
+    GROUP BY netting_date, netting_id, created_by
+    ORDER BY first_created
+  ]]></sql>
+
+  <!-- ===== Opera 04-Oct copy ===== -->
+  <sql id="backup-deals" db="postgres-dev" timeout="120" fetchSize="100" export="full"><![CDATA[
+    SELECT trade_id, parent_trade_id, subportfolio, contract_number, transaction_date, security_id,
+           original_lots, active_lots, netting_date, netting_status, netted_lots, netting_id, is_latest_version,
+           created_by, created_timestamp, updated_by, updated_timestamp
+    FROM opera_backup_04_10.cloned_deal_ticket_table
+    WHERE tenant_id = :tenant AND business_unit = 'CFS'
+      AND trade_id IN (
+      'TR-FY-2026-802053','TR-FY-2026-802055','TR-FY-2026-813084','TR-FY-2026-813196','TR-FY-2026-815920','TR-FY-2026-815921',
+      'NET-15251-7849-TR-FY-2026-802053','NET-15251-7849-TR-FY-2026-802055','NET-15251-7849-TR-FY-2026-813084',
+      'NET-15251-7849-TR-FY-2026-813196','NET-15251-7849-TR-FY-2026-815920','NET-15251-7849-TR-FY-2026-815921')
+    ORDER BY trade_id
+  ]]></sql>
+
+  <sql id="backup-netting" db="postgres-dev" timeout="120" fetchSize="100" export="full"><![CDATA[
+    SELECT netting_date, netting_id, trade_id, security_id, netting_status, netted_lots, active_lots,
+           created_by, created_timestamp, updated_by, updated_timestamp
+    FROM opera_backup_04_10.netting_id_table
+    WHERE tenant_id = :tenant AND business_unit = 'CFS'
+      AND trade_id IN (
+      'TR-FY-2026-802053','TR-FY-2026-802055','TR-FY-2026-813084','TR-FY-2026-813196','TR-FY-2026-815920','TR-FY-2026-815921',
+      'NET-15251-7849-TR-FY-2026-802053','NET-15251-7849-TR-FY-2026-802055','NET-15251-7849-TR-FY-2026-813084',
+      'NET-15251-7849-TR-FY-2026-813196','NET-15251-7849-TR-FY-2026-815920','NET-15251-7849-TR-FY-2026-815921')
+    ORDER BY trade_id
+  ]]></sql>
+
+  <compare id="deals-legacy-vs-opera" source="legacy-deals" target="opera-deals">
+    <key columns="trade_id"/>
+    <column name="security_id"/>
+    <column name="original_lots"/>
+    <column name="active_lots"/>
+    <column name="netting_date"/>
+    <column name="netting_status"/>
+    <column name="netted_lots"/>
+    <column name="netting_id"/>
+    <column name="transaction_date"/>
+  </compare>
+  <compare id="deals-opera-vs-backup" source="backup-deals" target="opera-deals">
+    <key columns="trade_id"/>
+    <column name="original_lots"/>
+    <column name="active_lots"/>
+    <column name="netting_date"/>
+    <column name="netting_status"/>
+    <column name="netted_lots"/>
+    <column name="netting_id"/>
+  </compare>
+  <compare id="netting-legacy-vs-opera" source="legacy-netting" target="opera-netting">
+    <key columns="netting_id,trade_id"/>
+    <column name="netting_date"/>
+    <column name="netting_status"/>
+    <column name="netted_lots"/>
+  </compare>
+
+  <compress id="bundle" file="cash-refresh-14-phi-future-netting-provenance-cfs.zip">
+    <include ref="legacy-deals"/>
+    <include ref="legacy-netting"/>
+    <include ref="legacy-netting-cancelled"/>
+    <include ref="legacy-netting-by-date"/>
+    <include ref="opera-deals"/>
+    <include ref="opera-netting"/>
+    <include ref="opera-netting-history"/>
+    <include ref="opera-netting-cancelled-history"/>
+    <include ref="opera-netting-by-date"/>
+    <include ref="backup-deals"/>
+    <include ref="backup-netting"/>
+    <include ref="deals-legacy-vs-opera"/>
+    <include ref="deals-opera-vs-backup"/>
+    <include ref="netting-legacy-vs-opera"/>
+  </compress>
+</rules>
