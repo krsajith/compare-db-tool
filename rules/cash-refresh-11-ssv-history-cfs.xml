@@ -1,0 +1,204 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Cash refresh 11: where could the 2026-10-02 per-security settlement row for
+  CR BCNUSD NDF 20261001 exist or have existed? Read-only, no DML.
+  Checks: 1 live legacy view/trigger definitions, 2 MySQL current vs historical table,
+  3 systemic vs specific (all CFS NDFs), 4 PG date coverage (current vs 04-Oct backup),
+  7 valuation dates, plus status_table for who/when wrote the pricing output.
+-->
+<rules name="cash-refresh-11-ssv-history-cfs">
+  <parameters>
+    <param name="securityId" type="string" value="CR BCNUSD NDF 20261001"/>
+    <param name="valueDate" type="date" value="2026-10-02"/>
+    <param name="fromDate" type="date" value="2026-09-25"/>
+  </parameters>
+
+  <!-- ===== Check 1: live legacy definitions (file in db-schema may be stale) ===== -->
+  <sql id="mysql-live-view-defs" db="mysql-oprdb02" timeout="60" fetchSize="20" export="full"><![CDATA[
+    SELECT table_name, view_definition
+    FROM information_schema.views
+    WHERE table_schema = 'dbsystemuat'
+      AND table_name IN ('helper_calculated_settle_price_view_cfs','helper_cash_balance_report_view_cfs')
+  ]]></sql>
+
+  <sql id="mysql-live-triggers" db="mysql-oprdb02" timeout="60" fetchSize="50" export="full"><![CDATA[
+    SELECT trigger_name, event_manipulation, event_object_table, action_timing,
+           created, definer, action_statement
+    FROM information_schema.triggers
+    WHERE trigger_schema = 'dbsystemuat'
+      AND event_object_table IN ('security_settlement_value_table_cfs',
+                                 'historical_security_settlement_value_table_cfs')
+    ORDER BY event_object_table, trigger_name
+  ]]></sql>
+
+  <!-- ===== Check 2: MySQL current table vs historical table ===== -->
+  <sql id="mysql-ssv-current-by-date" db="mysql-oprdb02" timeout="120" fetchSize="100" export="full"><![CDATA[
+    SELECT c.value_date, COUNT(*) AS row_count,
+           SUM(CASE WHEN s.derivative_type = 'fx_forward_ndf' THEN 1 ELSE 0 END) AS ndf_rows
+    FROM dbsystemuat.security_settlement_value_table_cfs c
+    LEFT JOIN dbsystemuat.security_info_table_cfs s ON s.security_id = c.security_id
+    GROUP BY c.value_date
+    ORDER BY c.value_date
+  ]]></sql>
+
+  <sql id="mysql-ssv-history-by-date" db="mysql-oprdb02" timeout="120" fetchSize="100" export="full"><![CDATA[
+    SELECT h.value_date, COUNT(*) AS row_count,
+           SUM(CASE WHEN s.derivative_type = 'fx_forward_ndf' THEN 1 ELSE 0 END) AS ndf_rows
+    FROM dbsystemuat.historical_security_settlement_value_table_cfs h
+    LEFT JOIN dbsystemuat.security_info_table_cfs s ON s.security_id = h.security_id
+    WHERE h.value_date >= :fromDate
+    GROUP BY h.value_date
+    ORDER BY h.value_date
+  ]]></sql>
+
+  <sql id="mysql-ssv-history-security" db="mysql-oprdb02" timeout="60" fetchSize="50" export="full"><![CDATA[
+    SELECT security_id, value_date, settle_price
+    FROM dbsystemuat.historical_security_settlement_value_table_cfs
+    WHERE upper(trim(security_id)) = upper(trim(:securityId))
+    ORDER BY value_date
+  ]]></sql>
+
+  <!-- who/when: pricing run status rows for the CFS settlement table -->
+  <sql id="mysql-status-table-cfs" db="mysql-oprdb02" timeout="60" fetchSize="50" export="full"><![CDATA[
+    SELECT tablename, valuation_date, status_type, status, updated_by, updated_timestamp
+    FROM dbsystemuat.status_table
+    WHERE tablename IN ('security_settlement_value_table_cfs','security_last_actual_value_table_cfs')
+      AND valuation_date >= :fromDate
+    ORDER BY valuation_date, tablename
+  ]]></sql>
+
+  <!-- ===== Check 3: systemic or specific? every live CFS NDF vs the incident date ===== -->
+  <sql id="mysql-ndf-coverage" db="mysql-oprdb02" timeout="120" fetchSize="100" export="full"><![CDATA[
+    SELECT s.security_id, s.maturity_date,
+           cur.settle_price AS current_price, cur.value_date AS current_value_date,
+           h.settle_price   AS history_price, h.value_date   AS history_value_date
+    FROM dbsystemuat.security_info_table_cfs s
+    LEFT JOIN dbsystemuat.security_settlement_value_table_cfs cur
+           ON cur.security_id = s.security_id AND cur.value_date = :valueDate
+    LEFT JOIN dbsystemuat.historical_security_settlement_value_table_cfs h
+           ON h.security_id = s.security_id AND h.value_date = :valueDate
+    WHERE s.derivative_type = 'fx_forward_ndf'
+      AND s.maturity_date >= :valueDate
+    ORDER BY s.security_id
+  ]]></sql>
+
+  <sql id="pg-ndf-coverage-current" db="postgres-dev" timeout="120" fetchSize="100" export="full"><![CDATA[
+    SELECT s.security_id, s.maturity_date, c.value_date, c.settle_price
+    FROM opera.cloned_security_info_table s
+    LEFT JOIN opera.security_settlement_value_table c
+           ON c.tenant_id = s.tenant_id AND c.business_unit = s.business_unit
+          AND c.security_id = s.security_id AND c.value_date = :valueDate
+    WHERE s.tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113'
+      AND s.business_unit = 'CFS'
+      AND s.derivative_type = 'fx_forward_ndf'
+      AND s.maturity_date >= :valueDate
+    ORDER BY s.security_id
+  ]]></sql>
+
+  <sql id="pg-ndf-coverage-backup" db="postgres-dev" timeout="120" fetchSize="100" export="full"><![CDATA[
+    SELECT s.security_id, s.maturity_date, c.value_date, c.settle_price
+    FROM opera_backup_04_10.cloned_security_info_table s
+    LEFT JOIN opera_backup_04_10.security_settlement_value_table c
+           ON c.tenant_id = s.tenant_id AND c.business_unit = s.business_unit
+          AND c.security_id = s.security_id AND c.value_date = :valueDate
+    WHERE s.tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113'
+      AND s.business_unit = 'CFS'
+      AND s.derivative_type = 'fx_forward_ndf'
+      AND s.maturity_date >= :valueDate
+    ORDER BY s.security_id
+  ]]></sql>
+
+  <!-- ===== Check 4: PG date coverage, current vs 04-Oct backup, plus the security itself ===== -->
+  <sql id="pg-ssv-current-by-date" db="postgres-dev" timeout="120" fetchSize="100" export="full"><![CDATA[
+    SELECT value_date, count(*) AS row_count
+    FROM opera.security_settlement_value_table
+    WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113'
+      AND business_unit = 'CFS'
+    GROUP BY value_date
+    ORDER BY value_date
+  ]]></sql>
+
+  <sql id="pg-ssv-backup-by-date" db="postgres-dev" timeout="120" fetchSize="100" export="full"><![CDATA[
+    SELECT value_date, count(*) AS row_count
+    FROM opera_backup_04_10.security_settlement_value_table
+    WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113'
+      AND business_unit = 'CFS'
+    GROUP BY value_date
+    ORDER BY value_date
+  ]]></sql>
+
+  <sql id="pg-ssv-security-current" db="postgres-dev" timeout="60" fetchSize="50" export="full"><![CDATA[
+    SELECT security_id, value_date, settle_price
+    FROM opera.security_settlement_value_table
+    WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113'
+      AND business_unit = 'CFS'
+      AND upper(btrim(security_id)) = upper(btrim(:securityId))
+    ORDER BY value_date
+  ]]></sql>
+
+  <sql id="pg-ssv-security-backup" db="postgres-dev" timeout="60" fetchSize="50" export="full"><![CDATA[
+    SELECT security_id, value_date, settle_price
+    FROM opera_backup_04_10.security_settlement_value_table
+    WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113'
+      AND business_unit = 'CFS'
+      AND upper(btrim(security_id)) = upper(btrim(:securityId))
+    ORDER BY value_date
+  ]]></sql>
+
+  <!-- does PG have any history table at all (the MySQL trigger target)? -->
+  <sql id="pg-settlement-tables" db="postgres-dev" timeout="60" fetchSize="50" export="full"><![CDATA[
+    SELECT table_schema, table_name, table_type
+    FROM information_schema.tables
+    WHERE table_schema IN ('opera','opera_backup_04_10')
+      AND (table_name LIKE '%settlement_value%' OR table_name LIKE 'valuation_date%')
+    ORDER BY table_schema, table_name
+  ]]></sql>
+
+  <!-- ===== Check 7: valuation dates ===== -->
+  <sql id="mysql-valuation-date" db="mysql-oprdb02" timeout="60" fetchSize="20" export="full"><![CDATA[
+    SELECT * FROM dbsystemuat.valuation_date_table
+  ]]></sql>
+
+  <sql id="pg-valuation-date-current" db="postgres-dev" timeout="60" fetchSize="20" export="full"><![CDATA[
+    SELECT * FROM opera.valuation_date_table
+    WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113'
+  ]]></sql>
+
+  <sql id="pg-valuation-date-backup" db="postgres-dev" timeout="60" fetchSize="20" export="full"><![CDATA[
+    SELECT * FROM opera_backup_04_10.valuation_date_table
+    WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113'
+  ]]></sql>
+
+  <!-- ===== Comparisons: MySQL history (truth for 10-02 if the trigger ran) vs PG ===== -->
+  <compare id="mysql-history-vs-pg-current" source="mysql-ssv-history-security" target="pg-ssv-security-current">
+    <key columns="security_id,value_date"/>
+    <column name="settle_price"/>
+  </compare>
+
+  <compare id="mysql-history-vs-pg-backup" source="mysql-ssv-history-security" target="pg-ssv-security-backup">
+    <key columns="security_id,value_date"/>
+    <column name="settle_price"/>
+  </compare>
+
+  <compress id="bundle" file="cash-refresh-11-ssv-history-cfs.zip">
+    <include ref="mysql-live-view-defs"/>
+    <include ref="mysql-live-triggers"/>
+    <include ref="mysql-ssv-current-by-date"/>
+    <include ref="mysql-ssv-history-by-date"/>
+    <include ref="mysql-ssv-history-security"/>
+    <include ref="mysql-status-table-cfs"/>
+    <include ref="mysql-ndf-coverage"/>
+    <include ref="pg-ndf-coverage-current"/>
+    <include ref="pg-ndf-coverage-backup"/>
+    <include ref="pg-ssv-current-by-date"/>
+    <include ref="pg-ssv-backup-by-date"/>
+    <include ref="pg-ssv-security-current"/>
+    <include ref="pg-ssv-security-backup"/>
+    <include ref="pg-settlement-tables"/>
+    <include ref="mysql-valuation-date"/>
+    <include ref="pg-valuation-date-current"/>
+    <include ref="pg-valuation-date-backup"/>
+    <include ref="mysql-history-vs-pg-current"/>
+    <include ref="mysql-history-vs-pg-backup"/>
+  </compress>
+</rules>
