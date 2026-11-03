@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- The 10 QC trades of client RCC (contracts RCC_QC_235 and RCC_QC_239, booked and maturing 02-Oct-2026) that legacy has and dev does not
+     (rule rrr-qc-trades-cfs, 03-Nov-2026). They explain the CFS Productwise_Splitup QC gap of 491.81. Question: were they created in legacy before
+     the migration (then the migration missed them: a migration defect to restore) or after it (then dev is right not to have them)?
+     Legacy: all columns of the deal rows including created and updated time. Dev: the same trade ids in the live tables and in the migration copy
+     opera_backup_04_10. Read-only SELECTs only. -->
+<rules name="rrr-qc-rcc-trades-origin">
+    <sql id="legacy-deals" db="mysql-oprdb02" timeout="300">
+        <![CDATA[
+            SELECT 'cloned_deal_ticket_table_cfs' AS source_table, t.* FROM dbsystemuat.cloned_deal_ticket_table_cfs t
+             WHERE TRIM(t.trade_id) IN ('TR-FY-2026-823767','TR-FY-2026-823768','TR-FY-2026-823769','TR-FY-2026-823770','TR-FY-2026-823771',
+                                        'TR-FY-2026-823772','TR-FY-2026-823773','TR-FY-2026-823774','TR-FY-2026-823775','TR-FY-2026-823776')
+             ORDER BY t.trade_id
+        ]]>
+    </sql>
+    <sql id="legacy-deal-ticket" db="mysql-oprdb02" timeout="300">
+        <![CDATA[
+            SELECT 'deal_ticket_table_cfs' AS source_table, t.* FROM dbsystemuat.deal_ticket_table_cfs t
+             WHERE TRIM(t.trade_id) IN ('TR-FY-2026-823767','TR-FY-2026-823768','TR-FY-2026-823769','TR-FY-2026-823770','TR-FY-2026-823771',
+                                        'TR-FY-2026-823772','TR-FY-2026-823773','TR-FY-2026-823774','TR-FY-2026-823775','TR-FY-2026-823776')
+             ORDER BY t.trade_id
+        ]]>
+    </sql>
+    <sql id="dev-presence" db="postgres-dev" timeout="300">
+        <![CDATA[
+            SELECT x.trade_id,
+                   EXISTS (SELECT 1 FROM opera.cloned_deal_ticket_table c WHERE c.tenant_id = t.tenant_id AND trim(c.trade_id) = x.trade_id) AS in_dev_cloned,
+                   EXISTS (SELECT 1 FROM opera.deal_ticket_table d WHERE d.tenant_id = t.tenant_id AND trim(d.trade_id) = x.trade_id) AS in_dev_deal_ticket,
+                   EXISTS (SELECT 1 FROM opera_backup_04_10.cloned_deal_ticket_table b WHERE trim(b.trade_id) = x.trade_id) AS in_migration_copy_cloned,
+                   EXISTS (SELECT 1 FROM opera_backup_04_10.deal_ticket_table b WHERE trim(b.trade_id) = x.trade_id) AS in_migration_copy_deal_ticket,
+                   (SELECT max(c.trade_id) FROM opera.cloned_deal_ticket_table c
+                     WHERE c.tenant_id = t.tenant_id AND c.business_unit = 'CFS' AND c.contract_number IN ('RCC_QC_235', 'RCC_QC_239')) AS highest_dev_trade_of_these_contracts
+              FROM (VALUES ('TR-FY-2026-823767'),('TR-FY-2026-823768'),('TR-FY-2026-823769'),('TR-FY-2026-823770'),('TR-FY-2026-823771'),
+                           ('TR-FY-2026-823772'),('TR-FY-2026-823773'),('TR-FY-2026-823774'),('TR-FY-2026-823775'),('TR-FY-2026-823776')) AS x(trade_id)
+             CROSS JOIN (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = 'CFS' LIMIT 1) t
+             ORDER BY 1
+        ]]>
+    </sql>
+
+    <compress id="bundle" file="rrr-qc-rcc-trades-origin.zip">
+        <include ref="legacy-deals"/>
+        <include ref="legacy-deal-ticket"/>
+        <include ref="dev-presence"/>
+    </compress>
+</rules>
