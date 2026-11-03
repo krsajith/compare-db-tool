@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- CFS Productwise_Splitup, product QC, value date 02-Oct-2026: legacy has 491.81 more positive MTM than the new report, while every client MTM
+     is equal. All QC positions on dev are the same in the statement cache and in the position function, so the missing position is a QC trade that
+     legacy valued on 02-Oct and dev does not have, or has with another status, lots or contract. Legacy keeps every trade in its deal tables, so
+     this rule compares the QC trades that can be live on 02-Oct (traded on or before 02-Oct, security not matured before 01-Oct), legacy MySQL
+     against dev, by trade id. Read-only SELECTs only. -->
+<rules name="rrr-qc-trades-cfs">
+    <parameters>
+        <param name="valueDate" type="date" value="2026-10-02"/>
+        <param name="fromDate" type="date" value="2026-10-01"/>
+    </parameters>
+
+    <sql id="legacy-qc-trades" db="mysql-oprdb02" timeout="600" fetchSize="5000">
+        <![CDATA[
+            SELECT TRIM(t.trade_id) AS trade_id, t.contract_number, t.transaction_date, t.deal_status, t.netting_status, t.original_lots,
+                   s.security_id, s.derivative_type, s.maturity_date
+              FROM dbsystemuat.cloned_deal_ticket_table_cfs t
+              JOIN dbsystemuat.cloned_security_info_table_cfs s ON s.security_id = t.security_id
+             WHERE s.security_id LIKE 'CM QC %' AND t.transaction_date <= :valueDate
+               AND (s.maturity_date IS NULL OR s.maturity_date >= :fromDate)
+        ]]>
+    </sql>
+    <sql id="dev-qc-trades" db="postgres-dev" timeout="600" fetchSize="5000">
+        <![CDATA[
+            SELECT trim(t.trade_id) AS trade_id, t.contract_number, t.transaction_date, t.deal_status, t.netting_status, t.original_lots,
+                   s.security_id, s.derivative_type, s.maturity_date
+              FROM opera.cloned_deal_ticket_table t
+              JOIN opera.cloned_security_info_table s
+                ON s.tenant_id = t.tenant_id AND s.business_unit = t.business_unit AND s.security_id = t.security_id
+             WHERE t.tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = 'CFS' LIMIT 1)
+               AND t.business_unit = 'CFS' AND s.security_id LIKE 'CM QC %' AND t.transaction_date <= :valueDate
+               AND (s.maturity_date IS NULL OR s.maturity_date >= :fromDate)
+        ]]>
+    </sql>
+
+    <compare id="qc-trades" source="legacy-qc-trades" target="dev-qc-trades">
+        <key columns="trade_id"/>
+        <column name="contract_number" trim="true" caseInsensitive="true"/>
+        <column name="deal_status" trim="true" caseInsensitive="true"/>
+        <column name="netting_status" trim="true" caseInsensitive="true" nullAsEmpty="true"/>
+        <column name="original_lots" absTol="0.0001"/>
+        <column name="security_id" trim="true"/>
+        <column name="derivative_type" trim="true" caseInsensitive="true"/>
+    </compare>
+
+    <compress id="bundle" file="rrr-qc-trades-cfs.zip">
+        <include ref="qc-trades"/>
+    </compress>
+</rules>
