@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rules name="cash-refresh-10-price-source-probe-cfs">
+  <parameters>
+    <param name="securityId" type="string" value="CR BCNUSD NDF 20261001"/>
+    <param name="underlyingId" type="string" value="CR BCNUSD 20261001 BGN"/>
+    <param name="valueDate" type="date" value="2026-10-02"/>
+    <param name="cob" type="date" value="2026-10-01"/>
+  </parameters>
+
+  <sql id="mysql-physical-settlement-rows" db="mysql-oprdb02" timeout="60" fetchSize="50" export="full"><![CDATA[
+    SELECT security_id, value_date, settle_price
+    FROM dbsystemuat.security_settlement_value_table_cfs
+    WHERE upper(trim(security_id)) = upper(trim(:securityId))
+    ORDER BY value_date
+  ]]></sql>
+
+  <sql id="mysql-derived-price-rows" db="mysql-oprdb02" timeout="60" fetchSize="50" export="full"><![CDATA[
+    SELECT security_id, value_date, settle_price
+    FROM dbsystemuat.helper_calculated_settle_price_view_cfs
+    WHERE upper(trim(security_id)) = upper(trim(:securityId))
+    ORDER BY value_date
+  ]]></sql>
+
+  <sql id="mysql-underlying-settlement-row" db="mysql-oprdb02" timeout="60" fetchSize="50" export="full"><![CDATA[
+    SELECT underlying_id, value_date, settlement_date, settle_value
+    FROM dbsystemuat.underlying_settle_value_table
+    WHERE upper(trim(underlying_id)) = upper(trim(:underlyingId))
+      AND value_date = :valueDate
+  ]]></sql>
+
+  <sql id="pg-underlying-settlement-row" db="postgres-dev" timeout="60" fetchSize="50" export="full"><![CDATA[
+    SELECT tenant_id, underlying_id, value_date, settlement_date, settle_value
+    FROM opera.underlying_settle_value_table
+    WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113'
+      AND upper(btrim(underlying_id)) = upper(btrim(:underlyingId))
+      AND value_date = :valueDate
+  ]]></sql>
+
+  <sql id="pg-security-settlement-row" db="postgres-dev" timeout="60" fetchSize="50" export="full"><![CDATA[
+    SELECT tenant_id, business_unit, security_id, value_date, settle_price
+    FROM opera.security_settlement_value_table
+    WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113'
+      AND business_unit = 'CFS'
+      AND upper(btrim(security_id)) = upper(btrim(:securityId))
+      AND value_date = :valueDate
+  ]]></sql>
+
+  <sql id="mysql-report-target-trades" db="mysql-oprdb02" timeout="60" fetchSize="50" export="full"><![CDATA[
+    SELECT trade_id, client_code, contract_number, derivative_type, product_code,
+           value_date, settlement_date, settle_price
+    FROM dbsystemuat.helper_cash_balance_report_view_cfs
+    WHERE value_date = :valueDate
+      AND settlement_date = :cob
+      AND trade_id IN (
+        'TR-FY-2026-687639','TR-FY-2026-687640','TR-FY-2026-697702',
+        'TR-FY-2026-732789','TR-FY-2026-806333','TR-FY-2026-810935',
+        'TR-FY-2026-810936')
+    ORDER BY trade_id
+  ]]></sql>
+
+  <compare id="mysql-derived-price-vs-source" source="mysql-physical-settlement-rows" target="mysql-derived-price-rows">
+    <key columns="security_id,value_date"/>
+    <column name="settle_price"/>
+  </compare>
+</rules>
