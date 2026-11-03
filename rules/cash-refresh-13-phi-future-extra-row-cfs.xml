@@ -1,0 +1,157 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Cash refresh 13: why does the new cash fixing for COB 1-Oct show an extra row PHI / FUTURE / KO / MYR (expired -47,575)
+     that the legacy UAT screen did not have? Compares the legacy view with the Opera function for the PHI futures, then the
+     price sources the legacy price view uses for an expired future: futures_price_table at maturity, else the
+     per-security settlement value. Read-only. -->
+<rules name="cash-refresh-13-phi-future-extra-row-cfs">
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+    <param name="valueDate" type="date" value="2026-10-02"/>
+    <param name="cob" type="date" value="2026-10-01"/>
+    <param name="fromDate" type="date" value="2026-09-29"/>
+  </parameters>
+
+  <!-- 1. the report rows themselves: legacy view vs Opera function -->
+  <sql id="legacy-phi-future-rows" db="mysql-oprdb02" timeout="120" fetchSize="100" export="full"><![CDATA[
+    SELECT trade_id, client_code, contract_number, derivative_type, product_code, currency,
+           value_date, settlement_date, transaction_date, maturity_date, netting_status, netting_date,
+           is_premium_paid, original_lots, active_lots, original_premium, mult_factor, nc_factor, fx_nc_factor,
+           settle_price, CASE WHEN settle_price IS NULL THEN 'NULL' ELSE 'VALUE' END AS settle_price_state
+    FROM dbsystemuat.helper_cash_balance_report_view_cfs
+    WHERE value_date = :valueDate AND settlement_date = :cob
+      AND upper(trim(client_code)) = 'PHI'
+      AND upper(trim(derivative_type)) = 'FUTURE'
+      AND upper(trim(product_code)) = 'KO'
+    ORDER BY trade_id
+  ]]></sql>
+
+  <sql id="opera-phi-future-rows" db="postgres-dev" timeout="120" fetchSize="100" tempTables="true" export="full"><![CDATA[
+    SELECT trade_id, client_code, contract_number, derivative_type, product_code, currency,
+           value_date, settlement_date, transaction_date, maturity_date, netting_status, netting_date,
+           is_premium_paid, original_lots, active_lots, original_premium, mult_factor, nc_factor, fx_nc_factor,
+           settle_price, CASE WHEN settle_price IS NULL THEN 'NULL' ELSE 'VALUE' END AS settle_price_state
+    FROM opera.fn_cash_balance_report_for_scope(:tenant, 'CFS')
+    WHERE value_date = :valueDate AND settlement_date = :cob
+      AND upper(trim(client_code)) = 'PHI'
+      AND upper(trim(derivative_type)) = 'FUTURE'
+      AND upper(trim(product_code)) = 'KO'
+    ORDER BY trade_id
+  ]]></sql>
+
+  <!-- 2. securities behind those trades and their futures price at maturity (legacy: underlying1_id, else security_id) -->
+  <sql id="legacy-future-futures-price" db="mysql-oprdb02" timeout="120" fetchSize="100" export="full"><![CDATA[
+    SELECT s.security_id, COALESCE(f.underlying_id, '(none)') AS price_underlying_id,
+           s.derivative_type, s.maturity_date, s.underlying1_id, f.value_date AS price_date, f.last_price
+    FROM dbsystemuat.cloned_security_info_table_cfs s
+    LEFT JOIN dbsystemuat.futures_price_table f
+           ON f.underlying_id IN (s.security_id, s.underlying1_id) AND f.value_date = s.maturity_date
+    WHERE s.security_id IN (
+      SELECT d.security_id FROM dbsystemuat.deal_ticket_table_with_fy_premium_view_cfs d
+      WHERE d.trade_id IN (
+        SELECT r.trade_id FROM dbsystemuat.helper_cash_balance_report_view_cfs r
+        WHERE r.value_date = :valueDate AND r.settlement_date = :cob
+          AND upper(trim(r.client_code)) = 'PHI' AND upper(trim(r.derivative_type)) = 'FUTURE'
+          AND upper(trim(r.product_code)) = 'KO'))
+    ORDER BY s.security_id, price_underlying_id
+  ]]></sql>
+
+  <sql id="opera-future-futures-price" db="postgres-dev" timeout="120" fetchSize="100" tempTables="true" export="full"><![CDATA[
+    SELECT s.security_id, COALESCE(f.underlying_id, '(none)') AS price_underlying_id,
+           s.derivative_type, s.maturity_date, s.underlying1_id, f.value_date AS price_date, f.last_price
+    FROM opera.cloned_security_info_table s
+    LEFT JOIN opera.futures_price_table f
+           ON f.tenant_id = s.tenant_id AND f.underlying_id IN (s.security_id, s.underlying1_id)
+          AND f.value_date = s.maturity_date
+    WHERE s.tenant_id = :tenant AND s.business_unit = 'CFS'
+      AND s.security_id IN (
+        SELECT d.security_id FROM opera.cloned_deal_ticket_table d
+        WHERE d.tenant_id = :tenant AND d.business_unit = 'CFS'
+          AND d.trade_id IN (
+            SELECT r.trade_id FROM opera.fn_cash_balance_report_for_scope(:tenant, 'CFS') r
+            WHERE r.value_date = :valueDate AND r.settlement_date = :cob
+              AND upper(trim(r.client_code)) = 'PHI' AND upper(trim(r.derivative_type)) = 'FUTURE'
+              AND upper(trim(r.product_code)) = 'KO'))
+    ORDER BY s.security_id, price_underlying_id
+  ]]></sql>
+
+  <!-- 3. the 04-Oct copy of the Opera futures price table: did the price exist then, or was it added later? -->
+  <sql id="backup-future-futures-price" db="postgres-dev" timeout="120" fetchSize="100" tempTables="true" export="full"><![CDATA[
+    SELECT s.security_id, COALESCE(f.underlying_id, '(none)') AS price_underlying_id,
+           s.derivative_type, s.maturity_date, s.underlying1_id, f.value_date AS price_date, f.last_price
+    FROM opera.cloned_security_info_table s
+    LEFT JOIN opera_backup_04_10.futures_price_table f
+           ON f.tenant_id = s.tenant_id AND f.underlying_id IN (s.security_id, s.underlying1_id)
+          AND f.value_date = s.maturity_date
+    WHERE s.tenant_id = :tenant AND s.business_unit = 'CFS'
+      AND s.security_id IN (
+        SELECT d.security_id FROM opera.cloned_deal_ticket_table d
+        WHERE d.tenant_id = :tenant AND d.business_unit = 'CFS'
+          AND d.trade_id IN (
+            SELECT r.trade_id FROM opera.fn_cash_balance_report_for_scope(:tenant, 'CFS') r
+            WHERE r.value_date = :valueDate AND r.settlement_date = :cob
+              AND upper(trim(r.client_code)) = 'PHI' AND upper(trim(r.derivative_type)) = 'FUTURE'
+              AND upper(trim(r.product_code)) = 'KO'))
+    ORDER BY s.security_id, price_underlying_id
+  ]]></sql>
+
+  <!-- 4. per-security settlement values for the same securities: legacy history vs Opera -->
+  <sql id="legacy-future-ssv-history" db="mysql-oprdb02" timeout="120" fetchSize="100" export="full"><![CDATA[
+    SELECT h.security_id, h.value_date, h.settle_price
+    FROM dbsystemuat.historical_security_settlement_value_table_cfs h
+    WHERE h.value_date BETWEEN :fromDate AND :valueDate
+      AND h.security_id IN (
+        SELECT d.security_id FROM dbsystemuat.deal_ticket_table_with_fy_premium_view_cfs d
+        WHERE d.trade_id IN (
+          SELECT r.trade_id FROM dbsystemuat.helper_cash_balance_report_view_cfs r
+          WHERE r.value_date = :valueDate AND r.settlement_date = :cob
+            AND upper(trim(r.client_code)) = 'PHI' AND upper(trim(r.derivative_type)) = 'FUTURE'
+            AND upper(trim(r.product_code)) = 'KO'))
+    ORDER BY h.security_id, h.value_date
+  ]]></sql>
+
+  <sql id="opera-future-ssv" db="postgres-dev" timeout="120" fetchSize="100" tempTables="true" export="full"><![CDATA[
+    SELECT c.security_id, c.value_date, c.settle_price
+    FROM opera.security_settlement_value_table c
+    WHERE c.tenant_id = :tenant AND c.business_unit = 'CFS'
+      AND c.value_date BETWEEN :fromDate AND :valueDate
+      AND c.security_id IN (
+        SELECT d.security_id FROM opera.cloned_deal_ticket_table d
+        WHERE d.tenant_id = :tenant AND d.business_unit = 'CFS'
+          AND d.trade_id IN (
+            SELECT r.trade_id FROM opera.fn_cash_balance_report_for_scope(:tenant, 'CFS') r
+            WHERE r.value_date = :valueDate AND r.settlement_date = :cob
+              AND upper(trim(r.client_code)) = 'PHI' AND upper(trim(r.derivative_type)) = 'FUTURE'
+              AND upper(trim(r.product_code)) = 'KO'))
+    ORDER BY c.security_id, c.value_date
+  ]]></sql>
+
+  <compare id="report-rows-legacy-vs-opera" source="legacy-phi-future-rows" target="opera-phi-future-rows">
+    <key columns="trade_id"/>
+  </compare>
+  <compare id="futures-price-legacy-vs-opera" source="legacy-future-futures-price" target="opera-future-futures-price">
+    <key columns="security_id,price_underlying_id"/>
+    <column name="last_price"/>
+  </compare>
+  <compare id="futures-price-opera-vs-backup" source="opera-future-futures-price" target="backup-future-futures-price">
+    <key columns="security_id,price_underlying_id"/>
+    <column name="last_price"/>
+  </compare>
+  <compare id="ssv-legacy-vs-opera" source="legacy-future-ssv-history" target="opera-future-ssv">
+    <key columns="security_id,value_date"/>
+    <column name="settle_price"/>
+  </compare>
+
+  <compress id="bundle" file="cash-refresh-13-phi-future-extra-row-cfs.zip">
+    <include ref="legacy-phi-future-rows"/>
+    <include ref="opera-phi-future-rows"/>
+    <include ref="legacy-future-futures-price"/>
+    <include ref="opera-future-futures-price"/>
+    <include ref="backup-future-futures-price"/>
+    <include ref="legacy-future-ssv-history"/>
+    <include ref="opera-future-ssv"/>
+    <include ref="report-rows-legacy-vs-opera"/>
+    <include ref="futures-price-legacy-vs-opera"/>
+    <include ref="futures-price-opera-vs-backup"/>
+    <include ref="ssv-legacy-vs-opera"/>
+  </compress>
+</rules>
