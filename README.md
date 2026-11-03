@@ -691,3 +691,22 @@ Get-Content .\validation.log
 `rules/grasa-inputs-cfs.xml` references `postgres-dev` (database `operadb`, schema `opera`) and MySQL OPRDB02
 (`dbsystemuat`). It needs no production flag. If you intentionally change it to `postgres-prod`, execution then
 requires `--allow-prod`; without it the application must report an error before connecting.
+
+## Restore table rows from a reference (`--restore`)
+
+Puts rows of target tables back from reference tables (a migration copy, a snapshot, a backup) using a JSON rule.
+Deliberately separate from the read-only comparison path, with the same safeguards as the template upload:
+
+```powershell
+.\compare.ps1 --restore rules\rrr-restore-20261002.json --validate   # check the rule, no connection
+.\compare.ps1 --restore rules\rrr-restore-20261002.json              # preview: runs everything, rolls back
+.\compare.ps1 --restore rules\rrr-restore-20261002.json --apply      # commit
+```
+
+Per step (`table`, `from`, `where`, optional `referenceWhere`, `key`, `deleteExtra`): a backup of the target rows in scope is
+created in `backupSchema`; target rows whose key exists in the reference with other content are replaced; missing reference
+rows are inserted; with `deleteExtra` target rows the reference does not have are removed; then the scope must equal the
+reference, otherwise everything is rolled back. Content = every column both tables have except uuid and the audit columns.
+All steps run in one transaction. `where` and `referenceWhere` must be conditions only (no statements, comments or semicolons).
+The preview writes `RESTORE.md` with the real counts; `--apply` also writes `undo-<name>.json`, a restore rule that puts the
+rows back from the backup tables. Production datasources need `--allow-prod`.

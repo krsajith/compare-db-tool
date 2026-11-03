@@ -1,0 +1,45 @@
+{
+  "name": "rrr-restore-20261002",
+  "db": "postgres-dev",
+  "backupSchema": "parity_work",
+  "description": "Puts back the inputs of the RRR for value date 02-Oct-2026 (COB 01-Oct-2026), CFS ORM RMC, that changed after the exact run of 02-Nov-2026 12:18 (database time), as found by rules rrr-input-drift-20261002 and rrr-input-values-20261002 on 03-Nov-2026: settle prices (314,822 rows missing) from the migration copy, the dev-only securities from the 1-Nov snapshot, 1 dripping row (BFA_CT_198) from the migration copy, 2 cash rows (OCF, OGB: expired_or_liquidated_cash) from the 1-Nov snapshot. Valuation dates and latest_active_lot are unchanged and not touched. Run again with --apply to commit; the undo rule is written next to the summary.",
+  "steps": [
+    {
+      "id": "prices-from-migration-copy",
+      "table": "opera.security_settlement_value_table",
+      "from": "opera_backup_04_10.security_settlement_value_table",
+      "where": "tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = 'CFS' LIMIT 1) AND business_unit IN ('CFS', 'ORM', 'RMC') AND value_date = DATE '2026-10-02'",
+      "key": ["tenant_id", "business_unit", "security_id", "value_date"],
+      "deleteExtra": false,
+      "note": "legacy prices of 02-Oct, as restored by script 17 and used by the exact run"
+    },
+    {
+      "id": "prices-dev-only-from-snapshot",
+      "table": "opera.security_settlement_value_table",
+      "from": "parity_work.snap_security_settlement_value_table_20261101",
+      "where": "tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = 'CFS' LIMIT 1) AND business_unit IN ('CFS', 'ORM', 'RMC') AND value_date = DATE '2026-10-02'",
+      "referenceWhere": "NOT EXISTS (SELECT 1 FROM opera_backup_04_10.security_settlement_value_table c WHERE c.tenant_id = parity_work.snap_security_settlement_value_table_20261101.tenant_id AND c.business_unit = parity_work.snap_security_settlement_value_table_20261101.business_unit AND c.security_id = parity_work.snap_security_settlement_value_table_20261101.security_id AND c.value_date = parity_work.snap_security_settlement_value_table_20261101.value_date)",
+      "key": ["tenant_id", "business_unit", "security_id", "value_date"],
+      "deleteExtra": false,
+      "note": "securities that exist only on dev (not in the migration copy), as in the 1-Nov snapshot"
+    },
+    {
+      "id": "dripping-from-migration-copy",
+      "table": "opera.client_dripping_table",
+      "from": "opera_backup_04_10.client_dripping_table",
+      "where": "tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = 'CFS' LIMIT 1) AND business_unit IN ('CFS', 'ORM', 'RMC') AND value_date = DATE '2026-10-02'",
+      "key": ["tenant_id", "business_unit", "contract_number", "value_date"],
+      "deleteExtra": false,
+      "note": "legacy dripping rows (14), restored by script 06; BFA_CT_198 was deleted after the exact run"
+    },
+    {
+      "id": "cash-from-snapshot",
+      "table": "opera.client_cash_account_balance_table",
+      "from": "parity_work.snap_client_cash_account_balance_table_20261101",
+      "where": "tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = 'CFS' LIMIT 1) AND business_unit IN ('CFS', 'ORM', 'RMC') AND cob_date = DATE '2026-10-01'",
+      "key": ["tenant_id", "business_unit", "client_code", "currency", "cob_date"],
+      "deleteExtra": false,
+      "note": "cash balances of 01-Oct as used by the exact run; the refresh of 02-Nov 12:20 dropped expired_or_liquidated_cash for OCF and OGB"
+    }
+  ]
+}

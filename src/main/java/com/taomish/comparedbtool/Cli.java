@@ -33,7 +33,8 @@ public final class Cli {
         --template-import FILE  Import one or more templates using a JSON rule (preview by default)
         --template-export FILE  Export requested template files, row metadata and an upload rule
         --template-upload FILE  Alias for --template-import; existing single-template rules still work
-        --apply               Commit template replacement; otherwise roll back the preview
+        --restore FILE        Restore table rows from reference tables using a JSON rule (preview by default)
+        --apply               Commit template replacement or data restore; otherwise roll back the preview
         --help                Show this help
 
         External configuration: config/datasources.properties, relative to working directory.
@@ -46,6 +47,7 @@ public final class Cli {
         public Path rules;
         public Path templateUpload;
         public Path templateExport;
+        public Path restore;
         public boolean apply;
         public Path out = Path.of("out");
         public Map<String, String> parameters = new LinkedHashMap<>();
@@ -71,7 +73,7 @@ public final class Cli {
             }
             int equal = argument.indexOf('=');
             String name = equal > 0 ? argument.substring(0, equal) : argument;
-            if (Set.of("--template-export", "--template-import", "--template-upload", "--rules", "--out", "--param", "--limit", "--partitions", "--export", "--sample-rows", "--parallel", "--max-partition-mb").contains(name)) {
+            if (Set.of("--template-export", "--template-import", "--template-upload", "--restore", "--rules", "--out", "--param", "--limit", "--partitions", "--export", "--sample-rows", "--parallel", "--max-partition-mb").contains(name)) {
                 String value;
                 if (equal > 0) value = argument.substring(equal + 1);
                 else {
@@ -87,6 +89,10 @@ public final class Cli {
                         case "--template-import", "--template-upload" -> {
                             if (options.templateUpload != null) throw new ToolException("Supply only one template import rule file");
                             options.templateUpload = Path.of(value);
+                        }
+                        case "--restore" -> {
+                            if (options.restore != null) throw new ToolException("Supply only one restore rule file");
+                            options.restore = Path.of(value);
                         }
                         case "--rules" -> options.rules = Path.of(value);
                         case "--out" -> options.out = Path.of(value);
@@ -126,16 +132,25 @@ public final class Cli {
         if (options.templateExport != null && (options.templateUpload != null || options.rules != null
             || options.datasources || !options.parameters.isEmpty() || options.apply))
             throw new ToolException("Template export cannot be combined with import, comparison, datasource listing, parameters or --apply.");
-        if (options.apply && (options.templateUpload == null || options.validate))
-            throw new ToolException("--apply requires --template-upload and cannot be combined with --validate.");
-        if (!options.help && !options.datasources && options.rules == null && options.templateUpload == null && options.templateExport == null)
-            throw new ToolException("Supply --rules FILE, --template-import FILE or --template-export FILE.");
+        if (options.restore != null && (options.rules != null || options.templateUpload != null || options.templateExport != null
+            || options.datasources || !options.parameters.isEmpty()))
+            throw new ToolException("Restore cannot be combined with comparison rules, templates, datasource listing or parameters.");
+        if (options.apply && ((options.templateUpload == null && options.restore == null) || options.validate))
+            throw new ToolException("--apply requires --template-upload or --restore and cannot be combined with --validate.");
+        if (!options.help && !options.datasources && options.rules == null && options.templateUpload == null && options.templateExport == null
+            && options.restore == null)
+            throw new ToolException("Supply --rules FILE, --template-import FILE, --template-export FILE or --restore FILE.");
         return options;
     }
 
     public int execute(Options options) throws IOException {
         if (options.templateExport != null) return new TemplateExporter(settings).execute(options);
         if (options.templateUpload != null) return new TemplateUploader(settings).execute(options);
+        if (options.restore != null) {
+            try { return new DataRestorer(settings).execute(options); }
+            catch (ToolException e) { throw e; }
+            catch (Exception e) { throw new ToolException("Restore failed", e); }
+        }
         if (options.datasources) {
             if (settings.getDatasources().isEmpty()) System.out.println("No datasources configured. Check config/datasources.properties.");
             settings.diagnostics().forEach(System.out::println);
