@@ -62,4 +62,14 @@
     <key columns="security_id,value_date"/>
     <column name="settle_price"/>
   </compare>
+
+  <compress id="bundle" file="cash-refresh-10-price-source-probe-cfs.zip">
+    <include ref="mysql-physical-settlement-rows"/>
+    <include ref="mysql-derived-price-rows"/>
+    <include ref="mysql-underlying-settlement-row"/>
+    <include ref="pg-underlying-settlement-row"/>
+    <include ref="pg-security-settlement-row"/>
+    <include ref="mysql-report-target-trades"/>
+    <include ref="mysql-derived-price-vs-source"/>
+  </compress>
 </rules>
