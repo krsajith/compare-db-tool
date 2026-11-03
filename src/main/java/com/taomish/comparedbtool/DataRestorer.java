@@ -138,17 +138,25 @@ public final class DataRestorer {
     }
 
     private StepResult run(Connection c, Rule rule, Step s, String stamp) throws Exception {
+        long started = System.nanoTime();
+        LOG.info("Step {} started: {} from {}", s.id, s.table, s.from);
         List<String> targetColumns = columns(c, s.table);
         List<String> referenceColumns = columns(c, s.from);
         List<String> common = targetColumns.stream().filter(referenceColumns::contains).toList();
         for (String k : s.key) if (!common.contains(k.toLowerCase(Locale.ROOT))) throw new ToolException("Step " + s.id + ": key column " + k + " not in both tables");
         List<String> content = common.stream().filter(col -> !AUDIT.contains(col) && !s.key.contains(col)).toList();
         String refScope = "(" + s.where + ")" + (s.referenceWhere == null || s.referenceWhere.isBlank() ? "" : " AND (" + s.referenceWhere + ")");
-        String keyMatch = s.key.stream().map(k -> "t." + k + " IS NOT DISTINCT FROM r." + k).collect(Collectors.joining(" AND "));
+        // plain equality on the key: PostgreSQL can hash-join it (IS NOT DISTINCT FROM forces a nested loop, minutes to hours on 300k rows);
+        // key columns must therefore be non-null, checked below
+        String keyMatch = s.key.stream().map(k -> "t." + k + " = r." + k).collect(Collectors.joining(" AND "));
         String contentDiff = content.isEmpty() ? "(1 = 0)"
             : "(" + content.stream().map(col -> "t." + col + " IS DISTINCT FROM r." + col).collect(Collectors.joining(" OR ")) + ")";
         String target = "(SELECT * FROM " + s.table + " WHERE " + s.where + ")";
         String reference = "(SELECT * FROM " + s.from + " WHERE " + refScope + ")";
+        String anyKeyNull = s.key.stream().map(k -> "x." + k + " IS NULL").collect(Collectors.joining(" OR "));
+        long nullKeys = count(c, "SELECT count(*) FROM " + reference + " x WHERE " + anyKeyNull)
+            + count(c, "SELECT count(*) FROM " + target + " x WHERE " + anyKeyNull);
+        if (nullKeys > 0) throw new ToolException("Step " + s.id + ": " + nullKeys + " rows have an empty key column; choose a key without nulls");
 
         long before = count(c, "SELECT count(*) FROM " + target + " t");
         long refRows = count(c, "SELECT count(*) FROM " + reference + " r");
@@ -176,8 +184,8 @@ public final class DataRestorer {
         long stillDifferent = count(c, "SELECT count(*) FROM " + reference + " r WHERE NOT EXISTS (SELECT 1 FROM " + target + " t WHERE "
             + keyMatch + " AND NOT " + contentDiff + ")");
         if (stillDifferent != 0) throw new ToolException("Step " + s.id + ": " + stillDifferent + " reference rows still differ after the restore");
-        LOG.info("Step {}: target {} rows, reference {}; replaced {}, inserted {}, extra {} (removed {}); target now {}; backup {}",
-            s.id, before, refRows, changed, missing, extra, removedExtra, after, backup);
+        LOG.info("Step {}: target {} rows, reference {}; replaced {}, inserted {}, extra {} (removed {}); target now {}; backup {}; {} s",
+            s.id, before, refRows, changed, missing, extra, removedExtra, after, backup, (System.nanoTime() - started) / 1_000_000_000);
         return new StepResult(s.id, s.table, s.from, before, refRows, changed, missing, extra, removedExtra, after, backup);
     }
 
