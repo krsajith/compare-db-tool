@@ -1,0 +1,57 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<rules name="cash-refresh-07-missing-fx-ndf-cfs">
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+    <param name="valueDate" type="date" value="2026-10-02"/>
+    <param name="cob" type="date" value="2026-10-01"/>
+  </parameters>
+  <sql id="legacy-mysql" db="mysql-oprdb02" timeout="120" fetchSize="100" export="full"><![CDATA[
+    SELECT trade_id,client_code,contract_number,derivative_type,product_code,currency,
+           value_date,settlement_date,transaction_date,maturity_date,netting_status,netting_date,
+           is_premium_paid,original_lots,active_lots,original_premium,mult_factor,nc_factor,fx_nc_factor,
+           settle_price,CASE WHEN settle_price IS NULL THEN 'NULL' ELSE 'VALUE' END AS settle_price_state,
+           (settle_price-original_premium)*active_lots*mult_factor*-1 AS matlab_m2m_nc,
+           (settle_price-original_premium)*active_lots*mult_factor*-1*nc_factor*fx_nc_factor AS matlab_m2m_usd
+    FROM dbsystemuat.helper_cash_balance_report_view_cfs
+    WHERE value_date=:valueDate AND settlement_date=:cob
+      AND upper(trim(client_code)) IN ('OCF','OGB')
+      AND upper(trim(derivative_type))='FX_FORWARD_NDF'
+      AND upper(trim(product_code))='USDBRL'
+    ORDER BY client_code,trade_id
+  ]]></sql>
+  <sql id="backup-postgres" db="postgres-dev" timeout="120" fetchSize="100" tempTables="true" export="full"><![CDATA[
+    SELECT trade_id,client_code,contract_number,derivative_type,product_code,currency,
+           value_date,settlement_date,transaction_date,maturity_date,netting_status,netting_date,
+           is_premium_paid,original_lots,active_lots,original_premium,mult_factor,nc_factor,fx_nc_factor,
+           settle_price,CASE WHEN settle_price IS NULL THEN 'NULL' ELSE 'VALUE' END AS settle_price_state,
+           (settle_price-original_premium)*active_lots*mult_factor*-1 AS matlab_m2m_nc,
+           (settle_price-original_premium)*active_lots*mult_factor*-1*nc_factor*fx_nc_factor AS matlab_m2m_usd
+    FROM opera_backup_04_10.fn_cash_balance_report_for_scope(:tenant,'CFS')
+    WHERE value_date=:valueDate AND settlement_date=:cob
+      AND upper(trim(client_code)) IN ('OCF','OGB')
+      AND upper(trim(derivative_type))='FX_FORWARD_NDF'
+      AND upper(trim(product_code))='USDBRL'
+    ORDER BY client_code,trade_id
+  ]]></sql>
+  <sql id="current-postgres" db="postgres-dev" timeout="120" fetchSize="100" tempTables="true" export="full"><![CDATA[
+    SELECT trade_id,client_code,contract_number,derivative_type,product_code,currency,
+           value_date,settlement_date,transaction_date,maturity_date,netting_status,netting_date,
+           is_premium_paid,original_lots,active_lots,original_premium,mult_factor,nc_factor,fx_nc_factor,
+           settle_price,CASE WHEN settle_price IS NULL THEN 'NULL' ELSE 'VALUE' END AS settle_price_state,
+           (settle_price-original_premium)*active_lots*mult_factor*-1 AS matlab_m2m_nc,
+           (settle_price-original_premium)*active_lots*mult_factor*-1*nc_factor*fx_nc_factor AS matlab_m2m_usd
+    FROM opera.fn_cash_balance_report_for_scope(:tenant,'CFS')
+    WHERE value_date=:valueDate AND settlement_date=:cob
+      AND upper(trim(client_code)) IN ('OCF','OGB')
+      AND upper(trim(derivative_type))='FX_FORWARD_NDF'
+      AND upper(trim(product_code))='USDBRL'
+    ORDER BY client_code,trade_id
+  ]]></sql>
+  <compare id="mysql-vs-backup" source="legacy-mysql" target="backup-postgres"><key columns="trade_id"/></compare>
+  <compare id="backup-vs-current" source="backup-postgres" target="current-postgres"><key columns="trade_id"/></compare>
+  <compare id="mysql-vs-current" source="legacy-mysql" target="current-postgres"><key columns="trade_id"/></compare>
+  <compress id="bundle" file="cash-refresh-07-missing-fx-ndf-cfs.zip">
+    <include ref="legacy-mysql"/><include ref="backup-postgres"/><include ref="current-postgres"/>
+    <include ref="mysql-vs-backup"/><include ref="backup-vs-current"/><include ref="mysql-vs-current"/>
+  </compress>
+</rules>
