@@ -1,0 +1,96 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Cash refresh 15: why did the legacy UAT cash fixing for COB 1-Oct show 7 rows when Opera shows 8
+     (the extra row is PHI / FUTURE / KO / MYR, expired -47,575)? Data, filters and formula are identical, so the question is
+     when the legacy rows were saved compared with the PHI futures netting dated 2-Oct (in Opera by 2-Oct 23:46).
+     Reads: the legacy saved fixing rows for COB 1-Oct, the legacy status_table entries (who ran which refresh and when),
+     and the same rows in Opera current and in the 04-Oct migration copy. Read-only. -->
+<rules name="cash-refresh-15-legacy-refresh-timing-cfs">
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+    <param name="cob" type="date" value="2026-10-01"/>
+    <param name="valueDateText" type="string" value="2026-10-02"/>
+    <param name="fromText" type="string" value="2026-09-28"/>
+    <param name="toText" type="string" value="2026-11-03"/>
+  </parameters>
+
+  <!-- legacy saved fixing rows for the COB: is a PHI future row there? -->
+  <sql id="legacy-fixing-rows" db="mysql-oprdb02" timeout="120" fetchSize="100" export="full"><![CDATA[
+    SELECT cob_date, client_code, derivative_type, product_code, currency,
+           expired_amount, premium_amount, expired_fixing, premium_fixing, total_expiry, total_premium
+    FROM dbsystemuat.client_account_cash_balance_fixing_table_cfs
+    WHERE cob_date = :cob
+    ORDER BY client_code, derivative_type, product_code, currency
+  ]]></sql>
+
+  <!-- legacy cash balance rows for the COB (the other table the same refresh writes) -->
+  <sql id="legacy-cash-balance-rows" db="mysql-oprdb02" timeout="120" fetchSize="100" export="full"><![CDATA[
+    SELECT cob_date, client_code, currency, opening_balance, expired_or_liquidated_cash, premium_paid_or_recd, closing_balance
+    FROM dbsystemuat.client_cash_account_balance_table_cfs
+    WHERE cob_date = :cob
+    ORDER BY client_code, currency
+  ]]></sql>
+
+  <!-- who ran which refresh and when: every status entry that touches cash or netting tables around the dates -->
+  <sql id="legacy-status-cash-netting" db="mysql-oprdb02" timeout="120" fetchSize="100" export="full"><![CDATA[
+    SELECT id, tablename, valuation_date, status_type, status, updated_by, updated_timestamp
+    FROM dbsystemuat.status_table
+    WHERE valuation_date BETWEEN :fromText AND :toText
+      AND (tablename LIKE '%cash%' OR tablename LIKE '%netting%' OR tablename LIKE '%fixing%')
+    ORDER BY valuation_date, updated_timestamp
+  ]]></sql>
+
+  <!-- the whole day of 2-Oct for CFS: pricing run, netting, refresh, in time order -->
+  <sql id="legacy-status-2oct-all" db="mysql-oprdb02" timeout="120" fetchSize="100" export="full"><![CDATA[
+    SELECT id, tablename, valuation_date, status_type, status, updated_by, updated_timestamp
+    FROM dbsystemuat.status_table
+    WHERE valuation_date IN (:valueDateText, :fromText)
+      AND tablename LIKE '%cfs'
+    ORDER BY valuation_date, updated_timestamp
+  ]]></sql>
+
+  <!-- Opera: the 04-Oct migration copy of the saved rows (what legacy had when migrated) -->
+  <sql id="backup-fixing-rows" db="postgres-dev" timeout="120" fetchSize="100" export="full"><![CDATA[
+    SELECT cob_date, client_code, derivative_type, product_code, currency,
+           expired_amount, premium_amount, expired_fixing, premium_fixing, total_expiry, total_premium,
+           created_by, created_timestamp, updated_by, updated_timestamp
+    FROM opera_backup_04_10.client_account_cash_balance_fixing_table
+    WHERE tenant_id = :tenant AND business_unit = 'CFS' AND cob_date = :cob
+    ORDER BY client_code, derivative_type, product_code, currency
+  ]]></sql>
+
+  <!-- Opera current (after the refresh of 3 Nov) -->
+  <sql id="opera-fixing-rows" db="postgres-dev" timeout="120" fetchSize="100" export="full"><![CDATA[
+    SELECT cob_date, client_code, derivative_type, product_code, currency,
+           expired_amount, premium_amount, expired_fixing, premium_fixing, total_expiry, total_premium,
+           created_by, created_timestamp, updated_by, updated_timestamp
+    FROM opera.client_account_cash_balance_fixing_table
+    WHERE tenant_id = :tenant AND business_unit = 'CFS' AND cob_date = :cob
+    ORDER BY client_code, derivative_type, product_code, currency
+  ]]></sql>
+
+  <compare id="legacy-vs-backup-rows" source="legacy-fixing-rows" target="backup-fixing-rows">
+    <key columns="client_code,derivative_type,product_code,currency"/>
+    <column name="expired_amount"/>
+    <column name="premium_amount"/>
+    <column name="total_expiry"/>
+    <column name="total_premium"/>
+  </compare>
+  <compare id="legacy-vs-opera-rows" source="legacy-fixing-rows" target="opera-fixing-rows">
+    <key columns="client_code,derivative_type,product_code,currency"/>
+    <column name="expired_amount"/>
+    <column name="premium_amount"/>
+    <column name="total_expiry"/>
+    <column name="total_premium"/>
+  </compare>
+
+  <compress id="bundle" file="cash-refresh-15-legacy-refresh-timing-cfs.zip">
+    <include ref="legacy-fixing-rows"/>
+    <include ref="legacy-cash-balance-rows"/>
+    <include ref="legacy-status-cash-netting"/>
+    <include ref="legacy-status-2oct-all"/>
+    <include ref="backup-fixing-rows"/>
+    <include ref="opera-fixing-rows"/>
+    <include ref="legacy-vs-backup-rows"/>
+    <include ref="legacy-vs-opera-rows"/>
+  </compress>
+</rules>
