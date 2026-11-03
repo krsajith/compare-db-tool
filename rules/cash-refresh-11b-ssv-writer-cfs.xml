@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Cash refresh 11b: fixed history lookup (no function on the indexed column) plus who/when wrote the
+     Opera per-security settlement table (current vs 04-Oct backup). Read-only. -->
+<rules name="cash-refresh-11b-ssv-writer-cfs">
+  <parameters>
+    <param name="securityId" type="string" value="CR BCNUSD NDF 20261001"/>
+  </parameters>
+
+  <sql id="mysql-ssv-history-security" db="mysql-oprdb02" timeout="120" fetchSize="50" export="full"><![CDATA[
+    SELECT security_id, value_date, settle_price
+    FROM dbsystemuat.historical_security_settlement_value_table_cfs
+    WHERE security_id = :securityId
+    ORDER BY value_date
+  ]]></sql>
+
+  <sql id="pg-ssv-security-current" db="postgres-dev" timeout="60" fetchSize="50" export="full"><![CDATA[
+    SELECT security_id, value_date, settle_price
+    FROM opera.security_settlement_value_table
+    WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113'
+      AND business_unit = 'CFS'
+      AND security_id = :securityId
+    ORDER BY value_date
+  ]]></sql>
+
+  <sql id="pg-ssv-security-backup" db="postgres-dev" timeout="60" fetchSize="50" export="full"><![CDATA[
+    SELECT security_id, value_date, settle_price
+    FROM opera_backup_04_10.security_settlement_value_table
+    WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113'
+      AND business_unit = 'CFS'
+      AND security_id = :securityId
+    ORDER BY value_date
+  ]]></sql>
+
+  <!-- writer provenance: every BU, to see whether the stale date is CFS-only or table-wide -->
+  <sql id="pg-ssv-current-writer" db="postgres-dev" timeout="120" fetchSize="100" export="full"><![CDATA[
+    SELECT business_unit, value_date, created_by, updated_by,
+           min(created_timestamp) AS first_created, max(updated_timestamp) AS last_updated,
+           count(*) AS row_count
+    FROM opera.security_settlement_value_table
+    WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113'
+    GROUP BY business_unit, value_date, created_by, updated_by
+    ORDER BY business_unit, value_date
+  ]]></sql>
+
+  <sql id="pg-ssv-backup-writer" db="postgres-dev" timeout="120" fetchSize="100" export="full"><![CDATA[
+    SELECT business_unit, value_date, created_by, updated_by,
+           min(created_timestamp) AS first_created, max(updated_timestamp) AS last_updated,
+           count(*) AS row_count
+    FROM opera_backup_04_10.security_settlement_value_table
+    WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113'
+    GROUP BY business_unit, value_date, created_by, updated_by
+    ORDER BY business_unit, value_date
+  ]]></sql>
+
+  <compare id="mysql-history-vs-pg-backup" source="mysql-ssv-history-security" target="pg-ssv-security-backup">
+    <key columns="security_id,value_date"/>
+    <column name="settle_price"/>
+  </compare>
+
+  <compare id="mysql-history-vs-pg-current" source="mysql-ssv-history-security" target="pg-ssv-security-current">
+    <key columns="security_id,value_date"/>
+    <column name="settle_price"/>
+  </compare>
+
+  <compress id="bundle" file="cash-refresh-11b-ssv-writer-cfs.zip">
+    <include ref="mysql-ssv-history-security"/>
+    <include ref="pg-ssv-security-current"/>
+    <include ref="pg-ssv-security-backup"/>
+    <include ref="pg-ssv-current-writer"/>
+    <include ref="pg-ssv-backup-writer"/>
+    <include ref="mysql-history-vs-pg-backup"/>
+    <include ref="mysql-history-vs-pg-current"/>
+  </compress>
+</rules>
