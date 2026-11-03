@@ -1,0 +1,28 @@
+# compare-db-tool backlog
+
+Improvements requested while using the tool. Newest first.
+
+## Expected results in a rule: the tool says PASS or FAIL (requested 03-Nov-2026)
+
+**Problem.** After a run the user has to send the zip for someone to read the counts and decide whether they are as expected
+(example: `rrr-input-values-20261002` after `rrr-restore-20261002`, 21 comparisons, each with its own expected counts).
+In the default `sample` export mode the query rows are not even kept, so only the number of rows per query can be read.
+
+**Wanted.** A rule states what it expects; the tool checks it and prints one verdict per check and an overall PASS or FAIL
+in `SUMMARY.md` and the exit code. Examples of expectations:
+
+- a query: expected value of a column in the first row (`<expect column="only_in_reference" equals="0"/>`), a range
+  (`max="0"`, `between="73000,74500"`) or a row count (`rows="1"`);
+- a comparison: `different="0"`, `only-source="0"`, or an accepted list of keys ("these 254 rows may differ: our deliberate correction");
+- a restore: after apply, re-run named checks automatically (`<verify rule="rrr-input-values-20261002.xml"/>`).
+
+Each expectation carries a short reason text, printed with its verdict, so the summary explains itself
+("7 client names repaired by script 18: expected").
+
+**Also.** Write small query results (counts, one-row summaries) into `SUMMARY.md` even in `sample` mode, so the numbers are
+visible without `--export full`.
+
+## Restore performance note (03-Nov-2026, fixed in c1d6b2e)
+
+Key matching with `IS NOT DISTINCT FROM` prevents hash joins in PostgreSQL (nested loops, hours on 300k rows); the restore
+uses `=` on non-null keys and refuses null keys.
