@@ -21,7 +21,7 @@ final class FunnelRunner {
     record StageResult(String id, String reason, long source, long target, long onlySource, long onlyTarget, long divergesSourceOnly, long divergesTargetOnly) {}
 
     record Result(String id, boolean chain, List<StageResult> stages, int firstDivergence, long diverging, long anomalies,
-                  List<Path> files, String headline, String detail) {
+                  List<Path> files, String headline, String detail, List<String> profile) {
         /** A comparison funnel that diverges is a difference; a chain only reports. */
         boolean differs() { return !chain && diverging > 0; }
         Findings.Finding finding() {
@@ -89,22 +89,14 @@ final class FunnelRunner {
         int groupIndex = -1;
         if (chain && funnel.group != null) for (int k = 0; k < keyNames.size(); k++) if (keyNames.get(k).equalsIgnoreCase(funnel.group.strip())) groupIndex = k;
         Map<String, long[]> groupReach = new TreeMap<>(), groupDropped = new TreeMap<>();
+        List<String> profile = List.of();
         try {
             partition(funnel, queries, keyNames, sides, work);
             MemoryBudget budget = new MemoryBudget(maxPartitionMb);
             try (CSVPrinter out = mode == ExportMode.NONE ? null : CsvFiles.writer(csv, header)) {
                 for (int p = 0; p < partitions; p++) {
                     budget.nextPartition();
-                    Map<ComparisonRunner.Key, long[]> masks = new LinkedHashMap<>();
-                    try (var rows = CsvFiles.reader(work.resolve("part-" + p + ".csv"), false)) {
-                        for (var record : rows) {
-                            List<String> values = CsvFiles.values(record);
-                            ComparisonRunner.Key key = new ComparisonRunner.Key(values.subList(2, values.size()));
-                            long[] m = masks.get(key);
-                            if (m == null) { budget.row(values, key.values()); m = new long[2]; masks.put(key, m); }
-                            m[Integer.parseInt(values.get(1))] |= 1L << Integer.parseInt(values.get(0));
-                        }
-                    }
+                    Map<ComparisonRunner.Key, long[]> masks = loadMasks(work, p, budget);
                     for (var entry : masks.entrySet()) {
                         long a = entry.getValue()[0], b = entry.getValue()[1];
                         for (int i = 0; i < n; i++) {
@@ -139,6 +131,10 @@ final class FunnelRunner {
                         }
                     }
                 }
+            }
+            if (totalDiverging[0] > 0) {
+                try { profile = profile(funnel, queries, keyNames, chain, n, divS, divT, dropped, work); }
+                catch (IOException | RuntimeException e) { LOG.warn("Profile of the diverging keys of funnel {} could not be computed; the funnel result is unaffected", funnel.id, e); }
             }
         } finally {
             try { CsvFiles.deleteTree(work); } catch (IOException cleanup) { LOG.warn("Could not remove funnel temporary files at {}", work, cleanup); }
@@ -209,12 +205,138 @@ final class FunnelRunner {
                 .append(" | ").append(Expectations.cell(stages.get(i).reason())).append(" |\n");
             md.append("\n\"Diverges here\" counts a key once, at the first stage where the two sides treat it differently. Only source / only target are the state at that stage and include keys that diverged earlier.\n");
         }
+        if (!profile.isEmpty()) {
+            md.append("\n## What the ").append(chain ? "dropped" : "diverging").append(" keys have in common\n\n");
+            profile.forEach(line -> md.append(line).append('\n'));
+        }
         if (mode != ExportMode.NONE) md.append("\n`").append(csv.getFileName()).append("`: showing ").append(written[0]).append(" of ").append(totalDiverging[0])
             .append(mode == ExportMode.FULL ? " (all)" : " (at most " + cap + " per stage and side)").append(".\n");
         ComparisonRunner.writeSmallSummary(directory.resolve("SUMMARY.md"), md.toString());
         List<Path> files = new ArrayList<>(List.of(directory.resolve("SUMMARY.md")));
         if (mode != ExportMode.NONE) files.add(csv);
-        return new Result(funnel.id, chain, List.copyOf(stages), first, totalDiverging[0], anomalies, List.copyOf(files), headline, detail);
+        return new Result(funnel.id, chain, List.copyOf(stages), first, totalDiverging[0], anomalies, List.copyOf(files), headline, detail, List.copyOf(profile));
+    }
+
+    private Map<ComparisonRunner.Key, long[]> loadMasks(Path work, int partition, MemoryBudget budget) throws IOException {
+        Map<ComparisonRunner.Key, long[]> masks = new LinkedHashMap<>();
+        try (var rows = CsvFiles.reader(work.resolve("part-" + partition + ".csv"), false)) {
+            for (var record : rows) {
+                List<String> values = CsvFiles.values(record);
+                ComparisonRunner.Key key = new ComparisonRunner.Key(values.subList(2, values.size()));
+                long[] m = masks.get(key);
+                if (m == null) { budget.row(values, key.values()); m = new long[2]; masks.put(key, m); }
+                m[Integer.parseInt(values.get(1))] |= 1L << Integer.parseInt(values.get(0));
+            }
+        }
+        return masks;
+    }
+
+    /** The bucket (stage * 2 + side) a key diverges in, or -1: first differing stage in a comparison, the stage it drops out at in a chain. */
+    static int bucketOf(long a, long b, boolean chain, int stages) {
+        if (chain) {
+            if ((a & 1L) == 0) return -1;
+            int drop = Long.numberOfTrailingZeros(~a);
+            return drop >= stages ? -1 : drop * 2;
+        }
+        long diff = a ^ b;
+        if (diff == 0) return -1;
+        int first = Long.numberOfTrailingZeros(diff);
+        return first * 2 + ((a >> first & 1) == 1 ? 0 : 1);
+    }
+
+    private static final int PROFILE_MIN_KEYS = 3, PROFILE_BUCKETS = 3, PROFILE_KEY_CAP = 100_000;
+
+    /**
+     * What do the diverging keys have in common? For the first-divergence stage and the biggest other buckets, the keys are collected
+     * from a second look at the partitions, then the rows of the stage query that last held them are read and compared with all rows of
+     * that query. Columns the stage query returns beyond the key are what gets profiled.
+     */
+    private List<String> profile(Rules.Funnel funnel, Map<String, QueryRunner.Result> queries, List<String> keyNames, boolean chain, int n,
+                                 long[] divS, long[] divT, long[] dropped, Path work) throws IOException {
+        record Bucket(int id, long count) {}
+        List<Bucket> all = new ArrayList<>();
+        int first = -1;
+        for (int i = 0; i < n; i++) for (int side = 0; side < 2; side++) {
+            long count = chain ? (side == 0 ? dropped[i] : 0) : (side == 0 ? divS[i] : divT[i]);
+            if (count > 0) { all.add(new Bucket(i * 2 + side, count)); if (first < 0) first = i; }
+        }
+        final int firstStage = first;
+        List<Bucket> chosen = all.stream().filter(b -> b.count() >= PROFILE_MIN_KEYS)
+            .sorted(Comparator.comparing((Bucket b) -> b.id() / 2 == firstStage ? 0 : 1).thenComparing(Bucket::count, Comparator.reverseOrder()))
+            .limit(PROFILE_BUCKETS).toList();
+        if (chosen.isEmpty()) return List.of();
+        Map<Integer, Set<ComparisonRunner.Key>> keys = new LinkedHashMap<>();
+        chosen.forEach(b -> keys.put(b.id(), new HashSet<>()));
+        MemoryBudget budget = new MemoryBudget(maxPartitionMb);
+        for (int p = 0; p < partitions; p++) {
+            budget.nextPartition();
+            for (var entry : loadMasks(work, p, budget).entrySet()) {
+                int bucket = bucketOf(entry.getValue()[0], entry.getValue()[1], chain, n);
+                Set<ComparisonRunner.Key> set = keys.get(bucket);
+                if (set != null && set.size() < PROFILE_KEY_CAP) set.add(entry.getKey());
+            }
+        }
+        List<String> lines = new ArrayList<>();
+        for (Bucket b : chosen) {
+            int stage = b.id() / 2, side = b.id() % 2;
+            String queryId, title;
+            if (chain) {
+                queryId = funnel.stages.get(stage - 1).source;
+                title = "**Dropped at `" + funnel.stages.get(stage).id + "` (" + b.count() + " keys)**, looked up in the rows of stage `" + funnel.stages.get(stage - 1).id + "`";
+            } else {
+                queryId = side == 0 ? funnel.stages.get(stage).source : funnel.stages.get(stage).target;
+                title = "**Kept only by the " + (side == 0 ? "source" : "target") + " at `" + funnel.stages.get(stage).id + "` (" + b.count() + " keys)**, from query `" + queryId + "`";
+            }
+            lines.add(title);
+            QueryRunner.Result r = queries.get(queryId);
+            if (r == null || r.csv() == null || !Files.exists(r.csv())) { lines.add("- the rows of that query are not available"); lines.add(""); continue; }
+            int[] index = keyIndexes(r, keyNames);
+            boolean[] numeric = keyNumeric(r, index);
+            // A single key column is an identifier and says nothing; the columns of a composite key (client, product, month ...) often do.
+            Set<Integer> skip = new HashSet<>();
+            if (index.length == 1) skip.add(index[0]);
+            Findings.Dims profiled = new Findings.Dims(r.columns(), skip), everything = new Findings.Dims(r.columns(), skip);
+            if (profiled.columns.length == 0) {
+                lines.add("- the stage query returns only the key column. Add the columns you want to look at (for example product, client, status) to its SELECT and run again.");
+                lines.add("");
+                continue;
+            }
+            Set<ComparisonRunner.Key> wanted = keys.get(b.id());
+            Rules.Column plain = new Rules.Column();
+            try (var rows = CsvFiles.reader(r.csv(), true)) {
+                for (var row : rows) {
+                    List<String> values = CsvFiles.values(row);
+                    List<String> key = new ArrayList<>(index.length);
+                    for (int k = 0; k < index.length; k++) key.add(Values.normalize(values.get(index[k]), plain, numeric[k]));
+                    everything.add(values);
+                    if (wanted.contains(new ComparisonRunner.Key(key))) profiled.add(values);
+                }
+            }
+            String subject = chain ? "keys that dropped out here" : "keys that diverge here";
+            var found = Findings.concentrate(subject, "all keys of that query", profiled, everything, profiled.rows, PROFILE_MIN_KEYS, 0.5);
+            if (found.isEmpty()) lines.add("- no single value stands out among " + String.join(", ", Arrays.stream(profiled.names).limit(8).toList())
+                + (profiled.names.length > 8 ? ", ..." : ""));
+            else found.forEach(f -> lines.add("- " + f.title()));
+            if (profiled.rows < b.count()) lines.add("- " + profiled.rows + " of the " + b.count() + " keys were found in that query's rows"
+                + (wanted.size() >= PROFILE_KEY_CAP ? " (the profile uses the first " + Progress.count(PROFILE_KEY_CAP) + " keys)" : ""));
+            lines.add("");
+        }
+        return lines;
+    }
+
+    private static int[] keyIndexes(QueryRunner.Result r, List<String> keyNames) {
+        int[] index = new int[keyNames.size()];
+        for (int k = 0; k < index.length; k++) {
+            index[k] = -1;
+            for (int c = 0; c < r.columns().size(); c++) if (r.columns().get(c).name().equalsIgnoreCase(keyNames.get(k))) index[k] = c;
+        }
+        return index;
+    }
+
+    private static boolean[] keyNumeric(QueryRunner.Result r, int[] index) {
+        boolean[] numeric = new boolean[index.length];
+        for (int k = 0; k < index.length; k++) numeric[k] = index[k] >= 0 && r.columns().get(index[k]).numeric();
+        return numeric;
     }
 
     /** Stage membership as the stage ids the key survived, compressed to a range when it is a prefix. */

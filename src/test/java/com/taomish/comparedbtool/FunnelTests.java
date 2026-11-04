@@ -223,4 +223,106 @@ class FunnelTests {
         String pairs = rules.parameters.stream().filter(p -> p.name.equals("pairs")).findFirst().orElseThrow().value;
         assertThat(pairs.split(",")).hasSize(130).allMatch(p -> p.split("\\|").length == 3);
     }
+
+    private void regionTables() throws Exception {
+        String url = "jdbc:h2:mem:" + UUID.randomUUID() + ";DB_CLOSE_DELAY=-1";
+        try (Connection c = DriverManager.getConnection(url, "sa", ""); Statement s = c.createStatement()) {
+            s.execute("CREATE TABLE lg(id INTEGER, region VARCHAR(10), a INTEGER)");
+            s.execute("CREATE TABLE nw(id INTEGER, region VARCHAR(10), a INTEGER)");
+            for (int id = 1; id <= 10; id++) {
+                String region = id >= 3 && id <= 5 ? "EU" : "US";                      // the three keys that diverge are the only EU ones
+                s.execute("INSERT INTO lg VALUES (" + id + ",'" + region + "',1)");
+                s.execute("INSERT INTO nw VALUES (" + id + ",'" + region + "'," + (id >= 3 && id <= 5 ? 0 : 1) + ")");
+            }
+        }
+        settings.getDatasources().get("test").setUrl(url);
+    }
+
+    @Test void theProfileSaysWhatTheDivergingKeysHaveInCommon() throws Exception {
+        regionTables();
+        var outcome = run("""
+            <sql id="pl1" db="test">SELECT id, region FROM lg</sql><sql id="pn1" db="test">SELECT id, region FROM nw</sql>
+            <sql id="pl2" db="test">SELECT id, region FROM lg WHERE a = 1</sql><sql id="pn2" db="test">SELECT id, region FROM nw WHERE a = 1</sql>
+            <funnel id="prof" key="id"><stage id="s1" source="pl1" target="pn1"/><stage id="s2" source="pl2" target="pn2"/></funnel>""");
+        String md = Files.readString(outcome.directory().resolve("prof/SUMMARY.md"));
+        assertThat(md).contains("## What the diverging keys have in common")
+            .contains("**Kept only by the source at `s2` (3 keys)**, from query `pl2`")
+            .contains("- 3 of 3 keys that diverge here (100%) have REGION = `EU`, against 30.0% of all keys of that query");
+        assertThat(Files.readString(outcome.directory().resolve("FINDINGS.md"))).contains("What the keys have in common").contains("REGION = `EU`");
+    }
+
+    @Test void theProfileOfAChainLooksAtTheStageTheKeysCameFrom() throws Exception {
+        String url = "jdbc:h2:mem:" + UUID.randomUUID() + ";DB_CLOSE_DELAY=-1";
+        try (Connection c = DriverManager.getConnection(url, "sa", ""); Statement s = c.createStatement()) {
+            s.execute("CREATE TABLE t(id INTEGER, region VARCHAR(10), a INTEGER)");
+            for (int id = 1; id <= 10; id++) s.execute("INSERT INTO t VALUES (" + id + ",'" + (id >= 7 ? "LATAM" : "US") + "'," + (id <= 6 ? 1 : 0) + ")");
+        }
+        settings.getDatasources().get("test").setUrl(url);
+        var outcome = run("""
+            <sql id="c1" db="test">SELECT id, region FROM t</sql><sql id="c2" db="test">SELECT id, region FROM t WHERE a = 1</sql>
+            <funnel id="cp" key="id" mode="chain"><stage id="s1" source="c1"/><stage id="s2" source="c2"/></funnel>""");
+        String md = Files.readString(outcome.directory().resolve("cp/SUMMARY.md"));
+        assertThat(md).contains("## What the dropped keys have in common").contains("**Dropped at `s2` (4 keys)**, looked up in the rows of stage `s1`")
+            .contains("- 4 of 4 keys that dropped out here (100%) have REGION = `LATAM`, against 40.0% of all keys of that query");
+    }
+
+    @Test void whenNothingStandsOutOrThereAreNoExtraColumnsItSaysSo() throws Exception {
+        var keyOnly = run(COMPARE_FUNNEL);                              // stage queries return only id
+        assertThat(Files.readString(keyOnly.directory().resolve("deals/SUMMARY.md"))).contains("the stage query returns only the key column");
+        String url = "jdbc:h2:mem:" + UUID.randomUUID() + ";DB_CLOSE_DELAY=-1";
+        try (Connection c = DriverManager.getConnection(url, "sa", ""); Statement s = c.createStatement()) {
+            s.execute("CREATE TABLE lg(id INTEGER, region VARCHAR(10), a INTEGER)");
+            s.execute("CREATE TABLE nw(id INTEGER, region VARCHAR(10), a INTEGER)");
+            for (int id = 1; id <= 10; id++) {                          // keys 2, 3, 4 diverge: EU, US, EU - mixed
+                s.execute("INSERT INTO lg VALUES (" + id + ",'" + (id % 2 == 0 ? "EU" : "US") + "',1)");
+                s.execute("INSERT INTO nw VALUES (" + id + ",'" + (id % 2 == 0 ? "EU" : "US") + "'," + (id >= 2 && id <= 4 ? 0 : 1) + ")");
+            }
+        }
+        settings.getDatasources().get("test").setUrl(url);
+        var mixed = run("""
+            <sql id="ml1" db="test">SELECT id, region FROM lg</sql><sql id="mn1" db="test">SELECT id, region FROM nw</sql>
+            <sql id="ml2" db="test">SELECT id, region FROM lg WHERE a = 1</sql><sql id="mn2" db="test">SELECT id, region FROM nw WHERE a = 1</sql>
+            <funnel id="mixed" key="id"><stage id="s1" source="ml1" target="mn1"/><stage id="s2" source="ml2" target="mn2"/></funnel>""");
+        assertThat(Files.readString(mixed.directory().resolve("mixed/SUMMARY.md"))).contains("- no single value stands out among REGION");
+    }
+
+    @Test void bucketOfNamesTheStageAndSide() {
+        assertThat(FunnelRunner.bucketOf(0b111, 0b111, false, 3)).isEqualTo(-1);
+        assertThat(FunnelRunner.bucketOf(0b111, 0b011, false, 3)).isEqualTo(2 * 2);         // stage 2, source only
+        assertThat(FunnelRunner.bucketOf(0b011, 0b111, false, 3)).isEqualTo(2 * 2 + 1);     // stage 2, target only
+        assertThat(FunnelRunner.bucketOf(0b001, 0b011, false, 3)).isEqualTo(1 * 2 + 1);     // stage 1, target only
+        assertThat(FunnelRunner.bucketOf(0b011, 0, true, 3)).isEqualTo(2 * 2);              // chain: drops at stage 2
+        assertThat(FunnelRunner.bucketOf(0b111, 0, true, 3)).isEqualTo(-1);                 // reaches the end
+        assertThat(FunnelRunner.bucketOf(0b110, 0, true, 3)).isEqualTo(-1);                 // never entered the first stage
+    }
+
+    @Test void theColumnsOfACompositeKeyAreProfiledToo() throws Exception {
+        regionTables();
+        var outcome = run("""
+            <sql id="kl1" db="test">SELECT region, id FROM lg</sql><sql id="kn1" db="test">SELECT region, id FROM nw</sql>
+            <sql id="kl2" db="test">SELECT region, id FROM lg WHERE a = 1</sql><sql id="kn2" db="test">SELECT region, id FROM nw WHERE a = 1</sql>
+            <funnel id="comp2" key="region,id"><stage id="s1" source="kl1" target="kn1"/><stage id="s2" source="kl2" target="kn2"/></funnel>""");
+        String md = Files.readString(outcome.directory().resolve("comp2/SUMMARY.md"));
+        assertThat(md).contains("have REGION = `EU`").doesNotContain("only the key column");
+    }
+
+    @Test void aClearMajorityIsEnoughForTheProfileWhenItIsFarAboveTheNormalRate() throws Exception {
+        String url = "jdbc:h2:mem:" + UUID.randomUUID() + ";DB_CLOSE_DELAY=-1";
+        try (Connection c = DriverManager.getConnection(url, "sa", ""); Statement s = c.createStatement()) {
+            s.execute("CREATE TABLE lg(id INTEGER, region VARCHAR(10), a INTEGER)");
+            s.execute("CREATE TABLE nw(id INTEGER, region VARCHAR(10), a INTEGER)");
+            for (int id = 1; id <= 20; id++) {                          // EU is 5 of 20 = 25%; keys 1-8 diverge: 5 EU and 3 US
+                String region = id <= 5 ? "EU" : "US";
+                s.execute("INSERT INTO lg VALUES (" + id + ",'" + region + "',1)");
+                s.execute("INSERT INTO nw VALUES (" + id + ",'" + region + "'," + (id <= 8 ? 0 : 1) + ")");
+            }
+        }
+        settings.getDatasources().get("test").setUrl(url);
+        var outcome = run("""
+            <sql id="al1" db="test">SELECT id, region FROM lg</sql><sql id="an1" db="test">SELECT id, region FROM nw</sql>
+            <sql id="al2" db="test">SELECT id, region FROM lg WHERE a = 1</sql><sql id="an2" db="test">SELECT id, region FROM nw WHERE a = 1</sql>
+            <funnel id="maj" key="id"><stage id="s1" source="al1" target="an1"/><stage id="s2" source="al2" target="an2"/></funnel>""");
+        assertThat(Files.readString(outcome.directory().resolve("maj/SUMMARY.md")))
+            .contains("- 5 of 8 keys that diverge here (63%) have REGION = `EU`, against 25.0% of all keys of that query");
+    }
 }

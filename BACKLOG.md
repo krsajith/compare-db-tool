@@ -15,7 +15,7 @@ console log level WARN by default (files keep everything). **Not done:** a progr
 
 ## DONE 04-Nov-2026: `<funnel>` with first-divergence detection (compare and chain modes; see README, "Funnels")
 
-**Not done:** a profile of the diverging keys by the other columns the stage queries return (who, which product); generating funnels from code.
+**Not done:** generating funnels from code; profile of the comparison findings by funnel stage.
 
 ## DONE 04-Nov-2026: Interactive menu (arrow keys, "/" commands, history, confirmations; see README)
 

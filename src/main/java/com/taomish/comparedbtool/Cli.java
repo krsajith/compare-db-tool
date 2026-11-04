@@ -395,6 +395,7 @@ public final class Cli {
             if (finding == null) continue;
             any = true;
             md.append("\n## funnel ").append(funnel.id()).append("\n\n").append(Findings.line(finding, 900)).append("\n");
+            if (!funnel.profile().isEmpty()) { md.append("\nWhat the keys have in common:\n\n"); funnel.profile().forEach(l -> md.append(l).append("\n")); }
             all.add(new Ranked("funnel " + funnel.id(), finding));
         }
         if (!any) return top;

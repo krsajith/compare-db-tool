@@ -44,7 +44,7 @@ final class Findings {
     private final List<Ts> timestamps = new ArrayList<>();
 
     // value distributions
-    private static final class Dims {
+    static final class Dims {
         final int[] columns; final String[] names; final List<Map<String, Long>> counts = new ArrayList<>(); final boolean[] overflow;
         long rows;
         Dims(List<QueryRunner.Column> all, Set<Integer> skip) {
@@ -294,8 +294,16 @@ final class Findings {
     }
 
     private void concentration(List<Finding> out, String category, Dims cat, Dims base, long total, String side) {
-        if (total < 5) return;
+        out.addAll(concentrate(category + " rows", "all " + side + " rows", cat, base, total, 5, 0.8));
+    }
+
+    /**
+     * Which value of which column do most of the rows in {@code cat} share, compared with how common that value is in {@code base}?
+     * Used for unmatched rows of a comparison and for the keys that diverge in a funnel.
+     */
+    static List<Finding> concentrate(String subject, String baseName, Dims cat, Dims base, long total, int minimumRows, double minimumShare) {
         List<Finding> found = new ArrayList<>();
+        if (total < minimumRows) return found;
         for (int i = 0; i < cat.columns.length; i++) {
             if (cat.overflow[i]) continue;
             Map<String, Long> counts = cat.counts.get(i);
@@ -304,20 +312,20 @@ final class Findings {
             double share = (double) best.getValue() / total;
             double baseShare = -1;
             if (!base.overflow[i] && base.rows > 0) baseShare = (double) base.counts.get(i).getOrDefault(best.getKey(), 0L) / base.rows;
-            boolean informative = baseShare >= 0 ? share >= 0.8 && share - baseShare >= 0.3 && share >= 2 * baseShare : share >= 0.9;
+            boolean informative = baseShare >= 0 ? share >= minimumShare && share - baseShare >= 0.3 && share >= 2 * baseShare : share >= Math.max(0.9, minimumShare);
             if (!informative) continue;
             String name = cat.names[i];
-            String sentence = best.getValue() + " of " + total + " " + category + " rows (" + Math.round(share * 100) + "%) have " + name + " = `" + best.getKey() + "`"
-                + (baseShare >= 0 ? ", against " + String.format(Locale.ROOT, "%.1f", baseShare * 100) + "% of all " + side + " rows" : "");
+            String sentence = best.getValue() + " of " + total + " " + subject + " (" + Math.round(share * 100) + "%) have " + name + " = `" + best.getKey() + "`"
+                + (baseShare >= 0 ? ", against " + String.format(Locale.ROOT, "%.1f", baseShare * 100) + "% of " + baseName : "");
             double lift = baseShare > 0 ? Math.min(5, share / baseShare) / 5 : 1;
             found.add(new Finding("concentration", sentence,
-                counts.size() == 1 ? "Every " + category + " row shares this value; look at what that value stands for (a product, a user, a batch, a date)."
+                counts.size() == 1 ? "All of them share this value; look at what that value stands for (a product, a user, a batch, a date)."
                     : "The other values: " + counts.entrySet().stream().filter(e -> !e.getKey().equals(best.getKey())).sorted(Map.Entry.<String, Long>comparingByValue().reversed())
                         .limit(3).map(e -> "`" + e.getKey() + "` " + e.getValue()).toList() + ".",
                 best.getValue(), total, 60.0 * share * (0.5 + 0.5 * lift)));
         }
         found.sort(Comparator.comparingDouble(Finding::score).reversed());
-        out.addAll(found.subList(0, Math.min(3, found.size())));
+        return new ArrayList<>(found.subList(0, Math.min(3, found.size())));
     }
 
     private void numeric(List<Finding> out) {

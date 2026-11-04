@@ -163,6 +163,12 @@ Each stage is a pair of ordinary `<sql>` queries that return the **keys that sur
   Up to 30 stages. A stage query that failed, is PARTIAL or is an `engine="db"` input skips the funnel and is listed in `MANUAL_ACTIONS.md`.
   Matching uses the same disk partitions and memory budget as comparisons (`--partitions`, `--max-partition-mb`).
   A stage need not be a subset of the one before: the first differing stage is reported either way.
+- **What the diverging keys have in common:** the stage queries may return more than the key (client, product, status, a date ...). For the first-divergence
+  stage and the biggest other stages (at most three, each with at least three keys) the tool reads those columns for the diverging keys only and
+  reports what stands out, for example "29 of 31 keys that diverge here (94%) have product = `CM CT`, against 12.0% of all keys of that query". A value is
+  reported when it covers at least half of the keys and is at least twice as common as in the whole query. In a chain the keys are looked up in the rows of the
+  stage before the one they dropped out at. With a single key column that column is an identifier and is left out; with a composite key its columns are profiled too.
+  If the stage query returns only the key, the summary says so. The profile reads at most the first 100,000 keys per stage; it is in `SUMMARY.md` and `FINDINGS.md`.
 - See `rules/funnel.example.xml`.
 
 ## Build commands
