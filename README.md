@@ -1,5 +1,7 @@
 # compare-db-tool
 
+> **Using the tool, or writing rules with an AI agent? Start with [HOW-TO-USE.md](HOW-TO-USE.md)**: the working loop, every flag and rule element with examples, recipes and error fixes. This README is the full reference.
+
 Java 21 / Spring Boot CLI for XML-driven SQL execution, CSV export, key-based comparison and ZIP packaging.
 Each `<sql db="...">` references an independently configured JDBC datasource. Queries can use the same database,
 two instances of the same database type, or different database types. MySQL and PostgreSQL drivers are included.
