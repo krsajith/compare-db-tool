@@ -6,7 +6,7 @@ import java.util.Map;
 
 /** Everything the menu has chosen for one run; turns into the same Options the command line would build. */
 final class RunPlan {
-    enum Mode { RUN, VALIDATE, PREVIEW, APPLY }
+    enum Mode { RUN, VALIDATE, CHECK, PREVIEW, APPLY }
 
     final RuleCatalog.Entry entry;
     Mode mode;
@@ -30,6 +30,7 @@ final class RunPlan {
         o.out = out;
         o.allowProd = allowProd;
         o.validate = mode == Mode.VALIDATE;
+        o.check = mode == Mode.CHECK;
         o.apply = mode == Mode.APPLY;
         switch (entry.kind()) {
             case COMPARE -> {
@@ -61,6 +62,7 @@ final class RunPlan {
             if (limit > 0) c.append(" --limit ").append(limit);
         }
         if (mode == Mode.VALIDATE) c.append(" --validate");
+        if (mode == Mode.CHECK) c.append(" --check");
         if (mode == Mode.APPLY) c.append(" --apply");
         if (allowProd) c.append(" --allow-prod");
         return c.toString();
@@ -72,6 +74,7 @@ final class RunPlan {
         return switch (mode) {
             case RUN -> entry.kind() == RuleCatalog.Kind.TEMPLATE_EXPORT ? "export" : "run";
             case VALIDATE -> "validate only";
+            case CHECK -> "check against the databases";
             case PREVIEW -> "preview";
             case APPLY -> "APPLY";
         };

@@ -39,8 +39,11 @@ public final class QueryRunner implements AutoCloseable {
     private final boolean allowProd;
     private final Map<String, HikariDataSource> pools = new ConcurrentHashMap<>();
     private final Map<String, HikariDataSource> tempPools = new ConcurrentHashMap<>();
-    public QueryRunner(DatasourceSettings settings, boolean allowProd) {
-        this.settings = settings; this.allowProd = allowProd;
+    private final long connectTimeoutMs;
+    public QueryRunner(DatasourceSettings settings, boolean allowProd) { this(settings, allowProd, 30_000); }
+    /** {@code connectTimeoutMs}: how long to wait for a connection before giving up (a check should not wait as long as a run). */
+    public QueryRunner(DatasourceSettings settings, boolean allowProd, long connectTimeoutMs) {
+        this.settings = settings; this.allowProd = allowProd; this.connectTimeoutMs = connectTimeoutMs;
         settings.getDatasources().values().forEach(d -> SecretRedactor.register(d.getPassword()));
     }
 
@@ -80,7 +83,7 @@ public final class QueryRunner implements AutoCloseable {
             config.setAutoCommit(false);
             config.setMaximumPoolSize(1);
             config.setMinimumIdle(0);
-            config.setConnectionTimeout(30_000);
+            config.setConnectionTimeout(connectTimeoutMs);
             config.setInitializationFailTimeout(-1);
             if (!tempTables && definition.getUrl().startsWith("jdbc:postgresql:"))
                 config.setConnectionInitSql("SET default_transaction_read_only = on");
@@ -196,6 +199,63 @@ public final class QueryRunner implements AutoCloseable {
         if (mode != ExportMode.NONE) files.add(sqlFile);
         files.add(meta);
         return new Result(rule.id, csv, List.copyOf(columns), rows[0], partial[0], millis, List.copyOf(files));
+    }
+
+    /** What the database says about a query without running it: its columns and its plan. */
+    public record Described(List<Column> columns, String plan, Long estimatedRows) {}
+
+    private static final java.util.regex.Pattern PLAN_ROWS = java.util.regex.Pattern.compile("\\brows=(\\d+)");
+
+    /** PostgreSQL puts the planner's row estimate on the first line of the plan ("... rows=9300 width=..."); other databases give none. */
+    static Long estimatedRows(String plan) {
+        if (plan == null) return null;
+        String first = plan.lines().findFirst().orElse("");
+        var m = PLAN_ROWS.matcher(first);
+        return m.find() ? Long.valueOf(m.group(1)) : null;
+    }
+
+    /**
+     * Asks the database to describe the statement and to EXPLAIN it, without executing it: missing tables or columns, syntax and type
+     * errors come back as exceptions, exactly as they would at run time. Never EXPLAIN ANALYZE.
+     */
+    public Described describe(Rules.Sql rule, Map<String, Object> parameters) {
+        String sql = SqlGuard.validate(rule.text);
+        TempTablePolicy.validate(rule, settings);
+        validateParameters(rule, parameters);
+        int timeout = Math.max(1, Math.min(rule.timeout, 30));
+        var template = new NamedParameterJdbcTemplate(datasource(rule.db, false));
+        List<Column> columns = template.execute(sql, parameters, (PreparedStatementCallback<List<Column>>) statement -> {
+            try {
+                statement.setQueryTimeout(timeout);
+                ResultSetMetaData metadata = statement.getMetaData();
+                if (metadata == null) return null;
+                List<Column> described = new ArrayList<>();
+                Set<String> labels = new HashSet<>();
+                for (int index = 1; index <= metadata.getColumnCount(); index++) {
+                    String label = metadata.getColumnLabel(index);
+                    if (label == null || label.isBlank() || !labels.add(label.toLowerCase(Locale.ROOT)))
+                        throw new ToolException("Query " + rule.id + " has empty/duplicate column labels; use SQL aliases.");
+                    described.add(new Column(label, metadata.getColumnType(index)));
+                }
+                return described;
+            } finally { statement.getConnection().rollback(); }
+        });
+        String plan = template.execute("EXPLAIN " + sql, parameters, (PreparedStatementCallback<String>) statement -> {
+            try {
+                statement.setQueryTimeout(timeout);
+                StringBuilder text = new StringBuilder();
+                try (ResultSet result = statement.executeQuery()) {
+                    int count = result.getMetaData().getColumnCount();
+                    while (result.next() && text.length() < 4000) {
+                        List<String> cells = new ArrayList<>();
+                        for (int i = 1; i <= count; i++) cells.add(Objects.toString(result.getString(i), ""));
+                        text.append(String.join(" | ", cells)).append('\n');
+                    }
+                }
+                return text.toString();
+            } finally { statement.getConnection().rollback(); }
+        });
+        return new Described(columns, plan, estimatedRows(plan));
     }
 
     /** Publishes an alias without re-executing the SQL; per-rule row caps and export settings still apply. */

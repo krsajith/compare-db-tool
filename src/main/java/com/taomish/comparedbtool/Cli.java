@@ -38,6 +38,7 @@ public final class Cli {
         --restore FILE        Restore table rows from reference tables using a JSON rule (preview by default);
                               step "expect" counts are checked, "verify" rules run after --apply
         --apply               Commit template replacement or data restore; otherwise roll back the preview
+        --check               Ask the databases to EXPLAIN every query and describe its columns, then check the rule against them (nothing is executed or read)
         --quiet               No progress messages on the console (the log files and outputs are unchanged)
         --menu                Interactive menu (also the default when started without arguments in a terminal)
         --help                Show this help
@@ -64,7 +65,7 @@ public final class Cli {
         public long limit;
         public boolean validate, datasources, allowProd, help;
         /** Interactive menu; menuRequested = asked for with --menu (plain prompts are allowed without a terminal). */
-        public boolean menu, menuRequested, quiet;
+        public boolean menu, menuRequested, quiet, check;
     }
     private final DatasourceSettings settings;
     public Cli(DatasourceSettings settings) { this.settings = settings; }
@@ -122,6 +123,7 @@ public final class Cli {
                 } catch (IllegalArgumentException e) { throw new ToolException("Invalid value for " + name); }
             } else switch (argument) {
                 case "--quiet" -> options.quiet = true;
+                case "--check" -> options.check = true;
                 case "--menu" -> { options.menu = true; options.menuRequested = true; }
                 case "--validate" -> options.validate = true;
                 case "--apply" -> options.apply = true;
@@ -144,6 +146,9 @@ public final class Cli {
         if (options.restore != null && (options.rules != null || options.templateUpload != null || options.templateExport != null
             || options.datasources || !options.parameters.isEmpty()))
             throw new ToolException("Restore cannot be combined with comparison rules, templates, datasource listing or parameters.");
+        if (options.check && (options.rules == null || options.restore != null || options.templateUpload != null || options.templateExport != null
+            || options.validate || options.apply || options.datasources))
+            throw new ToolException("--check needs --rules FILE and cannot be combined with --validate, --apply, --restore, template options or --datasources.");
         if (options.apply && ((options.templateUpload == null && options.restore == null) || options.validate))
             throw new ToolException("--apply requires --template-upload or --restore and cannot be combined with --validate.");
         if (!options.help && !options.menu && !options.datasources && options.rules == null && options.templateUpload == null && options.templateExport == null
@@ -177,7 +182,7 @@ public final class Cli {
     public Outcome executeRules(Options options) throws IOException {
         LOG.info("Loading rules: {}", options.rules.toAbsolutePath().normalize());
         Rules rules = RuleLoader.load(options.rules);
-        RuleLoader.validate(rules, settings, options.validate);
+        RuleLoader.validate(rules, settings, options.validate || options.check);
         Map<String, Object> parameters = RuleLoader.parameters(rules, options.parameters);
         RuleLoader.checks(rules, parameters);                                   // before anything connects, also with --validate
         if (options.validate) {
@@ -194,6 +199,11 @@ public final class Cli {
         if (name.length() > 60) name = name.substring(0, 60);
         Path directory = Files.createTempDirectory(base, name + "-" + LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss")) + "-");
         LOG.info("Output: {}", directory);
+        if (options.check) {
+            Progress.get().quiet(options.quiet);
+            int exit = LiveCheck.run(rules, parameters, settings, options.allowProd, directory);
+            return new Outcome(exit, directory, new Expectations.Report(List.of(), Set.of()));
+        }
         Progress.get().quiet(options.quiet);
         final long startedNanos = System.nanoTime();
         Progress.get().line("compare-db-tool: " + rules.name + " - " + rules.queries.size() + (rules.queries.size() == 1 ? " query" : " queries") + " on "

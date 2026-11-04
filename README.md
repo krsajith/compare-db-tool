@@ -33,6 +33,30 @@ compare-db-tool: done in 2 min 36 s - exit 1 (differences, or an expectation was
 - `--quiet` turns these messages off (warnings and errors still show). The console otherwise shows warnings and errors only; to see every log line as before, set
   `logging.console.level=INFO` (or `DEBUG`) in `config/logging.properties`, or pass it on the command line with two leading dashes.
 
+## Checking a rule against the databases before the long run
+
+`--validate` checks the rule without connecting. `--check` goes one step further: it asks each database about every query and then checks the rule against the answers. **Nothing is executed and no data is read.**
+
+```powershell
+.\compare.ps1 --rules rules\trade-check.xml --check
+```
+
+```
+  OK    legacy-trades (mysql-oprdb02): 5 columns
+  OK    new-trades (postgres-dev): 5 columns, the planner expects about 9,300 rows
+  FAIL  lookup (postgres-dev): relation "opera.tradez" does not exist
+  FAIL  compare trades: key column(s) [trade_id] are not in both queries. legacy-trades: [ID, AMOUNT]; new-trades: [TRADE_ID, AMOUNT]
+  FAIL  funnel deals, stage s2: query l2 has no key column(s) [deal_id]; its columns: [id, a]
+```
+
+- **Per query:** the database prepares the statement and describes its columns, and runs `EXPLAIN` (never `EXPLAIN ANALYZE`). A missing table or column, a syntax error or a type mismatch comes back with the database's own message, exactly as it would at run time.
+  On PostgreSQL the planner's row estimate is shown, with a warning above 5 million rows (estimates can be off).
+- **Against the real columns:** key columns of comparisons (column mappings honoured), funnels and presence matrices; the column in every `:alias.column` / `:alias.column[]` (including a comparison's `:only-source`, `:only-target`, `:different`, which have the
+  source or target query's columns); and columns named in `<expect column="...">`.
+- **Reachability:** an unreachable datasource is reported once (the wait is 10 seconds, `-Dcompare.check.connect.ms=N` changes it) and its other queries are skipped; a production datasource still needs `--allow-prod`.
+- **Not checked:** temp-table queries (they are checked when they run), `engine="db"` types, and the values that queries get from other queries (a placeholder stands in for them, so a query that uses another query's values can show a WARN when the database needs the type).
+- Exit code 2 if anything would fail, 0 otherwise. `CHECK.md` in the output folder has the same list, problems first. In the menu: "Switch to: check against the databases".
+
 ## Interactive menu
 
 `.\compare.ps1` with no arguments (or `--menu`) opens a menu. Everything you type on the command line still works unchanged.

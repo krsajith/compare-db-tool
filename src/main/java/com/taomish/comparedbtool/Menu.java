@@ -265,6 +265,9 @@ final class Menu {
         while (true) {
             List<Ui.Item> items = new ArrayList<>();
             items.add(new Ui.Item("go", goLabel(plan), ""));
+            if (kind == RuleCatalog.Kind.COMPARE)
+                items.add(new Ui.Item("check", plan.mode == RunPlan.Mode.CHECK ? "Mode: check against the databases" : "Switch to: check against the databases",
+                    plan.mode == RunPlan.Mode.CHECK ? "EXPLAIN only, nothing is read (select to switch back)" : "asks each database to EXPLAIN every query and describe its columns before the long run"));
             if (kind == RuleCatalog.Kind.COMPARE || kind == RuleCatalog.Kind.RESTORE)
                 items.add(new Ui.Item("validate", plan.mode == RunPlan.Mode.VALIDATE ? "Mode: validate only" : "Mode: " + plan.modeLabel(),
                     plan.mode == RunPlan.Mode.VALIDATE ? "checks the rule, opens no connection (select to switch back)" : "select to validate only, without connecting"));
@@ -281,6 +284,7 @@ final class Menu {
             switch (choice) {
                 case "go" -> { if (execute(info, plan)) return; }
                 case "validate" -> plan.mode = plan.mode == RunPlan.Mode.VALIDATE ? RunPlan.defaultMode(kind) : RunPlan.Mode.VALIDATE;
+                case "check" -> plan.mode = plan.mode == RunPlan.Mode.CHECK ? RunPlan.defaultMode(kind) : RunPlan.Mode.CHECK;
                 case "params" -> editParams(info, plan);
                 case "export" -> {
                     String m = ui.pick("Export mode", List.of(new Ui.Item("none", "none", "counts and summaries only"),
@@ -310,6 +314,7 @@ final class Menu {
         return switch (plan.mode) {
             case RUN -> plan.entry.kind() == RuleCatalog.Kind.TEMPLATE_EXPORT ? "Export now" : "Run now";
             case VALIDATE -> "Validate now";
+            case CHECK -> "Check now (nothing is read)";
             case PREVIEW -> "Preview now (changes nothing)";
             case APPLY -> "APPLY now";
         };
@@ -365,7 +370,7 @@ final class Menu {
             plan.allowProd = true;
         }
         if (plan.mode == RunPlan.Mode.APPLY && !ui.typed("APPLY commits the changes shown by the preview.", "APPLY")) return false;
-        if (plan.limit > 0 && !ui.confirm("A row limit of " + plan.limit + " makes the results PARTIAL (exit 2). Run anyway?", false)) return false;
+        if (plan.limit > 0 && plan.mode != RunPlan.Mode.CHECK && !ui.confirm("A row limit of " + plan.limit + " makes the results PARTIAL (exit 2). Run anyway?", false)) return false;
         List<String> changes = changed(info, plan);
         if (!changes.isEmpty()) {
             ui.print("Parameter values that differ from the rule's declared ones:");
