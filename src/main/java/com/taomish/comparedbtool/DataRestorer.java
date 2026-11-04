@@ -177,6 +177,16 @@ public final class DataRestorer {
         }
     }
 
+    /** Reads and validates a restore rule file (used to check what a rule suggests, without connecting). */
+    static Rule load(Path file) {
+        try {
+            Rule rule = JSON.readValue(Files.readString(file), Rule.class);
+            validate(rule);
+            return rule;
+        } catch (ToolException e) { throw new ToolException("Restore rule " + file.getFileName() + ": " + e.getMessage(), e); }
+        catch (Exception e) { throw new ToolException("Cannot read restore rule " + file + ": " + e.getMessage(), e); }
+    }
+
     static void validate(Rule rule) {
         if (rule == null || rule.name == null || rule.name.isBlank()) throw new ToolException("Restore rule needs a name");
         if (rule.db == null || rule.db.isBlank()) throw new ToolException("Restore rule needs db");

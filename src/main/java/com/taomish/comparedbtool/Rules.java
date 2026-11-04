@@ -29,6 +29,8 @@ public class Rules {
     @JacksonXmlProperty(localName = "check") public List<Check> checks = new ArrayList<>();
     @JacksonXmlElementWrapper(useWrapping = false)
     @JacksonXmlProperty(localName = "presence") public List<Presence> presences = new ArrayList<>();
+    @JacksonXmlElementWrapper(useWrapping = false)
+    @JacksonXmlProperty(localName = "suggest") public List<Suggest> suggestions = new ArrayList<>();
 
     public static class Param {
         @JacksonXmlProperty(isAttribute = true) public String name;
@@ -137,6 +139,13 @@ public class Rules {
         // presence ref: keys that are not in every source, and keys that are
         @JacksonXmlProperty(isAttribute = true) public String mismatched;
         @JacksonXmlProperty(isAttribute = true, localName = "in-all") public String inAll;
+    }
+
+    /** When the condition holds after the run, suggest previewing a restore rule (a --restore JSON next to this file). The tool never restores by itself. */
+    public static class Suggest {
+        @JacksonXmlProperty(isAttribute = true) public String restore;
+        @JacksonXmlProperty(isAttribute = true) public String when;
+        @JacksonXmlProperty(isAttribute = true) public String reason;
     }
 
     /** Which of several sources has each key: counts per combination, examples, and what the mismatching keys have in common. */

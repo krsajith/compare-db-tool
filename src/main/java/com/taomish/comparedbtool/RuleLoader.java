@@ -67,6 +67,7 @@ public final class RuleLoader {
                             case "funnel" -> rules.funnels.add(mapper.readValue(reader, Rules.Funnel.class));
                             case "check" -> rules.checks.add(mapper.readValue(reader, Rules.Check.class));
                             case "presence" -> rules.presences.add(mapper.readValue(reader, Rules.Presence.class));
+                            case "suggest" -> rules.suggestions.add(mapper.readValue(reader, Rules.Suggest.class));
                             case "parameters" -> {
                                 if (parametersSeen) throw new ToolException("Use only one <parameters> block.");
                                 parametersSeen = true;
@@ -123,7 +124,16 @@ public final class RuleLoader {
         validate(rules, settings, true);
     }
 
-    public static void validate(Rules rules, DatasourceSettings settings, boolean checkQueries) {
+    public static void validate(Rules rules, DatasourceSettings settings, boolean checkQueries) { validate(rules, settings, checkQueries, null); }
+
+    /** {@code rulesDirectory}: where the rule file is, so restore rules named in <suggest> can be found and checked (null: not checked). */
+    public static void validate(Rules rules, DatasourceSettings settings, boolean checkQueries, Path rulesDirectory) {
+        validateStructure(rules, settings, checkQueries);
+        if (rules.suggestions == null) rules.suggestions = new ArrayList<>();
+        Suggestions.validate(rules, rulesDirectory, settings, checkQueries);
+    }
+
+    private static void validateStructure(Rules rules, DatasourceSettings settings, boolean checkQueries) {
         if (rules.queries == null || rules.queries.isEmpty()) throw new ToolException("Rules need at least one <sql>.");
         Set<String> ids = new HashSet<>();
         Map<String, Rules.Sql> queries = new HashMap<>();

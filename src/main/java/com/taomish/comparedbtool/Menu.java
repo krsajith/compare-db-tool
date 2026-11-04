@@ -390,6 +390,8 @@ final class Menu {
             history.add(result.record);
             showResult(plan, result);
             List<Ui.Item> next = new ArrayList<>();
+            for (Suggestions.Suggestion s : result.suggestions())
+                next.add(new Ui.Item("restore:" + s.rule().toString().replace('\\', '/'), "Preview restore: " + s.name(), s.reason().isEmpty() ? "suggested by this rule; a preview changes nothing" : s.reason()));
             if (plan.mode == RunPlan.Mode.PREVIEW && plan.entry.kind().writes() && result.exit == 0)
                 next.add(new Ui.Item("apply", "Apply this change (commits)", "you will type APPLY to confirm"));
             if (plan.mode != RunPlan.Mode.APPLY) next.add(new Ui.Item("again", "Run again with the same settings", ""));
@@ -398,6 +400,11 @@ final class Menu {
             next.add(new Ui.Item("/back", "/back", "to the main screen"));
             String choice = ui.pick("Done: " + plan.entry.name() + " (" + plan.modeLabel() + "), exit " + result.exit, next, "Enter selects, Esc goes back");
             if (choice == null || choice.equals("/back")) return true;
+            if (choice.startsWith("restore:")) {
+                RuleCatalog.Entry restore = RuleCatalog.describe(Path.of(choice.substring(8)));
+                if (restore == null) ui.print("Restore rule not found: " + choice.substring(8)); else ruleScreen(restore, null);
+                continue;
+            }
             switch (choice) {
                 case "again" -> { if (!gate(info, plan)) return false; }
                 case "change" -> { return false; }
@@ -411,7 +418,7 @@ final class Menu {
         }
     }
 
-    private record Result(int exit, Path dir, Path summary, String verdict, History.Run record) {}
+    private record Result(int exit, Path dir, Path summary, String verdict, History.Run record, List<Suggestions.Suggestion> suggestions) {}
 
     private Result runNow(RunPlan plan) {
         Instant start = Instant.now();
@@ -419,10 +426,11 @@ final class Menu {
         int exit;
         Path dir = null;
         String verdict = null;
+        List<Suggestions.Suggestion> suggestions = List.of();
         try {
             if (plan.entry.kind() == RuleCatalog.Kind.COMPARE) {
                 Cli.Outcome outcome = cli.executeRules(options);
-                exit = outcome.exit(); dir = outcome.directory();
+                exit = outcome.exit(); dir = outcome.directory(); suggestions = outcome.suggestions();
                 if (outcome.report().any()) verdict = outcome.report().headline();
             } else exit = cli.execute(options);
         } catch (ToolException e) {
@@ -439,7 +447,7 @@ final class Menu {
         r.params = plan.entry.kind() == RuleCatalog.Kind.COMPARE ? new LinkedHashMap<>(plan.params) : new LinkedHashMap<>();
         r.export = plan.export.name(); r.limit = plan.limit; r.parallel = plan.parallel;
         r.started = start.toString(); r.exit = exit; r.verdict = verdict; r.dir = dir == null ? null : dir.toString();
-        return new Result(exit, dir, summary, verdict, r);
+        return new Result(exit, dir, summary, verdict, r, suggestions);
     }
 
     static String exitText(int exit) {

@@ -60,6 +60,11 @@
   <expect ref="current-vs-backup-copy" different="0" only-source="0" only-target="0" reason="current equals the 04-Oct migration copy"/>
   <expect ref="current-vs-mysql-history" different="0" only-source="0" only-target="0" reason="current equals MySQL history"/>
 
+  <!-- if the current CFS prices differ from the 04-Oct copy, say which restore rule to preview (it only suggests; nothing is restored) -->
+  <suggest restore="cash-refresh-restore-cfs-ssv-20261002.json"
+           when="#c('current-vs-backup-copy').onlySource &gt; 0 or #c('current-vs-backup-copy').onlyTarget &gt; 0 or #c('current-vs-backup-copy').different &gt; 0"
+           reason="the current CFS prices differ from the 04-Oct copy"/>
+
   <compress id="bundle" file="cash-refresh-12-verify-restore-cfs.zip">
     <include ref="pg-current-by-date"/>
     <include ref="pg-target-security"/>

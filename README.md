@@ -57,6 +57,27 @@ compare-db-tool: done in 2 min 36 s - exit 1 (differences, or an expectation was
 - **Not checked:** temp-table queries (they are checked when they run), `engine="db"` types, and the values that queries get from other queries (a placeholder stands in for them, so a query that uses another query's values can show a WARN when the database needs the type).
 - Exit code 2 if anything would fail, 0 otherwise. `CHECK.md` in the output folder has the same list, problems first. In the menu: "Switch to: check against the databases".
 
+## Restore advice: "there is a mismatch, should I restore, and with which rule?"
+
+A rule can say which restore rule fixes the mismatch it checks for. After the run the tool tells you, prints the exact command and, in the menu, offers the preview right there. **It never restores by itself.**
+
+```xml
+<compare id="cmp" source="reference" target="current"><key columns="security_id"/></compare>
+<suggest restore="cash-refresh-restore-cfs-ssv-20261002.json" when="#cmp.onlySource > 0 or #cmp.different > 0"
+         reason="current differs from the 04-Oct migration copy"/>
+```
+
+```
+  SUGGESTED: restore with cash-refresh-restore-cfs-ssv-20261002 (preview first) - current differs from the 04-Oct migration copy
+    run:  .\compare.ps1 --restore rules\cash-refresh-restore-cfs-ssv-20261002.json      (a preview; nothing changes until you add --apply)
+```
+
+- `restore` is a `--restore` JSON file next to the rule file; `when` is an expression over the results (see "Expressions"). `--validate` checks that the file exists, is a valid restore rule, and that its datasource is configured.
+- The same text, with the restore rule's description and steps, is in `SUMMARY.md` under "Suggested next step". If the condition cannot be evaluated (for example it reads a query that failed) the summary says so instead of dropping the suggestion silently.
+- Then the usual route: preview (`RESTORE.md` shows the counts, and the step `expect` counts from "Restore: expected counts and verify" are checked), `--apply`, and the `verify` rules run automatically afterwards.
+- **What a restore can copy from:** a table in the *same database*: a backup or migration copy such as `opera_backup_04_10`. It cannot read from another database, so it cannot restore PostgreSQL rows straight from MySQL.
+  The proven route is the one the cash-refresh rules use: show with a comparison that the PostgreSQL copy equals MySQL (zero differences), then restore from that copy.
+
 ## Interactive menu
 
 `.\compare.ps1` with no arguments (or `--menu`) opens a menu. Everything you type on the command line still works unchanged.

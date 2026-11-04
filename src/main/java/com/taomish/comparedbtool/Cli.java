@@ -158,7 +158,9 @@ public final class Cli {
     }
 
     /** Result of one rule run: exit code, the output folder (null for --validate) and the expectation verdicts. */
-    public record Outcome(int exit, Path directory, Expectations.Report report) {}
+    public record Outcome(int exit, Path directory, Expectations.Report report, List<Suggestions.Suggestion> suggestions) {
+        public Outcome(int exit, Path directory, Expectations.Report report) { this(exit, directory, report, List.of()); }
+    }
 
     public int execute(Options options) throws IOException {
         Progress.get().quiet(options.quiet);
@@ -182,7 +184,7 @@ public final class Cli {
     public Outcome executeRules(Options options) throws IOException {
         LOG.info("Loading rules: {}", options.rules.toAbsolutePath().normalize());
         Rules rules = RuleLoader.load(options.rules);
-        RuleLoader.validate(rules, settings, options.validate || options.check);
+        RuleLoader.validate(rules, settings, options.validate || options.check, options.rules.toAbsolutePath().getParent());
         Map<String, Object> parameters = RuleLoader.parameters(rules, options.parameters);
         RuleLoader.checks(rules, parameters);                                   // before anything connects, also with --validate
         if (options.validate) {
@@ -364,6 +366,14 @@ public final class Cli {
                 report.verdicts().stream().filter(v -> !v.pass()).limit(10).forEach(v -> Progress.get().line("    FAIL " + v.ref() + ": " + v.check()
                     + " expected " + v.expected() + ", got " + Menu.shorten(String.valueOf(v.actual()), 120) + (v.reason() == null || v.reason().isBlank() ? "" : " (" + v.reason() + ")")));
             }
+            List<String> suggestionWarnings = new ArrayList<>();
+            List<Suggestions.Suggestion> suggestions = Suggestions.evaluate(rules, options.rules.toAbsolutePath().getParent(), parameters, queries, comparisons, funnels,
+                presences, skipped, suggestionWarnings);
+            suggestionWarnings.forEach(w -> Progress.get().line("  note: " + w));
+            for (var s : suggestions) {
+                Progress.get().line("  SUGGESTED: restore with " + s.name() + " (preview first)" + (s.reason().isEmpty() ? "" : " - " + s.reason()));
+                Progress.get().line("    run:  " + s.command() + "      (a preview; nothing changes until you add --apply)");
+            }
             List<String> topFindings = writeFindings(directory, comparisons, funnels, presences);
             StringBuilder summary = new StringBuilder("# " + rules.name + "\n\nStatus: "
                 + (!failures.isEmpty() ? "INCOMPLETE / MANUAL ACTIONS REQUIRED" : partial ? "PARTIAL"
@@ -396,6 +406,8 @@ public final class Cli {
                 summary.append("\n");
             }
             if (!report.notEvaluated().isEmpty()) summary.append("Expectations not evaluated: ").append(String.join(", ", report.notEvaluated())).append("\n\n");
+            if (!suggestions.isEmpty()) summary.append(Suggestions.markdown(suggestions));
+            suggestionWarnings.forEach(w -> summary.append("Note: ").append(w).append("\n\n"));
             summary.append("Manual actions: ").append(failures.size()).append(". See MANUAL_ACTIONS.md for failed queries and skipped comparisons.\n\n");
             for (var result : comparisons) summary.append("- ").append(result.id()).append(": ").append(result.headline()).append("\n");
             for (var result : funnels) summary.append("- funnel ").append(result.id()).append(": ").append(result.headline()).append("\n");
@@ -433,7 +445,7 @@ public final class Cli {
             Progress.get().line("compare-db-tool: done in " + Progress.duration((System.nanoTime() - startedNanos) / 1_000_000) + " - exit " + exit + " (" + Menu.exitText(exit) + ")"
                 + (report.any() ? ", expectations " + (report.passed() ? "PASS" : "FAIL") : ""));
             Progress.get().line("  summary: " + directory.resolve("SUMMARY.md"));
-            return new Outcome(exit, directory, report);
+            return new Outcome(exit, directory, report, suggestions);
         } catch (Exception e) {
             String message = e instanceof ToolException ? e.getMessage() : "File processing failed. Check paths, free disk space and permissions.";
             try {

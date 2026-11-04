@@ -8,6 +8,10 @@ Re-keyed rows, near-miss keys, snapshot timing, concentration by value (who/whic
 one-column differences, empty side. **Not done:** findings for `engine="db"` comparisons; baseline/drift fingerprints; `--catalog` (read-only schema/function listing for building funnels); column profiling. Not wanted: cross-database
 checksums. Depersonalisation is parked (depends on the project).
 
+## DONE 04-Nov-2026: `<suggest>`: tell me when a restore rule is the answer (see README, "Restore advice")
+
+**Not done:** generating a restore rule from a comparison (needs table names, keys and scope that the SQL does not give); restoring directly from another database (MySQL to PostgreSQL).
+
 ## DONE 04-Nov-2026: `--check`: EXPLAIN and column description of every query against the live databases (see README)
 
 **Not done:** checking `engine="db"` types; resolving the values of chained queries for a more exact check.
