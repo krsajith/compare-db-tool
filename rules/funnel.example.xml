@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Funnel example: where do two sides stop agreeing? Each stage is a pair of queries that return the keys surviving that stage.
+     Replace the table names, filters and datasources. Read-only. See README, "Funnels".
+     compare mode (two sides) reports the first stage where a key is treated differently by source and target;
+     chain mode (one side, no target=) reports the stage each key drops out at. -->
+<rules name="funnel-example">
+    <parameters>
+        <param name="businessUnit" type="string" value="CFS"/>
+    </parameters>
+
+    <sql id="legacy-s1" db="mysql-oprdb02"><![CDATA[SELECT deal_id FROM legacy_schema.deals WHERE business_unit = :businessUnit]]></sql>
+    <sql id="new-s1" db="postgres-dev"><![CDATA[SELECT deal_id FROM opera.deals WHERE business_unit = :businessUnit]]></sql>
+    <sql id="legacy-s2" db="mysql-oprdb02"><![CDATA[SELECT deal_id FROM legacy_schema.deals WHERE business_unit = :businessUnit AND status = 'ACTIVE']]></sql>
+    <sql id="new-s2" db="postgres-dev"><![CDATA[SELECT deal_id FROM opera.deals WHERE business_unit = :businessUnit AND status = 'ACTIVE']]></sql>
+    <sql id="legacy-s3" db="mysql-oprdb02"><![CDATA[SELECT deal_id FROM legacy_schema.deals WHERE business_unit = :businessUnit AND status = 'ACTIVE' AND is_eligible = 1]]></sql>
+    <sql id="new-s3" db="postgres-dev"><![CDATA[SELECT deal_id FROM opera.deals WHERE business_unit = :businessUnit AND status = 'ACTIVE' AND is_eligible = 1]]></sql>
+
+    <funnel id="deal-funnel" key="deal_id">
+        <stage id="s1-in-bu"    source="legacy-s1" target="new-s1" reason="deals of the business unit"/>
+        <stage id="s2-active"   source="legacy-s2" target="new-s2" reason="status ACTIVE"/>
+        <stage id="s3-eligible" source="legacy-s3" target="new-s3" reason="eligible for the report"/>
+    </funnel>
+
+    <expect ref="deal-funnel" first-divergence="none" reason="the two sides should keep the same deals at every stage"/>
+
+    <compress id="bundle" file="funnel-example.zip">
+        <include ref="deal-funnel"/>
+    </compress>
+</rules>

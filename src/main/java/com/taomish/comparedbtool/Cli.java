@@ -247,16 +247,34 @@ public final class Cli {
                     artifacts.put(compare.id, List.of(note));
                 }
             }
+            // Funnels read the finished stage queries, like comparisons do.
+            List<FunnelRunner.Result> funnels = new ArrayList<>();
+            for (Rules.Funnel funnel : rules.funnels) {
+                LOG.info("Starting funnel {} ({} stages)...", funnel.id, funnel.stages.size());
+                try {
+                    var result = new FunnelRunner(options.partitions, options.maxPartitionMb).run(funnel, queries, directory, options.export, options.sampleRows);
+                    funnels.add(result); artifacts.put(funnel.id, result.files());
+                    LOG.info("Funnel {}: {}", funnel.id, result.headline());
+                } catch (Exception error) {
+                    LOG.error("Funnel {} did not complete; continuing", funnel.id, error);
+                    String detail = failureReason(error);
+                    failures.put(funnel.id, "Funnel " + funnel.id + ": " + detail);
+                    Path note = manualDirectory.resolve(funnel.id + ".md");
+                    Files.writeString(note, "# Funnel " + funnel.id + " not completed\n\n" + detail + "\n\nAny files in the funnel directory are incomplete.\n");
+                    artifacts.put(funnel.id, List.of(note));
+                }
+            }
             boolean partial = queries.values().stream().anyMatch(QueryRunner.Result::partial);
             // Query CSVs still exist here (they live under .work until the run ends), so expectations can read them.
-            Expectations.Report report = Expectations.evaluate(rules, queries, comparisons);
+            Expectations.Report report = Expectations.evaluate(rules, queries, comparisons, funnels);
             Expectations.write(directory, report);
             // A comparison the rule has stated expectations for is judged by them; the rest still count as differences.
             boolean differs = comparisons.stream().filter(c -> !report.judgedComparisons().contains(c.id()))
-                .anyMatch(ComparisonRunner.Result::differs);
+                .anyMatch(ComparisonRunner.Result::differs)
+                || funnels.stream().filter(f -> !report.judgedComparisons().contains(f.id())).anyMatch(FunnelRunner.Result::differs);
             int exit = partial || !failures.isEmpty() ? 2 : differs || !report.passed() ? 1 : 0;
             if (report.any()) LOG.info("Expectations: {}", report.headline());
-            List<String> topFindings = writeFindings(directory, comparisons);
+            List<String> topFindings = writeFindings(directory, comparisons, funnels);
             StringBuilder summary = new StringBuilder("# " + rules.name + "\n\nStatus: "
                 + (!failures.isEmpty() ? "INCOMPLETE / MANUAL ACTIONS REQUIRED" : partial ? "PARTIAL"
                     : !report.passed() ? "EXPECTATIONS NOT MET" : differs ? "DIFFERENCES"
@@ -284,6 +302,7 @@ public final class Cli {
             }
             summary.append("Manual actions: ").append(failures.size()).append(". See MANUAL_ACTIONS.md for failed queries and skipped comparisons.\n\n");
             for (var result : comparisons) summary.append("- ").append(result.id()).append(": ").append(result.headline()).append("\n");
+            for (var result : funnels) summary.append("- funnel ").append(result.id()).append(": ").append(result.headline()).append("\n");
             summary.append("\nQueries run with bounded concurrency and one active query per datasource; identical SQL is reused. "
                 + "Ready comparisons run while other queries continue. Results are not a synchronized cross-database snapshot.\n");
             ComparisonRunner.writeSmallSummary(directory.resolve("SUMMARY.md"), summary.toString());
@@ -327,7 +346,7 @@ public final class Cli {
     }
 
     /** One FINDINGS.md for the run, comparisons in rule order, and the few lines worth putting in SUMMARY.md. */
-    private static List<String> writeFindings(Path directory, List<ComparisonRunner.Result> comparisons) throws IOException {
+    private static List<String> writeFindings(Path directory, List<ComparisonRunner.Result> comparisons, List<FunnelRunner.Result> funnels) throws IOException {
         List<String> top = new ArrayList<>();
         StringBuilder md = new StringBuilder("# Findings\n\nComputed from the complete comparisons; counts are exact, examples are capped. "
             + "Most important first within each comparison. A finding says what the data shows, not what caused it. Details: <comparison>/FINDINGS.md.\n");
@@ -342,6 +361,13 @@ public final class Cli {
             for (var f : result.findings().stream().limit(6).toList())
                 md.append(n++).append(". ").append(Findings.line(f, 700)).append("\n");
             result.findings().stream().limit(2).forEach(f -> all.add(new Ranked(result.id(), f)));
+        }
+        for (var funnel : funnels) {
+            var finding = funnel.finding();
+            if (finding == null) continue;
+            any = true;
+            md.append("\n## funnel ").append(funnel.id()).append("\n\n").append(Findings.line(finding, 900)).append("\n");
+            all.add(new Ranked("funnel " + funnel.id(), finding));
         }
         if (!any) return top;
         Files.writeString(directory.resolve("FINDINGS.md"), md.toString());

@@ -64,6 +64,7 @@ public final class RuleLoader {
                             case "compare" -> rules.comparisons.add(mapper.readValue(reader, Rules.Compare.class));
                             case "compress" -> rules.compressions.add(mapper.readValue(reader, Rules.Compress.class));
                             case "expect" -> rules.expectations.add(mapper.readValue(reader, Rules.Expect.class));
+                            case "funnel" -> rules.funnels.add(mapper.readValue(reader, Rules.Funnel.class));
                             case "parameters" -> {
                                 if (parametersSeen) throw new ToolException("Use only one <parameters> block.");
                                 parametersSeen = true;
@@ -89,8 +90,8 @@ public final class RuleLoader {
                             || (event == XMLStreamConstants.CHARACTERS && !reader.isWhiteSpace()))
                             throw new ToolException("Unexpected content after </rules>.");
                     }
-                    LOG.info("Loaded XML: queries={} comparisons={} ZIPs={} parameters={}", rules.queries.size(),
-                        rules.comparisons.size(), rules.compressions.size(), rules.parameters.size());
+                    LOG.info("Loaded XML: queries={} comparisons={} funnels={} ZIPs={} parameters={}", rules.queries.size(),
+                        rules.comparisons.size(), rules.funnels.size(), rules.compressions.size(), rules.parameters.size());
                     LOG.debug("SQL ids={} comparison ids={}", rules.queries.stream().map(q -> q.id).toList(),
                         rules.comparisons.stream().map(c -> c.id).toList());
                     return rules;
@@ -168,8 +169,11 @@ public final class RuleLoader {
                     throw new ToolException("Key column cannot be ignored: " + column.name);
             }
         }
+        if (rules.funnels == null) rules.funnels = new ArrayList<>();
+        for (Rules.Funnel funnel : rules.funnels) FunnelRunner.validate(funnel, queries, ids);
         Set<String> includable = new HashSet<>(queries.keySet());
         rules.comparisons.forEach(c -> includable.add(c.id));
+        rules.funnels.forEach(f -> includable.add(f.id));
         Set<String> zipNames = new HashSet<>();
         if (rules.compressions == null) rules.compressions = new ArrayList<>();
         for (Rules.Compress zip : rules.compressions) {
@@ -186,6 +190,7 @@ public final class RuleLoader {
         for (Rules.Sql query : rules.queries) for (String suffix : List.of(".csv", ".sql", ".md"))
             outputName(query.id + suffix, outputs);
         for (Rules.Compare compare : rules.comparisons) outputName(compare.id, outputs);
+        for (Rules.Funnel funnel : rules.funnels) outputName(funnel.id, outputs);
         for (Rules.Compress zip : rules.compressions) outputName(zip.file, outputs);
         Map<String, Object> values = parameters(rules, Map.of());
         if (checkQueries) rules.queries.forEach(q -> QueryRunner.validateParameters(q, values));
@@ -200,7 +205,7 @@ public final class RuleLoader {
             || !names.add(name.toLowerCase(Locale.ROOT)))
             throw new ToolException("Conflicting/reserved output filename: " + name);
     }
-    private static void id(String id, Set<String> ids) {
+    static void id(String id, Set<String> ids) {
         Set<String> reserved = Set.of("summary", "parameters", "rules", "error", "expectations", "expectations.md", "findings", "findings.md", "rules.xml", "parameters.csv", "summary.md", "error.md");
         if (id == null || !id.matches("[A-Za-z][A-Za-z0-9_.-]{0,79}")
             || id.endsWith(".") || id.matches("(?i)(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\\..*)?")

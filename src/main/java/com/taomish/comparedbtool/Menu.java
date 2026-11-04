@@ -221,6 +221,7 @@ final class Menu {
                 List<Db> dbs = rules.queries.stream().map(q -> q.db).distinct().map(this::db).toList();
                 String facts = rules.queries.size() + " queries, " + rules.comparisons.size() + " comparisons, "
                     + (rules.expectations.isEmpty() ? "no expectations" : rules.expectations.size() + " expectations")
+                    + (rules.funnels.isEmpty() ? "" : ", " + rules.funnels.size() + " funnels")
                     + ", " + rules.compressions.size() + " ZIP";
                 return new Info(params, dbs, facts, null, rules);
             }

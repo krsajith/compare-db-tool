@@ -62,17 +62,32 @@ final class Expectations {
         if (rules.expectations == null) { rules.expectations = new ArrayList<>(); return; }
         Set<String> comparisonIds = new HashSet<>();
         for (Rules.Compare c : rules.comparisons) comparisonIds.add(c.id);
+        Map<String, Rules.Funnel> funnels = new HashMap<>();
+        for (Rules.Funnel f : rules.funnels) funnels.put(f.id, f);
         for (Rules.Expect e : rules.expectations) {
             if (e.ref == null || e.ref.isBlank()) throw new ToolException("<expect> needs ref=\"query or comparison id\".");
-            boolean query = queryIds.contains(e.ref), comparison = comparisonIds.contains(e.ref);
-            if (!query && !comparison)
+            boolean query = queryIds.contains(e.ref), comparison = comparisonIds.contains(e.ref), funnel = funnels.containsKey(e.ref);
+            if (!query && !comparison && !funnel)
                 throw new ToolException("<expect ref=\"" + e.ref + "\"> references an unknown id. Queries: "
-                    + new TreeSet<>(queryIds) + "; comparisons: " + new TreeSet<>(comparisonIds));
+                    + new TreeSet<>(queryIds) + "; comparisons: " + new TreeSet<>(comparisonIds) + "; funnels: " + new TreeSet<>(funnels.keySet()));
+            boolean funnelAttrs = e.firstDivergence != null || e.diverging != null;
             boolean queryAttrs = e.rows != null || e.column != null || e.row != null || e.each != null || e.equals != null
                 || e.min != null || e.max != null || e.between != null || e.isNull != null;
             boolean compareAttrs = e.matched != null || e.equal != null || e.different != null || e.onlySource != null
                 || e.onlyTarget != null || e.duplicates != null;
-            if (query) {
+            if (funnel) {
+                if (queryAttrs || compareAttrs) throw new ToolException("<expect ref=\"" + e.ref + "\"> is a funnel: use first-divergence or diverging.");
+                if (!funnelAttrs) throw new ToolException("<expect ref=\"" + e.ref + "\"> states nothing to check.");
+                Rules.Funnel f = funnels.get(e.ref);
+                if (e.firstDivergence != null) {
+                    if (FunnelRunner.chain(f)) throw new ToolException("<expect ref=\"" + e.ref + "\">: first-divergence applies to comparison funnels, not chains.");
+                    boolean known = e.firstDivergence.equalsIgnoreCase("none") || f.stages.stream().anyMatch(st -> st.id.equalsIgnoreCase(e.firstDivergence));
+                    if (!known) throw new ToolException("<expect ref=\"" + e.ref + "\">: first-divergence must be none or one of "
+                        + f.stages.stream().map(st -> st.id).toList() + ".");
+                }
+                if (e.diverging != null) Spec.parse("diverging", e.diverging);
+            } else if (query) {
+                if (funnelAttrs) throw new ToolException("<expect ref=\"" + e.ref + "\"> is a query: first-divergence and diverging apply to funnels.");
                 if (compareAttrs) throw new ToolException("<expect ref=\"" + e.ref + "\"> is a query: matched/equal/different/only-source/only-target/duplicates apply to comparisons.");
                 if (e.rows != null) Spec.parse("rows", e.rows);
                 boolean condition = e.equals != null || e.min != null || e.max != null || e.between != null || e.isNull != null;
@@ -87,7 +102,7 @@ final class Expectations {
                 if (e.max != null) number("max", e.max);
                 if (e.between != null) between(e.between);
             } else {
-                if (queryAttrs) throw new ToolException("<expect ref=\"" + e.ref + "\"> is a comparison: use matched, equal, different, only-source, only-target or duplicates.");
+                if (queryAttrs || funnelAttrs) throw new ToolException("<expect ref=\"" + e.ref + "\"> is a comparison: use matched, equal, different, only-source, only-target or duplicates.");
                 if (!compareAttrs) throw new ToolException("<expect ref=\"" + e.ref + "\"> states nothing to check.");
                 for (var entry : comparisonSpecs(e).entrySet()) Spec.parse(entry.getKey(), entry.getValue());
             }
@@ -121,7 +136,16 @@ final class Expectations {
     // ---------------------------------------------------------------- evaluation
 
     static Report evaluate(Rules rules, Map<String, QueryRunner.Result> queries, List<ComparisonRunner.Result> comparisons) {
+        return evaluate(rules, queries, comparisons, List.of());
+    }
+
+    static Report evaluate(Rules rules, Map<String, QueryRunner.Result> queries, List<ComparisonRunner.Result> comparisons,
+                           List<FunnelRunner.Result> funnels) {
         List<Verdict> verdicts = new ArrayList<>();
+        Map<String, FunnelRunner.Result> funnelById = new HashMap<>();
+        funnels.forEach(f -> funnelById.put(f.id(), f));
+        Set<String> funnelIds = new HashSet<>();
+        rules.funnels.forEach(f -> funnelIds.add(f.id));
         Set<String> judged = new LinkedHashSet<>();
         Map<String, ComparisonRunner.Result> byId = new HashMap<>();
         comparisons.forEach(c -> byId.put(c.id(), c));
@@ -129,12 +153,32 @@ final class Expectations {
         rules.comparisons.forEach(c -> comparisonIds.add(c.id));
         Set<String> schemaChecked = new HashSet<>();
         for (Rules.Expect e : rules.expectations) {
-            if (comparisonIds.contains(e.ref)) {
+            if (funnelIds.contains(e.ref)) {
+                judged.add(e.ref);
+                evaluateFunnel(e, rules.funnels.stream().filter(f -> f.id.equals(e.ref)).findFirst().orElseThrow(), funnelById.get(e.ref), verdicts);
+            } else if (comparisonIds.contains(e.ref)) {
                 judged.add(e.ref);
                 evaluateComparison(e, byId.get(e.ref), verdicts, schemaChecked);
             } else evaluateQuery(e, queries.get(e.ref), verdicts);
         }
         return new Report(List.copyOf(verdicts), Set.copyOf(judged));
+    }
+
+    private static void evaluateFunnel(Rules.Expect e, Rules.Funnel funnel, FunnelRunner.Result r, List<Verdict> out) {
+        if (r == null) {
+            String why = "funnel did not complete (see MANUAL_ACTIONS.md)";
+            if (e.firstDivergence != null) out.add(new Verdict(e.ref, "first-divergence", e.firstDivergence, why, false, e.reason));
+            if (e.diverging != null) out.add(new Verdict(e.ref, "diverging", e.diverging, why, false, e.reason));
+            return;
+        }
+        if (e.firstDivergence != null) {
+            String actual = r.firstDivergence() < 0 ? "none" : funnel.stages.get(r.firstDivergence()).id;
+            out.add(new Verdict(e.ref, "first-divergence", e.firstDivergence, actual, actual.equalsIgnoreCase(e.firstDivergence), e.reason));
+        }
+        if (e.diverging != null) {
+            Spec spec = Spec.parse("diverging", e.diverging);
+            out.add(new Verdict(e.ref, r.chain() ? "dropping out" : "diverging keys", spec.text, String.valueOf(r.diverging()), spec.test(r.diverging()), e.reason));
+        }
     }
 
     private static void evaluateComparison(Rules.Expect e, ComparisonRunner.Result r, List<Verdict> out, Set<String> schemaChecked) {

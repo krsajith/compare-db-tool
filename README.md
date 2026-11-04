@@ -107,6 +107,37 @@ A finding says what the data shows, not what caused it. Re-key and near-miss det
 found by JDBC type or a `_timestamp`/`_at`/`_date`/`_time` name. `engine="db"` comparisons keep their SQL-side counts and samples and
 produce no findings.
 
+## Funnels: the first stage where two sides stop agreeing
+
+A result is usually produced in ordered steps, each keeping only some rows. A `<funnel>` finds the step where the two sides start to differ.
+Each stage is a pair of ordinary `<sql>` queries that return the **keys that survive that stage**; the tool does the rest.
+
+```xml
+<funnel id="deals" key="trade_id">
+    <stage id="s1-deal"     source="legacy-s1" target="new-s1" reason="latest version, RMS sub-portfolio"/>
+    <stage id="s2-eligible" source="legacy-s2" target="new-s2" reason="FY premium and active lots"/>
+    <stage id="s3-master"   source="legacy-s3" target="new-s3" reason="in the security master"/>
+</funnel>
+<expect ref="deals" first-divergence="none" reason="same deals at every stage"/>
+```
+
+- For every key the tool records which stages it survived on each side. The **first stage where the two sides treat a key differently** is where
+  that key diverges. A key is blamed on that one stage, not again on every later one (the "Only source / Only target" columns show the state at each stage
+  and include keys that diverged earlier; "Diverges here" counts each key once).
+- Output per funnel: `SUMMARY.md` (stage table and the verdict, for example "First divergence at `s2-eligible`: 31 keys agree in every earlier stage, then are
+  kept only by the source", with the stage's `reason` and example keys) and `diverging-keys.csv` (key, first stage, which side kept it, stages each side kept
+  it through). In `sample` mode the CSV holds a few keys per stage and side (counts stay exact), `full` lists all, `none` writes no CSV.
+  The funnel also appears in `FINDINGS.md` and the run `SUMMARY.md`, and can be put in a ZIP with `<include ref="deals"/>`.
+- **Chain mode** (`mode="chain"`, stages with `source` only): one side, and the stage where each key drops out ("37 of 40 keys break at s6"). It reports; it is never
+  a difference.
+- **Expectations:** `first-divergence="none"` or a stage id, and `diverging="N"` (same count forms as other `<expect>`; for a chain it counts keys dropping out).
+  A comparison funnel with no `<expect>` that diverges is a difference (exit 1), like a comparison.
+- **Rules of use:** stage queries must return the key columns (matched by name, any case; numeric keys compare by value) and may return more, which is ignored.
+  Up to 30 stages. A stage query that failed, is PARTIAL or is an `engine="db"` input skips the funnel and is listed in `MANUAL_ACTIONS.md`.
+  Matching uses the same disk partitions and memory budget as comparisons (`--partitions`, `--max-partition-mb`).
+  A stage need not be a subset of the one before: the first differing stage is reported either way.
+- See `rules/funnel.example.xml`.
+
 ## Build commands
 
 From PowerShell:

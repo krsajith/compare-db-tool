@@ -5,9 +5,12 @@ Improvements requested while using the tool. Newest first.
 ## DONE 04-Nov-2026: Findings for stream comparisons (see README, "Findings")
 
 Re-keyed rows, near-miss keys, snapshot timing, concentration by value (who/which/when), constant ratio/offset/sign flip, few rows driving a gap,
-one-column differences, empty side. **Not done:** findings for `engine="db"` comparisons; a `<funnel>` rule type with first-divergence detection;
-baseline/drift fingerprints; `--catalog` (read-only schema/function listing for building funnels); column profiling. Not wanted: cross-database
+one-column differences, empty side. **Not done:** findings for `engine="db"` comparisons; baseline/drift fingerprints; `--catalog` (read-only schema/function listing for building funnels); column profiling. Not wanted: cross-database
 checksums. Depersonalisation is parked (depends on the project).
+
+## DONE 04-Nov-2026: `<funnel>` with first-divergence detection (compare and chain modes; see README, "Funnels")
+
+**Not done:** a profile of the diverging keys by the other columns the stage queries return (who, which product); generating funnels from code.
 
 ## DONE 04-Nov-2026: Interactive menu (arrow keys, "/" commands, history, confirmations; see README)
 

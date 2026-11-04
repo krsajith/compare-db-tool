@@ -23,6 +23,8 @@ public class Rules {
     @JacksonXmlProperty(localName = "compress") public List<Compress> compressions = new ArrayList<>();
     @JacksonXmlElementWrapper(useWrapping = false)
     @JacksonXmlProperty(localName = "expect") public List<Expect> expectations = new ArrayList<>();
+    @JacksonXmlElementWrapper(useWrapping = false)
+    @JacksonXmlProperty(localName = "funnel") public List<Funnel> funnels = new ArrayList<>();
 
     public static class Param {
         @JacksonXmlProperty(isAttribute = true) public String name;
@@ -109,5 +111,24 @@ public class Rules {
         @JacksonXmlProperty(isAttribute = true, localName = "only-source") public String onlySource;
         @JacksonXmlProperty(isAttribute = true, localName = "only-target") public String onlyTarget;
         @JacksonXmlProperty(isAttribute = true) public String duplicates;
+        // funnel ref: a stage id, or "none"; and the number of keys that diverge (or, in a chain, drop out)
+        @JacksonXmlProperty(isAttribute = true, localName = "first-divergence") public String firstDivergence;
+        @JacksonXmlProperty(isAttribute = true) public String diverging;
+    }
+
+    /** Ordered stages, each a pair of queries returning the keys that survive it. mode: compare (two sides) or chain (one side). */
+    public static class Funnel {
+        @JacksonXmlProperty(isAttribute = true) public String id;
+        @JacksonXmlProperty(isAttribute = true) public String key;
+        @JacksonXmlProperty(isAttribute = true) public String mode = "compare";
+        @JacksonXmlProperty(isAttribute = true) public String export;
+        @JacksonXmlElementWrapper(useWrapping = false)
+        @JacksonXmlProperty(localName = "stage") public List<Stage> stages = new ArrayList<>();
+    }
+    public static class Stage {
+        @JacksonXmlProperty(isAttribute = true) public String id;
+        @JacksonXmlProperty(isAttribute = true) public String source;
+        @JacksonXmlProperty(isAttribute = true) public String target;
+        @JacksonXmlProperty(isAttribute = true) public String reason;
     }
 }
