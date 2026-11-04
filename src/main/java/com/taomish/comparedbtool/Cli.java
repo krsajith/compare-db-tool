@@ -36,6 +36,7 @@ public final class Cli {
         --restore FILE        Restore table rows from reference tables using a JSON rule (preview by default);
                               step "expect" counts are checked, "verify" rules run after --apply
         --apply               Commit template replacement or data restore; otherwise roll back the preview
+        --menu                Interactive menu (also the default when started without arguments in a terminal)
         --help                Show this help
 
         External configuration: config/datasources.properties, relative to working directory.
@@ -59,13 +60,15 @@ public final class Cli {
         public int maxPartitionMb = 256;
         public long limit;
         public boolean validate, datasources, allowProd, help;
+        /** Interactive menu; menuRequested = asked for with --menu (plain prompts are allowed without a terminal). */
+        public boolean menu, menuRequested;
     }
     private final DatasourceSettings settings;
     public Cli(DatasourceSettings settings) { this.settings = settings; }
 
     public static Options parse(String[] args) {
         Options options = new Options();
-        if (args.length == 0) { options.help = true; return options; }
+        if (args.length == 0) { options.menu = true; return options; }
         for (int i = 0; i < args.length; i++) {
             String argument = args[i];
             if (argument.startsWith("--spring.") || argument.startsWith("--logging.")) {
@@ -115,6 +118,7 @@ public final class Cli {
                     }
                 } catch (IllegalArgumentException e) { throw new ToolException("Invalid value for " + name); }
             } else switch (argument) {
+                case "--menu" -> { options.menu = true; options.menuRequested = true; }
                 case "--validate" -> options.validate = true;
                 case "--apply" -> options.apply = true;
                 case "--datasources" -> options.datasources = true;
@@ -138,7 +142,7 @@ public final class Cli {
             throw new ToolException("Restore cannot be combined with comparison rules, templates, datasource listing or parameters.");
         if (options.apply && ((options.templateUpload == null && options.restore == null) || options.validate))
             throw new ToolException("--apply requires --template-upload or --restore and cannot be combined with --validate.");
-        if (!options.help && !options.datasources && options.rules == null && options.templateUpload == null && options.templateExport == null
+        if (!options.help && !options.menu && !options.datasources && options.rules == null && options.templateUpload == null && options.templateExport == null
             && options.restore == null)
             throw new ToolException("Supply --rules FILE, --template-import FILE, --template-export FILE or --restore FILE.");
         return options;
@@ -148,6 +152,7 @@ public final class Cli {
     public record Outcome(int exit, Path directory, Expectations.Report report) {}
 
     public int execute(Options options) throws IOException {
+        if (options.menu) return Menu.launch(settings, options);
         if (options.templateExport != null) return new TemplateExporter(settings).execute(options);
         if (options.templateUpload != null) return new TemplateUploader(settings).execute(options);
         if (options.restore != null) {
@@ -256,6 +261,7 @@ public final class Cli {
                     : !report.passed() ? "EXPECTATIONS NOT MET" : differs ? "DIFFERENCES"
                     : report.any() ? "COMPLETE / EXPECTATIONS MET" : "COMPLETE / EQUAL") + "; exit code: " + exit
                 + (report.any() ? "\n\nVerdict: " + report.headline() + "\n\n" + Expectations.table(report) : "")
+                + "\n\nTool: " + BuildInfo.line()
                 + "\n\nExport default: " + options.export.name().toLowerCase(Locale.ROOT) + "; sample cap: " + options.sampleRows
                 + ". Counts cover complete inputs; sampling never limits comparison accuracy. Query CSVs are exported only in full mode; inputs used only by engine=db stay inside the database.\n\n"
                 + "| Query | Datasource | Rows | Time ms | Status |\n|---|---|---|---|---|\n");

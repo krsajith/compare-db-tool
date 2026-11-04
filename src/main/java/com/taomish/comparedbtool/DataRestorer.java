@@ -289,6 +289,7 @@ public final class DataRestorer {
     private static void writeSummary(Path dir, Rule rule, List<StepResult> results, boolean applied, List<VerifyResult> verified) throws Exception {
         StringBuilder md = new StringBuilder("# Restore " + rule.name + "\n\n")
             .append(applied ? "Status: APPLIED (committed).\n\n" : "Status: PREVIEW (rolled back, nothing changed). Run again with --apply to commit.\n\n")
+            .append("Tool: ").append(BuildInfo.line()).append("\n\n")
             .append(rule.description == null ? "" : rule.description + "\n\n")
             .append("| Step | Table | From | Rows before | Reference rows | Replaced | Inserted | Extra in target | Extra removed | Rows after | Backup |\n")
             .append("|---|---|---|---|---|---|---|---|---|---|---|\n");

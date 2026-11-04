@@ -7,6 +7,29 @@ two instances of the same database type, or different database types. MySQL and 
 The Spring Boot version is 4.1.2. Java source/bytecode targets 21; the launcher uses your JAVA_HOME or PATH and can
 run on a newer JDK, including Java 27. The runtime Java and Spring Boot versions are recorded in the log at startup.
 
+## Interactive menu
+
+`.\compare.ps1` with no arguments (or `--menu`) opens a menu. Everything you type on the command line still works unchanged.
+
+- **Main screen:** your last runs (`again: rule (run)`, with age, exit code, verdict and parameters), pinned favourites, then the
+  commands. Type to filter; type `/` to list the commands: `/rules`, `/restore`, `/open`, `/history`, `/datasources`, `/help`, `/quit`.
+- **Keys:** Up/Down (also Ctrl-P/Ctrl-N), PgUp/PgDn, Home/End, Enter selects, Esc goes back (quits on the main screen),
+  Ctrl-U clears the filter.
+- **Rule screen:** shows the rule's first comment, its datasources (`PRODUCTION` and `NOT CONFIGURED` marked), query/comparison/expectation
+  counts and parameters. Options: parameters (each checked against its type; the last values you used are offered), export mode, row limit,
+  parallelism, validate only, pin. The equivalent command line is printed before anything runs.
+- **Confirmations:** a production datasource needs its name typed (`--allow-prod` is then added for that run only); an unconfigured
+  datasource blocks the run; a row limit asks because the result will be PARTIAL; parameter values that differ from the rule's
+  declared ones are listed and confirmed. Restore and template rules start as a preview; **Apply** is offered after a clean
+  preview and needs `APPLY` typed. A run taken from the history never re-applies: an earlier APPLY comes back as a preview.
+- **Result screen:** exit code, verdict (the `<expect>` PASS/FAIL when the rule has one), output folder and the start of
+  `SUMMARY.md` / `RESTORE.md`; then run again, change options, apply, or show the whole summary.
+- **State:** `out\.history.json` holds recent runs, favourites and parameter values (200 runs at most; no passwords). A damaged file is
+  moved to `.history.json.bad` and a new one started.
+- **Without a terminal** (pipe, scheduled task) a bare `compare.ps1` prints the help as before; `--menu` then uses numbered prompts.
+- Every `SUMMARY.md` and `RESTORE.md` names the tool build (`Tool: compare-db-tool ... built ...`), so a stale copy of the jar shows up in the
+  zip you send.
+
 ## Smart exports and mail bundles
 
 The new default is **sample**, changing output size only. Every fetched row is still compared; matched, equal,
@@ -29,6 +52,8 @@ reports the true total, for example `showing 200 of 9251`. Zero sample rows prod
 .\compare.ps1 --rules rules\grasa-backup-cfs.xml --export full
 .\compare.ps1 --rules rules\grasa-backup-cfs.xml --sample-rows 50
 ```
+
+Or run `.\compare.ps1` with no arguments and pick the rule and options from the menu (see "Interactive menu").
 
 Comparison inputs are streamed to private temporary CSVs under the run's `.work/` directory, including in none/sample
 mode. These are not published or zipped and are removed when the run finishes. This bounds comparison memory without
