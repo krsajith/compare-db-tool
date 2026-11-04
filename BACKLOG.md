@@ -2,13 +2,12 @@
 
 Improvements requested while using the tool. Newest first.
 
-## Next: findings for comparisons (agreed 04-Nov-2026)
+## DONE 04-Nov-2026: Findings for stream comparisons (see README, "Findings")
 
-For each stream comparison, write `FINDINGS.md` / `findings.json` with ranked facts and their evidence, so the analyst (or AI) does not need the
-raw lists: rows that exist on the other side under a different key (re-keyed), snapshot timing of the missing rows (created/updated
-versus the other side's latest), concentration by dimension and by `updated_by`/hour, numeric gap explained by the top rows, constant
-ratio/offset. Later: funnel rule type with first-divergence detection, baseline/drift fingerprints, `--catalog`.
-Not wanted: cross-database checksums; depersonalisation is parked (depends on the project).
+Re-keyed rows, near-miss keys, snapshot timing, concentration by value (who/which/when), constant ratio/offset/sign flip, few rows driving a gap,
+one-column differences, empty side. **Not done:** findings for `engine="db"` comparisons; a `<funnel>` rule type with first-divergence detection;
+baseline/drift fingerprints; `--catalog` (read-only schema/function listing for building funnels); column profiling. Not wanted: cross-database
+checksums. Depersonalisation is parked (depends on the project).
 
 ## DONE 04-Nov-2026: Interactive menu (arrow keys, "/" commands, history, confirmations; see README)
 

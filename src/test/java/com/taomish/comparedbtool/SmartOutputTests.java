@@ -59,7 +59,9 @@ class SmartOutputTests {
                 assertTrue(Files.size(root.resolve("check/SUMMARY.md")) <= 8192);
                 if (mode == ExportMode.NONE) {
                     assertFalse(Files.exists(root.resolve("check/only-source.csv")));
-                    assertEquals(1, result.files().size());
+                    // no comparison CSVs; the summary and the (small) findings are still published
+                    assertTrue(result.files().stream().noneMatch(f -> f.getFileName().toString().endsWith(".csv")));
+                    assertTrue(result.files().contains(root.resolve("check/SUMMARY.md")));
                 } else {
                     try (var rows = CsvFiles.reader(root.resolve("check/only-source.csv"), true)) {
                         assertEquals(mode == ExportMode.FULL ? 9251 : 200, rows.getRecords().size());

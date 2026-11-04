@@ -23,7 +23,14 @@ public final class ComparisonRunner {
     public record Result(String id, long matched, long equal, long different, long onlySource, long onlyTarget,
                          long duplicateSourceKeys, long duplicateTargetKeys, long ambiguousKeys,
                          long differentCells, long acceptedChanges, boolean schemaDifferent,
-                         boolean partial, List<Path> files, String headline) {
+                         boolean partial, List<Path> files, String headline, List<Findings.Finding> findings) {
+        public Result(String id, long matched, long equal, long different, long onlySource, long onlyTarget,
+                      long duplicateSourceKeys, long duplicateTargetKeys, long ambiguousKeys,
+                      long differentCells, long acceptedChanges, boolean schemaDifferent,
+                      boolean partial, List<Path> files, String headline) {
+            this(id, matched, equal, different, onlySource, onlyTarget, duplicateSourceKeys, duplicateTargetKeys, ambiguousKeys,
+                differentCells, acceptedChanges, schemaDifferent, partial, files, headline, List.of());
+        }
         public boolean differs() {
             return different > 0 || onlySource > 0 || onlyTarget > 0 || duplicateSourceKeys > 0
                 || duplicateTargetKeys > 0 || schemaDifferent;
@@ -69,6 +76,7 @@ public final class ComparisonRunner {
             .thenComparing(Group::classification).thenComparing(Group::accepted));
         MemoryBudget budget = new MemoryBudget(maxPartitionMb);
         Breakdowns breakdowns = new Breakdowns(rule, source, target, budget);
+        Findings findings = new Findings(rule, source, target, bindings, keyBindings);
         Map<String, String> exports = new LinkedHashMap<>();
         try {
             LOG.debug("Partitioning source CSV for comparison {}", rule.id);
@@ -97,21 +105,22 @@ public final class ComparisonRunner {
                         }
                         // Duplicate keys are ambiguous, never silently paired or counted as equal.
                         if (duplicate) { totals[7]++; continue; }
-                        if (x == null) { totals[4]++; right.printRecord(y.first); breakdowns.add("only-target", y.first, false); continue; }
-                        if (y == null) { totals[3]++; left.printRecord(x.first); breakdowns.add("only-source", x.first, true); continue; }
+                        if (x == null) { totals[4]++; right.printRecord(y.first); breakdowns.add("only-target", y.first, false); findings.onlyTarget(y.first, key.values()); continue; }
+                        if (y == null) { totals[3]++; left.printRecord(x.first); breakdowns.add("only-source", x.first, true); findings.onlySource(x.first, key.values()); continue; }
                         totals[0]++;
                         boolean different = false;
                         for (Binding binding : bindings) {
                             String lv = x.first.get(binding.source()), rv = y.first.get(binding.target());
                             Values.Change change = Values.compare(lv, rv, binding.rule(), binding.numeric());
                             if (change == null) continue;
-                            if (change.accepted()) totals[9]++; else { totals[8]++; different = true; }
+                            if (change.accepted()) totals[9]++; else { totals[8]++; different = true; findings.cell(binding, key.values(), lv, rv); }
                             groups.merge(new Group(binding.name(), change.classification(), change.accepted()), 1L, Long::sum);
                             if (mode == ExportMode.FULL || !change.accepted())
                                 diff.printRecord(concat(key.values(), Arrays.asList(binding.name(), lv, rv, change.classification(),
                                     String.valueOf(change.accepted()), change.absoluteDifference(), change.relativeDifference())));
                         }
                         if (different) { totals[2]++; breakdowns.add("different", x.first, true); } else totals[1]++;
+                        findings.matched(x.first, y.first, different);
                     }
                 }
                 exports.put("differences.csv", diff.showing()); exports.put("only-source.csv", left.showing());
@@ -121,12 +130,23 @@ public final class ComparisonRunner {
             try { CsvFiles.deleteTree(work); }
             catch (IOException cleanup) { LOG.warn("Could not remove comparison temporary files at {}", work, cleanup); }
         }
-        return finish(rule, source, target, directory, mode, totals, groups, breakdowns, exports, sourceExtra, targetExtra);
+        return finish(rule, source, target, directory, mode, totals, groups, breakdowns, exports, sourceExtra, targetExtra, findings);
     }
 
     static Result finish(Rules.Compare rule, QueryRunner.Result source, QueryRunner.Result target, Path directory,
                          ExportMode mode, long[] totals, Map<Group, Long> groups, Breakdowns breakdowns,
                          Map<String, String> exports, List<String> sourceExtra, List<String> targetExtra) throws IOException {
+        return finish(rule, source, target, directory, mode, totals, groups, breakdowns, exports, sourceExtra, targetExtra, null);
+    }
+
+    static Result finish(Rules.Compare rule, QueryRunner.Result source, QueryRunner.Result target, Path directory,
+                         ExportMode mode, long[] totals, Map<Group, Long> groups, Breakdowns breakdowns,
+                         Map<String, String> exports, List<String> sourceExtra, List<String> targetExtra, Findings collector) throws IOException {
+        List<Findings.Finding> found = List.of();
+        if (collector != null) {
+            try { found = collector.evaluate(groups); }
+            catch (RuntimeException e) { LOG.warn("Findings for comparison {} could not be computed; the comparison result is unaffected", rule.id, e); }
+        }
         boolean schemaDifferent = !sourceExtra.isEmpty() || !targetExtra.isEmpty();
         List<String> keyNames = RuleLoader.keys(rule);
         Path cells = directory.resolve("differences.csv"), onlySource = directory.resolve("only-source.csv"),
@@ -140,6 +160,11 @@ public final class ComparisonRunner {
             + "` (" + source.rows() + " rows); target: `" + rule.target + "` (" + target.rows() + " rows).\n\n"
             + "Keys: " + String.join(", ", keyNames) + ". Ambiguous keys excluded from row matching: " + totals[7]
             + ".\n\nDifferent cells: " + totals[8] + "; accepted representation/tolerance changes: " + totals[9] + ".\n\n");
+        if (!found.isEmpty()) {
+            markdown.append("## Findings (most important first; see FINDINGS.md)\n\n");
+            found.stream().limit(5).forEach(f -> markdown.append("- ").append(Findings.line(f, 230).replace("\n", " ")).append("\n"));
+            markdown.append("\n");
+        }
         breakdowns.appendTo(markdown);
         markdown.append("\nExport mode: ").append(mode.name().toLowerCase(Locale.ROOT)).append(".\n\n| File | Exported / true total |\n|---|---|\n");
         exports.forEach((file, showing) -> markdown.append("| ").append(file).append(" | ").append(showing).append(" |\n"));
@@ -162,8 +187,10 @@ public final class ComparisonRunner {
         List<Path> files = new ArrayList<>();
         if (mode != ExportMode.NONE) files.addAll(List.of(cells, onlySource, onlyTarget, duplicates));
         files.add(summary);
+        Findings.write(directory, rule.id, found);
+        if (!found.isEmpty()) files.addAll(List.of(directory.resolve("FINDINGS.md"), directory.resolve("findings.json")));
         return new Result(rule.id, totals[0], totals[1], totals[2], totals[3], totals[4], totals[5], totals[6], totals[7],
-            totals[8], totals[9], schemaDifferent, partial, List.copyOf(files), headline);
+            totals[8], totals[9], schemaDifferent, partial, List.copyOf(files), headline, found);
     }
 
     static List<Binding> bindings(Rules.Compare compare, QueryRunner.Result a, QueryRunner.Result b) {

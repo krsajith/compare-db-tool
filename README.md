@@ -84,6 +84,29 @@ Column mappings are honored. Counts are accumulated during the existing comparis
 rows. Breakdown tables appear before classification detail in each comparison's 8 KB summary. Extremely large summaries
 are explicitly truncated; reduce the number of breakdowns/top values when needed.
 
+### Findings: what the data shows about the differences
+
+Every stream comparison also writes `<comparison>/FINDINGS.md` and `findings.json`, and the run gets one `FINDINGS.md` plus the top lines in
+`SUMMARY.md`. They are written in every export mode, `none` included, are small, and are included in a ZIP with the comparison. They come from the same
+single pass as the comparison, with bounded memory (examples are capped, counts are exact), and they never change a result or an exit code.
+Most important first:
+
+| Finding | What it says |
+|---|---|
+| `rekeyed` | N of the missing rows exist on the other side with identical values in every compared column but another key (re-keyed, re-numbered): probably not missing |
+| `near-miss-key` | N unmatched rows have a key that matches after ignoring case, punctuation and leading zeros: a key normalisation would match them |
+| `timing-*` | the unmatched rows are all newer (or older) than everything on the other side, on an audit/date column: one side is an older snapshot, or has no history before a point |
+| `concentration` | most rows of a category share one value of a column (a user, a product, a date, a batch), compared with how common that value is overall |
+| `constant-ratio`, `constant-offset`, `sign-flip` | all differing numbers differ by the same factor, the same amount, or only in sign |
+| `few-rows-drive-gap`, `numeric-gap` | the net and absolute gap, and the rows that carry it |
+| `one-column` | every differing cell is in one column |
+| `empty-side` | one query returned no rows: check its filter and parameters before reading anything else |
+
+A finding says what the data shows, not what caused it. Re-key and near-miss detection look at the first 50,000 unmatched rows per side
+(the finding says so when it applies); a column with more than 200 distinct values is not used for concentration; timestamp columns are
+found by JDBC type or a `_timestamp`/`_at`/`_date`/`_time` name. `engine="db"` comparisons keep their SQL-side counts and samples and
+produce no findings.
+
 ## Build commands
 
 From PowerShell:

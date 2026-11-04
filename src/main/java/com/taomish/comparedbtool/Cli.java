@@ -256,6 +256,7 @@ public final class Cli {
                 .anyMatch(ComparisonRunner.Result::differs);
             int exit = partial || !failures.isEmpty() ? 2 : differs || !report.passed() ? 1 : 0;
             if (report.any()) LOG.info("Expectations: {}", report.headline());
+            List<String> topFindings = writeFindings(directory, comparisons);
             StringBuilder summary = new StringBuilder("# " + rules.name + "\n\nStatus: "
                 + (!failures.isEmpty() ? "INCOMPLETE / MANUAL ACTIONS REQUIRED" : partial ? "PARTIAL"
                     : !report.passed() ? "EXPECTATIONS NOT MET" : differs ? "DIFFERENCES"
@@ -276,6 +277,11 @@ public final class Cli {
             }
             summary.append("\n");
             summary.append(Expectations.smallResults(rules, queries));
+            if (!topFindings.isEmpty()) {
+                summary.append("## Findings (see FINDINGS.md)\n\n");
+                topFindings.forEach(l -> summary.append("- ").append(l).append("\n"));
+                summary.append("\n");
+            }
             summary.append("Manual actions: ").append(failures.size()).append(". See MANUAL_ACTIONS.md for failed queries and skipped comparisons.\n\n");
             for (var result : comparisons) summary.append("- ").append(result.id()).append(": ").append(result.headline()).append("\n");
             summary.append("\nQueries run with bounded concurrency and one active query per datasource; identical SQL is reused. "
@@ -286,6 +292,7 @@ public final class Cli {
                 LinkedHashSet<Path> included = new LinkedHashSet<>(List.of(directory.resolve("SUMMARY.md"),
                     directory.resolve("RULES.xml"), directory.resolve("PARAMETERS.csv"), directory.resolve("MANUAL_ACTIONS.md")));
                 if (report.any()) included.add(directory.resolve("EXPECTATIONS.md"));
+                if (Files.exists(directory.resolve("FINDINGS.md"))) included.add(directory.resolve("FINDINGS.md"));
                 for (Rules.Sql query : rules.queries) if (failures.containsKey(query.id))
                     included.add(directory.resolve(query.id + ".sql"));
                 for (Rules.Include include : compression.includes) included.addAll(artifacts.get(include.ref));
@@ -317,6 +324,30 @@ public final class Cli {
             try { CsvFiles.deleteTree(directory.resolve(".work")); }
             catch (IOException cleanup) { LOG.warn("Could not remove temporary files under {}", directory.resolve(".work"), cleanup); }
         }
+    }
+
+    /** One FINDINGS.md for the run, comparisons in rule order, and the few lines worth putting in SUMMARY.md. */
+    private static List<String> writeFindings(Path directory, List<ComparisonRunner.Result> comparisons) throws IOException {
+        List<String> top = new ArrayList<>();
+        StringBuilder md = new StringBuilder("# Findings\n\nComputed from the complete comparisons; counts are exact, examples are capped. "
+            + "Most important first within each comparison. A finding says what the data shows, not what caused it. Details: <comparison>/FINDINGS.md.\n");
+        boolean any = false;
+        record Ranked(String comparison, Findings.Finding finding) {}
+        List<Ranked> all = new ArrayList<>();
+        for (var result : comparisons) {
+            if (result.findings().isEmpty()) continue;
+            any = true;
+            md.append("\n## ").append(result.id()).append(": ").append(result.headline()).append("\n\n");
+            int n = 1;
+            for (var f : result.findings().stream().limit(6).toList())
+                md.append(n++).append(". ").append(Findings.line(f, 700)).append("\n");
+            result.findings().stream().limit(2).forEach(f -> all.add(new Ranked(result.id(), f)));
+        }
+        if (!any) return top;
+        Files.writeString(directory.resolve("FINDINGS.md"), md.toString());
+        all.stream().sorted(Comparator.comparingDouble((Ranked r) -> r.finding().score()).reversed()).limit(5)
+            .forEach(r -> top.add("**" + r.comparison() + "**: " + Findings.line(r.finding(), 210)));
+        return top;
     }
 
     private List<QueryScheduler.Outcome> executeGroup(QueryScheduler.Group group, QueryRunner runner,
