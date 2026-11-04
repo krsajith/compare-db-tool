@@ -139,7 +139,22 @@ public final class RuleLoader {
             if (checkQueries) TempTablePolicy.validate(sql, settings);
             queries.put(sql.id, sql);
         }
+        // Inputs from earlier queries: declared aliases, existing targets, no cycles. Structure only; the values arrive at run time.
+        Map<String, Set<String>> needs = new LinkedHashMap<>();
+        for (Rules.Sql sql : rules.queries) needs.put(sql.id, Chaining.needs(sql, queries.keySet()));
+        String cycle = Chaining.cycle(needs);
+        if (cycle != null) throw new ToolException("Queries use each other's results in a circle: " + cycle + ".");
+        for (Rules.Sql sql : rules.queries) if (sql.listBatch < 1 || sql.listBatch > 30_000)
+            throw new ToolException("Query " + sql.id + ": listBatch must be between 1 and 30000.");
         if (rules.comparisons == null) rules.comparisons = new ArrayList<>();
+        for (Rules.Compare compare : rules.comparisons) if ("db".equals(compare.engine)) {
+            for (String inputId : new String[]{compare.source, compare.target}) {
+                if (needs.containsKey(inputId) && !needs.get(inputId).isEmpty())
+                    throw new ToolException("Comparison " + compare.id + " (engine=db): query " + inputId + " uses the result of another query, which engine=db cannot do.");
+                if (needs.values().stream().anyMatch(n -> n.contains(inputId)))
+                    throw new ToolException("Comparison " + compare.id + " (engine=db): query " + inputId + " is an input of the database comparison and cannot also feed another query.");
+            }
+        }
         for (Rules.Compare compare : rules.comparisons) {
             id(compare.id, ids);
             ExportMode.resolve(compare.export, ExportMode.SAMPLE);
@@ -193,7 +208,11 @@ public final class RuleLoader {
         for (Rules.Funnel funnel : rules.funnels) outputName(funnel.id, outputs);
         for (Rules.Compress zip : rules.compressions) outputName(zip.file, outputs);
         Map<String, Object> values = parameters(rules, Map.of());
-        if (checkQueries) rules.queries.forEach(q -> QueryRunner.validateParameters(q, values));
+        if (checkQueries) rules.queries.forEach(q -> {
+            Map<String, Object> withInputs = new HashMap<>(values);
+            withInputs.putAll(Chaining.placeholders(q));
+            QueryRunner.validateParameters(q, withInputs);
+        });
     }
 
     public static List<String> keys(Rules.Compare compare) {

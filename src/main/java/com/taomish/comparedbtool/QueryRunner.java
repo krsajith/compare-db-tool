@@ -100,11 +100,17 @@ public final class QueryRunner implements AutoCloseable {
         return run(rule, parameters, globalLimit, directory, ExportMode.FULL);
     }
     public Result run(Rules.Sql rule, Map<String, Object> parameters, long globalLimit, Path directory, ExportMode defaultMode) throws IOException {
+        return run(rule, parameters, globalLimit, directory, defaultMode, null);
+    }
+    /** {@code inputs} says what was taken from earlier queries (shown while running and written to the query's metadata). */
+    public Result run(Rules.Sql rule, Map<String, Object> parameters, long globalLimit, Path directory, ExportMode defaultMode, String inputs) throws IOException {
         ExportMode mode = ExportMode.resolve(rule.export, defaultMode);
         String sql = SqlGuard.validate(rule.text);
         TempTablePolicy.validate(rule, settings);
         // Resolve all parameters before opening a database connection.
         validateParameters(rule, parameters);
+        // One execution, or one per slice of a long list taken from another query (checked before any connection is opened).
+        final List<Map<String, Object>> executions = Chaining.executions(rule, parameters);
         long cap = rule.maxRows;
         if (globalLimit > 0) cap = cap == 0 ? globalLimit : Math.min(cap, globalLimit);
         final long limit = cap;
@@ -119,10 +125,16 @@ public final class QueryRunner implements AutoCloseable {
         List<Column> columns = new ArrayList<>();
         long[] rows = {0};
         boolean[] partial = {false};
-        final Progress.Handle progress = Progress.get().start(rule.id, rule.db);
+        final Progress.Handle progress = Progress.get().start(rule.id, rule.db + (inputs == null || inputs.isBlank() ? "" : " (" + inputs + ")"));
+        final CSVPrinter[] printer = {null};
         try {
             if (rule.tempTables) LOG.warn("Temp-table mode datasource={} query={}; transaction will be rolled back", rule.db, rule.id);
-            new NamedParameterJdbcTemplate(datasource(rule.db, rule.tempTables)).execute(sql, parameters,
+            var template = new NamedParameterJdbcTemplate(datasource(rule.db, rule.tempTables));
+            int batchNumber = 0;
+            for (Map<String, Object> execution : executions) {
+              if (partial[0]) break;                       // the row cap was reached in an earlier batch
+              if (executions.size() > 1) LOG.info("Query {} batch {} of {}", rule.id, ++batchNumber, executions.size());
+              template.execute(sql, execution,
                 (PreparedStatementCallback<Void>) statement -> {
                     try {
                       statement.setQueryTimeout(rule.timeout);
@@ -130,15 +142,20 @@ public final class QueryRunner implements AutoCloseable {
                       LOG.debug("Connected for query {}; executing SELECT", rule.id);
                       try (ResultSet result = statement.executeQuery()) {
                         ResultSetMetaData metadata = result.getMetaData();
-                        Set<String> labels = new HashSet<>();
-                        for (int index = 1; index <= metadata.getColumnCount(); index++) {
-                            String label = metadata.getColumnLabel(index);
-                            if (label == null || label.isBlank() || !labels.add(label.toLowerCase(Locale.ROOT)))
-                                throw new ToolException("Query " + rule.id + " has empty/duplicate column labels; use SQL aliases.");
-                            columns.add(new Column(label, metadata.getColumnType(index)));
+                        if (columns.isEmpty()) {
+                            Set<String> labels = new HashSet<>();
+                            for (int index = 1; index <= metadata.getColumnCount(); index++) {
+                                String label = metadata.getColumnLabel(index);
+                                if (label == null || label.isBlank() || !labels.add(label.toLowerCase(Locale.ROOT)))
+                                    throw new ToolException("Query " + rule.id + " has empty/duplicate column labels; use SQL aliases.");
+                                columns.add(new Column(label, metadata.getColumnType(index)));
+                            }
+                            LOG.debug("Query {} returned column labels={}", rule.id, columns.stream().map(Column::name).toList());
+                            try { printer[0] = CsvFiles.writer(csv, columns.stream().map(Column::name).toList()); }
+                            catch (IOException e) { throw new ToolException("Cannot write CSV for query " + rule.id + ".", e); }
                         }
-                        LOG.debug("Query {} returned column labels={}", rule.id, columns.stream().map(Column::name).toList());
-                        try (CSVPrinter out = CsvFiles.writer(csv, columns.stream().map(Column::name).toList())) {
+                        try {
+                            CSVPrinter out = printer[0];
                             while (result.next()) {
                                 if (limit > 0 && rows[0] >= limit) { partial[0] = true; break; }
                                 List<String> values = new ArrayList<>(columns.size());
@@ -156,6 +173,7 @@ public final class QueryRunner implements AutoCloseable {
                     }
                     return null;
                 });
+            }
         } catch (ToolException e) { throw e; }
         catch (Exception e) {
             String state = "unknown";
@@ -163,11 +181,16 @@ public final class QueryRunner implements AutoCloseable {
                 if (cause instanceof SQLException se) { state = Objects.toString(se.getSQLState(), "unknown"); break; }
             throw new ToolException("Query " + rule.id + " failed on datasource " + rule.db + " (SQLState " + state
                 + "). Check connection settings, permissions and SQL. Any CSV from this query is incomplete.", e);
-        } finally { progress.done(); }
+        } finally {
+            progress.done();
+            if (printer[0] != null) try { printer[0].close(); } catch (IOException e) { LOG.warn("Could not close the CSV of query {}", rule.id, e); }
+        }
         long millis = (System.nanoTime() - start) / 1_000_000;
         if (partial[0]) LOG.warn("Query {} hit its row cap after {} rows; results are PARTIAL", rule.id, rows[0]);
         LOG.info("Query {} export complete: rows={} elapsedMs={} CSV={}", rule.id, rows[0], millis, csv);
         writeMetadata(rule, rows[0], partial[0], millis, columns, mode, meta, null);
+        if (inputs != null && !inputs.isBlank())
+            Files.writeString(meta, Files.readString(meta) + "\nInputs from earlier queries: " + inputs + (executions.size() > 1 ? "; run as " + executions.size() + " batches, rows joined in batch order" : "") + ".\n");
         List<Path> files = new ArrayList<>();
         if (mode == ExportMode.FULL) files.add(csv);
         if (mode != ExportMode.NONE) files.add(sqlFile);

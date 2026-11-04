@@ -221,8 +221,12 @@ public final class Cli {
             for (var compare : rules.comparisons) if (!"db".equals(compare.engine)) {
                 dbOnly.remove(compare.source); dbOnly.remove(compare.target);
             }
-            QueryScheduler.run(rules.queries.stream().filter(q -> !dbOnly.contains(q.id)).toList(), options.parallel,
-                group -> executeGroup(group, runner, parameters, directory, options),
+            Map<String, Set<String>> needs = new HashMap<>();
+            Set<String> queryIds = new HashSet<>();
+            rules.queries.forEach(q -> queryIds.add(q.id));
+            rules.queries.forEach(q -> needs.put(q.id, Chaining.needs(q, queryIds)));
+            QueryScheduler.run(rules.queries.stream().filter(q -> !dbOnly.contains(q.id)).toList(), needs, options.parallel,
+                (group, finished) -> executeGroup(group, finished, runner, parameters, directory, options),
                 outcomes -> {
                     for (var outcome : outcomes) {
                         completedQueries.add(outcome.query().id);
@@ -405,9 +409,35 @@ public final class Cli {
         return top;
     }
 
-    private List<QueryScheduler.Outcome> executeGroup(QueryScheduler.Group group, QueryRunner runner,
-            Map<String, Object> parameters, Path directory, Options options) throws IOException {
+    private List<QueryScheduler.Outcome> executeGroup(QueryScheduler.Group group, Map<String, QueryScheduler.Outcome> finished, QueryRunner runner,
+            Map<String, Object> baseParameters, Path directory, Options options) throws IOException {
         List<QueryScheduler.Outcome> outcomes = new ArrayList<>();
+        // Inputs from earlier queries: only when every query this one uses finished completely.
+        Map<String, Object> parameters = baseParameters;
+        String inputs = "";
+        Rules.Sql probe = group.rules().getFirst();
+        if (!Chaining.uses(probe).isEmpty()) {
+            Map<String, QueryRunner.Result> results = new HashMap<>();
+            for (String need : group.needs()) {
+                var done = finished.get(need);
+                if (done == null || done.error() != null || done.result() == null || done.result().partial()) {
+                    String why = "Not run: it uses the result of query " + need + ", which failed, was blocked or is PARTIAL.";
+                    group.rules().forEach(q -> outcomes.add(new QueryScheduler.Outcome(q, null, new ToolException(why), false)));
+                    return outcomes;
+                }
+                results.put(need, done.result());
+            }
+            try {
+                Map<String, Object> bound = Chaining.bind(probe, results);
+                parameters = new HashMap<>(baseParameters);
+                parameters.putAll(bound);
+                inputs = Chaining.describe(probe, bound, group.rules().stream().mapToInt(q -> q.listBatch).min().orElse(1000));
+                if (!inputs.isEmpty()) LOG.info("Query {} {}", probe.id, inputs);
+            } catch (Exception error) {
+                group.rules().forEach(q -> outcomes.add(new QueryScheduler.Outcome(q, null, error, false)));
+                return outcomes;
+            }
+        }
         List<Rules.Sql> eligible = new ArrayList<>();
         for (Rules.Sql query : group.rules()) {
             try {
@@ -421,7 +451,7 @@ public final class Cli {
         if (eligible.size() == 1) {
             Rules.Sql query = eligible.getFirst();
             LOG.info("Starting query {} on {} (timeout {} s)...", query.id, query.db, query.timeout);
-            try { outcomes.add(new QueryScheduler.Outcome(query, runner.run(query, parameters, options.limit, directory, options.export), null, true)); }
+            try { outcomes.add(new QueryScheduler.Outcome(query, runner.run(query, parameters, options.limit, directory, options.export, inputs), null, true)); }
             catch (Exception error) { outcomes.add(new QueryScheduler.Outcome(query, null, error, true)); }
             return outcomes;
         }
@@ -430,6 +460,7 @@ public final class Cli {
         canonical.tempTables = first.tempTables;
         canonical.timeout = eligible.stream().mapToInt(q -> q.timeout).min().orElseThrow();
         canonical.fetchSize = eligible.stream().mapToInt(q -> q.fetchSize).min().orElseThrow();
+        canonical.listBatch = eligible.stream().mapToInt(q -> q.listBatch).min().orElseThrow();
         List<Long> limits = eligible.stream().map(q -> QueryRunner.effectiveLimit(q, options.limit)).toList();
         canonical.maxRows = limits.contains(0L) ? 0 : limits.stream().mapToLong(Long::longValue).max().orElseThrow();
         Path sharedDirectory = directory.resolve(".work/reuse").resolve(first.id);
@@ -437,7 +468,7 @@ public final class Cli {
         LOG.info("Executing identical SQL once on {} for ids={}; strictest timeout={} s", first.db,
             eligible.stream().map(q -> q.id).toList(), canonical.timeout);
         QueryRunner.Result shared;
-        try { shared = runner.run(canonical, parameters, 0, sharedDirectory, ExportMode.NONE); }
+        try { shared = runner.run(canonical, parameters, 0, sharedDirectory, ExportMode.NONE, inputs); }
         catch (Exception error) {
             eligible.forEach(q -> outcomes.add(new QueryScheduler.Outcome(q, null, error, true)));
             return outcomes;

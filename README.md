@@ -133,6 +133,35 @@ A finding says what the data shows, not what caused it. Re-key and near-miss det
 found by JDBC type or a `_timestamp`/`_at`/`_date`/`_time` name. `engine="db"` comparisons keep their SQL-side counts and samples and
 produce no findings.
 
+## Using one query's result in another
+
+A query can take values from an earlier query, even on another database, for example the keys that are missing in one system looked up in another. The values are
+always bound parameters, never pasted into the SQL. The consuming `<sql>` declares what it uses; ids with a hyphen need an alias (`alias=query-id`), because a hyphen
+ends a parameter name in SQL.
+
+```xml
+<sql id="valuation-date" db="postgres-dev">SELECT value_date FROM opera.valuation_date_table WHERE business_unit = :bu</sql>
+<sql id="missing-keys"   db="mysql-oprdb02">SELECT trade_id FROM legacy_schema.trades WHERE ...</sql>
+<sql id="lookup" db="postgres-dev" uses="vd=valuation-date, mk=missing-keys">
+    SELECT trade_id, status FROM opera.trades
+    WHERE value_date = :vd.value_date AND trade_id IN (:mk.trade_id[])
+</sql>
+```
+
+- `:alias.column` is one value: the earlier query must return exactly one row, otherwise the run says so (none, or more than one and "use `[]` for a list").
+- `:alias.column[]` is a list: all rows of that column, without NULLs and duplicates, for `IN (...)`.
+- Types come from the earlier query's JDBC types (numbers, dates, timestamps, booleans, text); binary columns are refused.
+- **Order:** the query waits for the ones it uses and still runs in parallel with everything else. If a query it uses failed, was blocked or is PARTIAL, it is not run and
+  `MANUAL_ACTIONS.md` says why. `--validate` checks aliases, unknown ids, unused aliases and circles without connecting.
+- **Long lists run in batches:** `listBatch` (default 1000, at most 30000) values per statement; the rows of all batches are joined into one result, in batch order, and the
+  progress line and the query's `.md` say how many values and batches. A query that combines rows (`GROUP BY`, `DISTINCT`, an aggregate, `LIMIT`/`OFFSET`, `UNION` ...) is
+  never split, because the answer would be wrong; above `listBatch` it fails with a message saying so. At most one list may exceed `listBatch`, and no list may have more than
+  100,000 values.
+- **Empty list:** `IN (:mk.trade_id[])` with no values matches nothing and the query returns no rows, which is the normal answer to "are there any missing?". `NOT IN` with an
+  empty list cannot be expressed safely and is refused.
+- Queries with the same SQL but different `uses` are not merged. An input of an `engine="db"` comparison cannot use or feed another query. The scalar values used are shown in
+  the progress line and the metadata; lists show only counts.
+
 ## Funnels: the first stage where two sides stop agreeing
 
 A result is usually produced in ordered steps, each keeping only some rows. A `<funnel>` finds the step where the two sides start to differ.

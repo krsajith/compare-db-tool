@@ -39,6 +39,10 @@ public class Rules {
         @JacksonXmlProperty(isAttribute = true) public int fetchSize = 1000;
         @JacksonXmlProperty(isAttribute = true) public long maxRows;
         @JacksonXmlProperty(isAttribute = true) public boolean tempTables;
+        /** Inputs from earlier queries: "alias=query-id, other"; the SQL refers to :alias.column or :alias.column[]. */
+        @JacksonXmlProperty(isAttribute = true) public String uses;
+        /** Longest list of values per statement taken from another query; longer lists run in batches. */
+        @JacksonXmlProperty(isAttribute = true) public int listBatch = 1000;
         @JacksonXmlProperty(isAttribute = true) public String export;
         @JacksonXmlText public String text;
     }
