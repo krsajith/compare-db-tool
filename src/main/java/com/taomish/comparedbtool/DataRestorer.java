@@ -88,6 +88,8 @@ public final class DataRestorer {
         if (options.validate) {
             LOG.info("VALID: restore rule {} with {} steps and {} verify rule(s); no database connection opened", rule.name,
                 rule.steps.size(), rule.verify == null ? 0 : rule.verify.size());
+            Progress.get().line("compare-db-tool: restore rule " + rule.name + " is valid - " + rule.steps.size() + " steps, "
+                + (rule.verify == null ? 0 : rule.verify.size()) + " verify rule(s). No connection was opened.");
             return 0;
         }
         var definition = settings.getDatasources().get(rule.db);
@@ -113,9 +115,11 @@ public final class DataRestorer {
                 if (options.apply) {
                     connection.commit();
                     LOG.info("COMMITTED restore {}: {} steps", rule.name, results.size());
+                    Progress.get().line("  APPLIED: " + results.size() + (results.size() == 1 ? " step" : " steps") + " committed");
                 } else {
                     connection.rollback();
                     LOG.info("PREVIEW complete for {}: nothing changed (rolled back). Add --apply to commit.", rule.name);
+                    Progress.get().line("  PREVIEW: nothing was changed (rolled back). Add --apply to commit.");
                 }
             } catch (Exception e) {
                 connection.rollback();
@@ -127,6 +131,7 @@ public final class DataRestorer {
         writeSummary(dir, rule, results, options.apply, verified);
         if (options.apply) writeUndo(dir, rule, results);
         LOG.info("Summary: {}", dir.resolve("RESTORE.md"));
+        Progress.get().line("  summary: " + dir.resolve("RESTORE.md"));
         if (verified.stream().anyMatch(v -> v.error() != null)) return 2;
         boolean unmet = results.stream().anyMatch(r -> !r.unmet().isEmpty());
         return unmet || verified.stream().anyMatch(v -> !v.passed()) ? 1 : 0;
@@ -148,6 +153,7 @@ public final class DataRestorer {
                 Cli.Outcome outcome = new Cli(settings).executeRules(run);
                 results.add(new VerifyResult(v.rule, outcome.exit(), outcome.directory(), outcome.report(), null));
                 LOG.info("Verify {}: exit {}, {}", v.rule, outcome.exit(), outcome.report().headline());
+                Progress.get().line("  verify " + v.rule + ": " + outcome.report().headline());
             } catch (Exception e) {
                 LOG.error("Verify rule {} could not run", v.rule, e);
                 results.add(new VerifyResult(v.rule, 2, null, null, e.getMessage()));
@@ -251,6 +257,9 @@ public final class DataRestorer {
         long stillDifferent = count(c, "SELECT count(*) FROM " + reference + " r WHERE NOT EXISTS (SELECT 1 FROM " + target + " t WHERE "
             + keyMatch + " AND NOT " + contentDiff + ")");
         if (stillDifferent != 0) throw new ToolException("Step " + s.id + ": " + stillDifferent + " reference rows still differ after the restore");
+        Progress.get().line(String.format(java.util.Locale.ROOT, "  step %s: %s rows in %s, %s in %s; replaced %s, inserted %s, %s only in the target (removed %s); target now %s rows",
+            s.id, Progress.count(before), s.table, Progress.count(refRows), s.from, Progress.count(changed), Progress.count(missing),
+            Progress.count(extra), Progress.count(removedExtra), Progress.count(after)));
         LOG.info("Step {}: target {} rows, reference {}; replaced {}, inserted {}, extra {} (removed {}); target now {}; backup {}; {} s",
             s.id, before, refRows, changed, missing, extra, removedExtra, after, backup, (System.nanoTime() - started) / 1_000_000_000);
         List<String> unmet = new ArrayList<>();

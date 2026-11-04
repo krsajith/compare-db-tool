@@ -7,6 +7,32 @@ two instances of the same database type, or different database types. MySQL and 
 The Spring Boot version is 4.1.2. Java source/bytecode targets 21; the launcher uses your JAVA_HOME or PATH and can
 run on a newer JDK, including Java 27. The runtime Java and Spring Boot versions are recorded in the log at startup.
 
+## What the console tells you
+
+While a rule runs the tool prints short, plain messages; the log files in `logs/` keep the full detail and the stack traces.
+
+```
+compare-db-tool: trade-check - 2 queries on mysql-oprdb02, postgres-dev, 1 comparison; export sample
+  output: out\trade-check-20261104-101500-...
+  > legacy-trades on mysql-oprdb02 ...
+  ... legacy-trades on mysql-oprdb02 still running (2 min 0 s, 340,000 rows so far)
+  OK  found 9,251 rows in legacy-trades (mysql-oprdb02) in 2 min 31 s
+  OK  found 9,248 rows in new-trades (postgres-dev) in 4.2 s
+  compare trades: 9,236 matched (9,000 equal, 236 differ), 15 only in legacy-trades, 12 only in new-trades
+    finding: 12 of 12 missing rows exist on the other side under a different key ...
+  expectations: FAIL (1 of 3 expectations not met)
+    FAIL trades: different expected 0, got 236 (parity after the restore)
+  zip: trade-check.zip (84.2 KB)
+compare-db-tool: done in 2 min 36 s - exit 1 (differences, or an expectation was not met), expectations FAIL
+  summary: out\trade-check-...\SUMMARY.md
+```
+
+- A step that takes longer than 30 seconds reports every 30 seconds ("still running", with the rows fetched so far). Change the interval with `-Dcompare.progress.seconds=N` (0 = off).
+- A failed query shows its cause on one line (`ConnectException: Connection refused`, the SQL state, a timeout); the details are in `MANUAL_ACTIONS.md`.
+- Restore steps print their counts (`245,109 rows in live.table, 314,822 in the reference; replaced 0, inserted 314,822 ...`), then PREVIEW or APPLIED, and the verify verdicts.
+- `--quiet` turns these messages off (warnings and errors still show). The console otherwise shows warnings and errors only; to see every log line as before, set
+  `logging.console.level=INFO` (or `DEBUG`) in `config/logging.properties`, or pass it on the command line with two leading dashes.
+
 ## Interactive menu
 
 `.\compare.ps1` with no arguments (or `--menu`) opens a menu. Everything you type on the command line still works unchanged.

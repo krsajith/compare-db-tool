@@ -36,6 +36,7 @@ public final class Cli {
         --restore FILE        Restore table rows from reference tables using a JSON rule (preview by default);
                               step "expect" counts are checked, "verify" rules run after --apply
         --apply               Commit template replacement or data restore; otherwise roll back the preview
+        --quiet               No progress messages on the console (the log files and outputs are unchanged)
         --menu                Interactive menu (also the default when started without arguments in a terminal)
         --help                Show this help
 
@@ -61,7 +62,7 @@ public final class Cli {
         public long limit;
         public boolean validate, datasources, allowProd, help;
         /** Interactive menu; menuRequested = asked for with --menu (plain prompts are allowed without a terminal). */
-        public boolean menu, menuRequested;
+        public boolean menu, menuRequested, quiet;
     }
     private final DatasourceSettings settings;
     public Cli(DatasourceSettings settings) { this.settings = settings; }
@@ -118,6 +119,7 @@ public final class Cli {
                     }
                 } catch (IllegalArgumentException e) { throw new ToolException("Invalid value for " + name); }
             } else switch (argument) {
+                case "--quiet" -> options.quiet = true;
                 case "--menu" -> { options.menu = true; options.menuRequested = true; }
                 case "--validate" -> options.validate = true;
                 case "--apply" -> options.apply = true;
@@ -152,6 +154,7 @@ public final class Cli {
     public record Outcome(int exit, Path directory, Expectations.Report report) {}
 
     public int execute(Options options) throws IOException {
+        Progress.get().quiet(options.quiet);
         if (options.menu) return Menu.launch(settings, options);
         if (options.templateExport != null) return new TemplateExporter(settings).execute(options);
         if (options.templateUpload != null) return new TemplateUploader(settings).execute(options);
@@ -177,6 +180,9 @@ public final class Cli {
         if (options.validate) {
             LOG.info("VALID: {} queries, {} comparisons, {} ZIP packages. No connections opened.",
                 rules.queries.size(), rules.comparisons.size(), rules.compressions.size());
+            Progress.get().quiet(options.quiet);
+            Progress.get().line("compare-db-tool: rules are valid - " + rules.queries.size() + " queries, " + rules.comparisons.size() + " comparisons, "
+                + rules.funnels.size() + " funnels, " + rules.expectations.size() + " expectations, " + rules.compressions.size() + " ZIP. No connection was opened.");
             return new Outcome(0, null, new Expectations.Report(List.of(), Set.of()));
         }
         Path base = options.out.toAbsolutePath().normalize();
@@ -185,6 +191,14 @@ public final class Cli {
         if (name.length() > 60) name = name.substring(0, 60);
         Path directory = Files.createTempDirectory(base, name + "-" + LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss")) + "-");
         LOG.info("Output: {}", directory);
+        Progress.get().quiet(options.quiet);
+        final long startedNanos = System.nanoTime();
+        Progress.get().line("compare-db-tool: " + rules.name + " - " + rules.queries.size() + (rules.queries.size() == 1 ? " query" : " queries") + " on "
+            + String.join(", ", rules.queries.stream().map(q -> q.db).distinct().toList())
+            + (rules.comparisons.isEmpty() ? "" : ", " + rules.comparisons.size() + (rules.comparisons.size() == 1 ? " comparison" : " comparisons"))
+            + (rules.funnels.isEmpty() ? "" : ", " + rules.funnels.size() + (rules.funnels.size() == 1 ? " funnel" : " funnels"))
+            + "; export " + options.export.name().toLowerCase(Locale.ROOT) + (options.limit > 0 ? ", row limit " + Progress.count(options.limit) : ""));
+        Progress.get().line("  output: " + directory);
         Map<String, List<Path>> artifacts = new LinkedHashMap<>();
         Map<String, QueryRunner.Result> queries = new LinkedHashMap<>();
         List<ComparisonRunner.Result> comparisons = new ArrayList<>();
@@ -239,9 +253,11 @@ public final class Cli {
                     queries.putIfAbsent(source.id, outcome.source()); queries.putIfAbsent(target.id, outcome.target());
                     comparisons.add(outcome.comparison()); artifacts.put(compare.id, outcome.comparison().files());
                     LOG.info("Compare {} engine=db: {}; fetched aggregate/sample rows={}", compare.id, outcome.comparison().headline(), outcome.fetched());
+                    Progress.get().line(Progress.compared(compare.id, compare.source, compare.target, outcome.comparison()));
                 } catch (Exception error) {
                     LOG.error("Database comparison {} did not complete; continuing", compare.id, error);
                     String detail = failureReason(error); failures.put(compare.id, "Comparison " + compare.id + ": " + detail);
+                    Progress.get().line("  FAILED compare " + compare.id + ": " + Menu.shorten(detail.replaceAll("\\s+", " "), 200));
                     Path note = manualDirectory.resolve(compare.id + ".md");
                     Files.writeString(note, "# Comparison " + compare.id + " not completed\n\n" + detail + "\n\nAny comparison files are incomplete.\n");
                     artifacts.put(compare.id, List.of(note));
@@ -255,9 +271,11 @@ public final class Cli {
                     var result = new FunnelRunner(options.partitions, options.maxPartitionMb).run(funnel, queries, directory, options.export, options.sampleRows);
                     funnels.add(result); artifacts.put(funnel.id, result.files());
                     LOG.info("Funnel {}: {}", funnel.id, result.headline());
+                    Progress.get().line("  funnel " + funnel.id + ": " + result.headline());
                 } catch (Exception error) {
                     LOG.error("Funnel {} did not complete; continuing", funnel.id, error);
                     String detail = failureReason(error);
+                    Progress.get().line("  FAILED funnel " + funnel.id + ": " + Menu.shorten(detail.replaceAll("\\s+", " "), 200));
                     failures.put(funnel.id, "Funnel " + funnel.id + ": " + detail);
                     Path note = manualDirectory.resolve(funnel.id + ".md");
                     Files.writeString(note, "# Funnel " + funnel.id + " not completed\n\n" + detail + "\n\nAny files in the funnel directory are incomplete.\n");
@@ -273,7 +291,12 @@ public final class Cli {
                 .anyMatch(ComparisonRunner.Result::differs)
                 || funnels.stream().filter(f -> !report.judgedComparisons().contains(f.id())).anyMatch(FunnelRunner.Result::differs);
             int exit = partial || !failures.isEmpty() ? 2 : differs || !report.passed() ? 1 : 0;
-            if (report.any()) LOG.info("Expectations: {}", report.headline());
+            if (report.any()) {
+                LOG.info("Expectations: {}", report.headline());
+                Progress.get().line("  expectations: " + report.headline());
+                report.verdicts().stream().filter(v -> !v.pass()).limit(10).forEach(v -> Progress.get().line("    FAIL " + v.ref() + ": " + v.check()
+                    + " expected " + v.expected() + ", got " + Menu.shorten(String.valueOf(v.actual()), 120) + (v.reason() == null || v.reason().isBlank() ? "" : " (" + v.reason() + ")")));
+            }
             List<String> topFindings = writeFindings(directory, comparisons, funnels);
             StringBuilder summary = new StringBuilder("# " + rules.name + "\n\nStatus: "
                 + (!failures.isEmpty() ? "INCOMPLETE / MANUAL ACTIONS REQUIRED" : partial ? "PARTIAL"
@@ -319,6 +342,7 @@ public final class Cli {
                 try {
                     zip(directory, directory.resolve(compression.file), included);
                 LOG.info("ZIP: {} ({} bytes)", directory.resolve(compression.file), Files.size(directory.resolve(compression.file)));
+                Progress.get().line("  zip: " + compression.file + " (" + Progress.size(Files.size(directory.resolve(compression.file))) + ")");
                 } catch (IOException e) {
                     LOG.error("ZIP {} failed; exported files remain available", compression.file, e);
                     failures.put(compression.id, "ZIP " + compression.file + " failed: " + failureReason(e)
@@ -331,6 +355,10 @@ public final class Cli {
             }
             LOG.info("Summary: {}", directory.resolve("SUMMARY.md"));
             LOG.info("Manual actions: {} ({} issue(s))", directory.resolve("MANUAL_ACTIONS.md"), failures.size());
+            if (!failures.isEmpty()) Progress.get().line("  " + failures.size() + (failures.size() == 1 ? " item needs" : " items need") + " attention: " + directory.resolve("MANUAL_ACTIONS.md"));
+            Progress.get().line("compare-db-tool: done in " + Progress.duration((System.nanoTime() - startedNanos) / 1_000_000) + " - exit " + exit + " (" + Menu.exitText(exit) + ")"
+                + (report.any() ? ", expectations " + (report.passed() ? "PASS" : "FAIL") : ""));
+            Progress.get().line("  summary: " + directory.resolve("SUMMARY.md"));
             return new Outcome(exit, directory, report);
         } catch (Exception e) {
             String message = e instanceof ToolException ? e.getMessage() : "File processing failed. Check paths, free disk space and permissions.";
@@ -425,12 +453,14 @@ public final class Cli {
         Rules.Sql query = outcome.query();
         if (outcome.error() == null) {
             QueryRunner.Result result = outcome.result();
+            Progress.get().line(Progress.queryFound(query.id, query.db, result.rows(), result.millis(), result.partial()));
             queries.put(query.id, result); artifacts.put(query.id, result.files());
             if (result.partial()) failures.put(query.id, "PARTIAL query on " + query.db
                 + ". Rerun without the row cap; do not compare this incomplete extract.");
             return;
         }
         LOG.error("Query {} on {} failed; continuing with other queries", query.id, query.db, outcome.error());
+        Progress.get().line(Progress.queryFailed(query.id, query.db, failureReason(outcome.error())));
         String action = outcome.permitted() ? "Open " + query.id + ".sql in your database client connected to " + query.db
             + ", supply the parameters from PARAMETERS.csv, and check the SELECT manually."
             : "Correct the rule, datasource settings or authorization reported below, then rerun; do not bypass safety checks manually.";
@@ -461,9 +491,11 @@ public final class Cli {
             var result = comparator.run(compare, source, target, directory, options.export, options.sampleRows);
             comparisons.add(result); artifacts.put(compare.id, result.files());
             LOG.info("Compare {}: {}", compare.id, result.headline());
+            Progress.get().line(Progress.compared(compare.id, compare.source, compare.target, result));
         } catch (Exception error) {
             LOG.error("Comparison {} did not complete; continuing", compare.id, error);
             String detail = failureReason(error);
+            Progress.get().line("  FAILED compare " + compare.id + ": " + Menu.shorten(detail.replaceAll("\\s+", " "), 200));
             failures.put(compare.id, "Comparison " + compare.id + ": " + detail);
             Path note = manualDirectory.resolve(compare.id + ".md");
             Files.writeString(note, "# Comparison " + compare.id + " not completed\n\n" + detail

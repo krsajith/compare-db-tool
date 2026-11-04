@@ -7,9 +7,14 @@
     <springProperty scope="context" name="TOOL_MAX_HISTORY" source="logging.logback.rollingpolicy.max-history" defaultValue="7"/>
     <springProperty scope="context" name="TOOL_TOTAL_SIZE_CAP" source="logging.logback.rollingpolicy.total-size-cap" defaultValue="100MB"/>
 
+    <!-- The console shows warnings and errors plus the tool's own progress messages; the log files keep everything.
+         Bring the detail back with logging.console.level=INFO or DEBUG (config/logging.properties, or on the command line as logging.console.level=DEBUG with two leading dashes). -->
+    <springProperty scope="context" name="TOOL_CONSOLE_LEVEL" source="logging.console.level" defaultValue="WARN"/>
     <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <filter class="com.taomish.comparedbtool.logging.ConsoleLevelFilter"><level>${TOOL_CONSOLE_LEVEL}</level></filter>
         <encoder class="com.taomish.comparedbtool.logging.RedactingPatternLayoutEncoder">
-            <pattern>${CONSOLE_LOG_PATTERN}</pattern>
+            <!-- Short lines on the console, without stack traces (the log files in logs/ keep them). -->
+            <pattern>%d{HH:mm:ss} %-5level %msg%n%nopex</pattern>
             <charset>${CONSOLE_LOG_CHARSET}</charset>
         </encoder>
     </appender>

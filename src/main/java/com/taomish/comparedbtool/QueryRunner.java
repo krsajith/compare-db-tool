@@ -119,6 +119,7 @@ public final class QueryRunner implements AutoCloseable {
         List<Column> columns = new ArrayList<>();
         long[] rows = {0};
         boolean[] partial = {false};
+        final Progress.Handle progress = Progress.get().start(rule.id, rule.db);
         try {
             if (rule.tempTables) LOG.warn("Temp-table mode datasource={} query={}; transaction will be rolled back", rule.db, rule.id);
             new NamedParameterJdbcTemplate(datasource(rule.db, rule.tempTables)).execute(sql, parameters,
@@ -144,6 +145,7 @@ public final class QueryRunner implements AutoCloseable {
                                 for (int index = 1; index <= columns.size(); index++) values.add(value(result, index, columns.get(index - 1).jdbcType()));
                                 out.printRecord(values);
                                 rows[0]++;
+                                if ((rows[0] & 2047) == 0) progress.rows(rows[0]);
                                 if (rows[0] % 100_000 == 0) LOG.info("Query {} exported {} rows so far", rule.id, rows[0]);
                             }
                         } catch (IOException e) { throw new ToolException("Cannot write CSV for query " + rule.id + ".", e); }
@@ -161,7 +163,7 @@ public final class QueryRunner implements AutoCloseable {
                 if (cause instanceof SQLException se) { state = Objects.toString(se.getSQLState(), "unknown"); break; }
             throw new ToolException("Query " + rule.id + " failed on datasource " + rule.db + " (SQLState " + state
                 + "). Check connection settings, permissions and SQL. Any CSV from this query is incomplete.", e);
-        }
+        } finally { progress.done(); }
         long millis = (System.nanoTime() - start) / 1_000_000;
         if (partial[0]) LOG.warn("Query {} hit its row cap after {} rows; results are PARTIAL", rule.id, rows[0]);
         LOG.info("Query {} export complete: rows={} elapsedMs={} CSV={}", rule.id, rows[0], millis, csv);
