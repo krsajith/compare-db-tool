@@ -129,7 +129,8 @@ Each stage is a pair of ordinary `<sql>` queries that return the **keys that sur
   it through). In `sample` mode the CSV holds a few keys per stage and side (counts stay exact), `full` lists all, `none` writes no CSV.
   The funnel also appears in `FINDINGS.md` and the run `SUMMARY.md`, and can be put in a ZIP with `<include ref="deals"/>`.
 - **Chain mode** (`mode="chain"`, stages with `source` only): one side, and the stage where each key drops out ("37 of 40 keys break at s6"). It reports; it is never
-  a difference.
+  a difference. `group="outcome"` (one of the key columns) gives each value of that column its own reaching/dropped columns side by side, for example FAIL and OK pairs.
+  `rules/grasa-funnel-cfs-v2.xml` is the GRASA funnel in this form.
 - **Expectations:** `first-divergence="none"` or a stage id, and `diverging="N"` (same count forms as other `<expect>`; for a chain it counts keys dropping out).
   A comparison funnel with no `<expect>` that diverges is a difference (exit 1), like a comparison.
 - **Rules of use:** stage queries must return the key columns (matched by name, any case; numeric keys compare by value) and may return more, which is ignored.

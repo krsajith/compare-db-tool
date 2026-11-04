@@ -175,4 +175,52 @@ class FunnelTests {
         Cli.Options o = new Cli.Options(); o.rules = file; o.validate = true;
         assertThat(new Cli(settings).executeRules(o).exit()).isZero();
     }
+
+    @Test void groupedChainPutsGroupsSideBySide() throws Exception {
+        String url = "jdbc:h2:mem:" + UUID.randomUUID() + ";DB_CLOSE_DELAY=-1";
+        try (Connection c = DriverManager.getConnection(url, "sa", ""); Statement s = c.createStatement()) {
+            s.execute("CREATE TABLE pairs(id INTEGER, outcome VARCHAR(10), a INTEGER, b INTEGER)");
+            for (int id = 1; id <= 4; id++) s.execute("INSERT INTO pairs VALUES (" + id + ",'FAIL',1," + (id == 1 ? 1 : 0) + ")");   // FAIL: 4 enter, 4 pass a, 1 passes b
+            for (int id = 5; id <= 8; id++) s.execute("INSERT INTO pairs VALUES (" + id + ",'OK',1,1)");                                // OK: all 4 reach the end
+        }
+        settings.getDatasources().get("test").setUrl(url);
+        var outcome = run("""
+            <sql id="g1" db="test">SELECT outcome, id FROM pairs</sql>
+            <sql id="g2" db="test">SELECT outcome, id FROM pairs WHERE a = 1</sql>
+            <sql id="g3" db="test">SELECT outcome, id FROM pairs WHERE a = 1 AND b = 1</sql>
+            <funnel id="grp" key="outcome,id" mode="chain" group="outcome">
+              <stage id="s1" source="g1"/><stage id="s2" source="g2"/><stage id="s3" source="g3" reason="b is set"/>
+            </funnel>""");
+        String md = Files.readString(outcome.directory().resolve("grp/SUMMARY.md"));
+        assertThat(md).contains("FAIL: 4 enter, 1 reach the last stage, most drops at `s3` (3); OK: 4 enter, 4 reach the last stage");
+        assertThat(md).contains("| # | Stage | FAIL reaching | FAIL dropped | OK reaching | OK dropped | What it does |");
+        assertThat(md).contains("| 1 | s1 | 4 | - | 4 | - |").contains("| 3 | s3 | 1 | 3 | 4 | 0 | b is set |");
+    }
+
+    @Test void groupMustBeAKeyColumnAndOnlyForChains() throws Exception {
+        for (var bad : new String[][]{
+            {"<funnel id=\"f\" key=\"id\" mode=\"chain\" group=\"outcome\"><stage id=\"a\" source=\"l1\"/><stage id=\"b\" source=\"l2\"/></funnel>", "must be one of the key columns"},
+            {"<funnel id=\"f\" key=\"id\" group=\"id\"><stage id=\"a\" source=\"l1\" target=\"n1\"/><stage id=\"b\" source=\"l2\" target=\"n2\"/></funnel>", "applies to chain funnels"},
+        }) {
+            Path file = tmp.resolve("g" + Math.abs(bad[0].hashCode()) + ".xml");
+            Files.writeString(file, "<rules name=\"v\">" + QUERIES + bad[0] + "</rules>");
+            Cli.Options o = new Cli.Options(); o.rules = file; o.validate = true;
+            assertThatThrownBy(() -> new Cli(settings).executeRules(o)).hasMessageContaining(bad[1]);
+        }
+    }
+
+    @Test void shippedGrasaFunnelV2ValidatesThroughTheToolAndKeepsAll130Pairs() {
+        var datasources = new DatasourceSettings();
+        var d = new DatasourceSettings.Definition(); d.setUrl("jdbc:postgresql://unreachable.invalid:1/x"); d.setUsername("u"); d.setPassword("p"); d.setReadOnly(true);
+        datasources.getDatasources().put("postgres-dev", d);
+        Rules rules = RuleLoader.load(Path.of("rules/grasa-funnel-cfs-v2.xml"));
+        RuleLoader.validate(rules, datasources, true);          // SQL guard, parameters and funnel references; opens no connection
+        assertThat(rules.queries).hasSize(7);
+        assertThat(rules.funnels).hasSize(1);
+        assertThat(rules.funnels.getFirst().stages).extracting(st -> st.id)
+            .containsExactly("s1_cache", "s2_deal", "s3_eligible", "s4_master", "s5_active", "s6_vol1", "s7_surface");
+        assertThat(rules.funnels.getFirst().group).isEqualTo("outcome");
+        String pairs = rules.parameters.stream().filter(p -> p.name.equals("pairs")).findFirst().orElseThrow().value;
+        assertThat(pairs.split(",")).hasSize(130).allMatch(p -> p.split("\\|").length == 3);
+    }
 }

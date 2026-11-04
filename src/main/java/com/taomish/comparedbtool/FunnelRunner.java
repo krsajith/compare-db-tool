@@ -47,6 +47,11 @@ final class FunnelRunner {
         List<String> keys = keys(funnel);
         if (keys.isEmpty() || keys.stream().anyMatch(String::isBlank) || keys.stream().map(k -> k.toLowerCase(Locale.ROOT)).distinct().count() != keys.size())
             throw new ToolException("Funnel " + funnel.id + " needs key=\"col1,col2\" with distinct, nonempty column names.");
+        if (funnel.group != null) {
+            if (!mode.equals("chain")) throw new ToolException("Funnel " + funnel.id + ": group= applies to chain funnels.");
+            if (keys.stream().noneMatch(k -> k.equalsIgnoreCase(funnel.group.strip())))
+                throw new ToolException("Funnel " + funnel.id + ": group=\"" + funnel.group + "\" must be one of the key columns " + keys + ".");
+        }
         if (funnel.stages == null || funnel.stages.size() < 2 || funnel.stages.size() > MAX_STAGES)
             throw new ToolException("Funnel " + funnel.id + " needs between 2 and " + MAX_STAGES + " <stage> elements.");
         Set<String> stageIds = new HashSet<>();
@@ -81,6 +86,9 @@ final class FunnelRunner {
         List<String> header = new ArrayList<>(keyNames.stream().map(k -> "key." + k).toList());
         header.addAll(chain ? List.of("dropped_at", "stages_reached") : List.of("first_divergence", "kept_only_by", "source_stages", "target_stages"));
         long[] totalDiverging = {0}, written = {0};
+        int groupIndex = -1;
+        if (chain && funnel.group != null) for (int k = 0; k < keyNames.size(); k++) if (keyNames.get(k).equalsIgnoreCase(funnel.group.strip())) groupIndex = k;
+        Map<String, long[]> groupReach = new TreeMap<>(), groupDropped = new TreeMap<>();
         try {
             partition(funnel, queries, keyNames, sides, work);
             MemoryBudget budget = new MemoryBudget(maxPartitionMb);
@@ -109,6 +117,12 @@ final class FunnelRunner {
                         if (chain) {
                             if ((a & 1L) == 0) { if (a != 0) anomalies++; continue; }
                             int dropAt = Long.numberOfTrailingZeros(~a);
+                            if (groupIndex >= 0) {
+                                String g = String.valueOf(entry.getKey().values().get(groupIndex));
+                                long[] reach = groupReach.computeIfAbsent(g, x -> new long[n]), drop = groupDropped.computeIfAbsent(g, x -> new long[n]);
+                                for (int i = 0; i < n; i++) if ((a >> i & 1) == 1) reach[i]++;
+                                if (dropAt < n) drop[dropAt]++;
+                            }
                             if (dropAt >= n) continue;
                             if ((a >> (dropAt + 1)) != 0) anomalies++;
                             dropped[dropAt]++; totalDiverging[0]++;
@@ -143,6 +157,18 @@ final class FunnelRunner {
             for (int i = 1; i < n; i++) if (dropped[i] > dropped[worst]) worst = i;
             headline = totalDiverging[0] == 0 ? "all " + stageReach[0] + " keys of the first stage reach the last stage"
                 : stageReach[0] + " keys enter, " + stageReach[n - 1] + " reach the last stage; " + totalDiverging[0] + " drop out, most at `" + funnel.stages.get(worst).id + "` (" + dropped[worst] + ")";
+            if (groupIndex >= 0 && totalDiverging[0] > 0) {
+                List<String> parts = new ArrayList<>();
+                for (var g : groupReach.entrySet()) {
+                    long[] drop = groupDropped.get(g.getKey());
+                    int w = 0;
+                    for (int i = 1; i < n; i++) if (drop[i] > drop[w]) w = i;
+                    long lost = Arrays.stream(drop).sum();
+                    parts.add(g.getKey() + ": " + g.getValue()[0] + " enter, " + g.getValue()[n - 1] + " reach the last stage"
+                        + (lost == 0 ? "" : ", most drops at `" + funnel.stages.get(w).id + "` (" + drop[w] + ")"));
+                }
+                headline = String.join("; ", parts);
+            }
             detail = totalDiverging[0] == 0 ? "" : "First stage that drops keys: `" + funnel.stages.get(first).id + "` (" + dropped[first] + ")"
                 + (funnel.stages.get(worst).reason == null ? "" : "; the stage with most drops is: " + funnel.stages.get(worst).reason) + ".";
         } else if (first < 0) {
@@ -160,7 +186,18 @@ final class FunnelRunner {
         }
         StringBuilder md = new StringBuilder("# Funnel " + funnel.id + "\n\n" + (chain ? "Chain (one side). " : "Comparison of two sides. ") + "Key: " + String.join(", ", keyNames)
             + ".\n\n**" + headline.substring(0, 1).toUpperCase(Locale.ROOT) + headline.substring(1) + ".**\n\n" + (detail.isEmpty() ? "" : detail + "\n\n"));
-        if (chain) {
+        if (chain && groupIndex >= 0) {
+            md.append("| # | Stage |");
+            for (String g : groupReach.keySet()) md.append(' ').append(Expectations.cell(g)).append(" reaching | ").append(Expectations.cell(g)).append(" dropped |");
+            md.append(" What it does |\n|---|---|").append("---|---|".repeat(groupReach.size())).append("---|\n");
+            for (int i = 0; i < n; i++) {
+                md.append("| ").append(i + 1).append(" | ").append(stages.get(i).id()).append(" |");
+                for (String g : groupReach.keySet()) md.append(' ').append(groupReach.get(g)[i]).append(" | ").append(i == 0 ? "-" : String.valueOf(groupDropped.get(g)[i])).append(" |");
+                md.append(' ').append(Expectations.cell(stages.get(i).reason())).append(" |\n");
+            }
+            md.append("\nRead each group left to right: the first stage with a large \"dropped\" is where that group breaks. Keys are grouped by `").append(funnel.group).append("`.\n");
+            if (anomalies > 0) md.append("\n").append(anomalies).append(" keys appear in a later stage without passing the earlier ones (or reappear after dropping out); they are not counted above.\n");
+        } else if (chain) {
             md.append("| # | Stage | Keys reaching it | Dropped here | What it does |\n|---|---|---|---|---|\n");
             for (int i = 0; i < n; i++) md.append("| ").append(i + 1).append(" | ").append(stages.get(i).id()).append(" | ").append(stageReach[i]).append(" | ")
                 .append(i == 0 ? "-" : String.valueOf(dropped[i])).append(" | ").append(Expectations.cell(stages.get(i).reason())).append(" |\n");

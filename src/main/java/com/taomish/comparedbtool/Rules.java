@@ -121,6 +121,8 @@ public class Rules {
         @JacksonXmlProperty(isAttribute = true) public String id;
         @JacksonXmlProperty(isAttribute = true) public String key;
         @JacksonXmlProperty(isAttribute = true) public String mode = "compare";
+        /** chain only: a key column whose values get a side-by-side table (for example outcome = FAIL / OK). */
+        @JacksonXmlProperty(isAttribute = true) public String group;
         @JacksonXmlProperty(isAttribute = true) public String export;
         @JacksonXmlElementWrapper(useWrapping = false)
         @JacksonXmlProperty(localName = "stage") public List<Stage> stages = new ArrayList<>();
