@@ -162,6 +162,37 @@ ends a parameter name in SQL.
 - Queries with the same SQL but different `uses` are not merged. An input of an `engine="db"` comparison cannot use or feed another query. The scalar values used are shown in
   the progress line and the metadata; lists show only counts.
 
+## Expressions: computed parameters, checks, conditions and reconciliation
+
+A small, restricted expression language (Spring SpEL) is available in four places. `rules/expressions.example.xml` shows them together.
+
+```xml
+<parameters>
+    <param name="cob" type="date" value="2026-10-01"/>
+    <param name="prevCob"   type="date" expr="#prevBusinessDay(#cob)"/>      <!-- computed from the parameters above it -->
+    <param name="valueDate" type="date" expr="#nextBusinessDay(#cob)"/>
+</parameters>
+<check expr="#prevCob &lt; #cob and #cob &lt;= #valueDate" message="Expected PrevCob &lt; Cob &lt;= ValueDate."/>
+<expect expr="#q('legacy').rows - #q('new').rows == #c('trades').onlySource - #c('trades').onlyTarget" judges="trades" reason="row counts reconcile"/>
+<expect ref="trades" different="0" when="#c('trades').onlySource &lt; 100"/>
+```
+
+- **Computed parameter** (`expr=` instead of `value=`): evaluated in order, so it can use the parameters declared before it; the result is converted to the declared `type`.
+  A `--param name=value` replaces it (and the menu does not prompt for it).
+- **`<check expr="..." message="..."/>`**: must be true, evaluated right after the parameters and before anything connects, also with `--validate` (with your `--param` overrides).
+  A failing check stops the run and prints the message and the parameter values used. This replaces date sanity checks that lived in launcher scripts.
+- **`<expect expr="...">`**: after the run, must be true. It can read results: `#q('query-id')` has `rows`, `partial`, `columns` and `first` (the first row, by lower-case column name);
+  `#c('comparison-id')` has `matched`, `equal`, `different`, `onlySource`, `onlyTarget`, `duplicates`, `differentCells`; `#f('funnel-id')` has `diverging` and `firstDivergence`.
+  A failing verdict shows what the expression read, for example `false [q(legacy): rows=9251; q(new): rows=9248; c(trades): onlySource=15 ...]`.
+  `judges="trades,other"` says the expression accounts for those comparisons or funnels, so their differences are not also reported as differences.
+- **`when="..."`** on any `<expect>`: the check applies only if this is true. A `when` that cannot be evaluated is a failed check, not a silent skip.
+- **Functions** (call as `#name(...)`): `plusDays, minusDays, plusMonths, minusMonths, startOfMonth, endOfMonth, nextBusinessDay, prevBusinessDay, addBusinessDays, isBusinessDay,
+  daysBetween, dayOfWeek, date('2026-10-02'), today, abs, min, max, round, upper, lower`. Dates are `LocalDate` and compare with `<`, `==`; business days are Monday to Friday
+  (no holiday calendar). Operators: `+ - * / % == != < <= > >= and or not`, `? :`, `?:`, `[index]`, `.property`.
+- **What is refused**, when the rule is checked and before anything runs: `T(...)` type references, `new`, `@bean`, calling a method on a value (`x.plusDays(1)`; use the functions),
+  assignment, `matches` and `instanceof`, any unknown `#variable` or function (a typo is an error, not a silent null), an expression longer than 500 characters, and `q`/`c`/`f` outside `<expect>`.
+  Expressions run in Spring's read-only data-binding context, so they cannot reach files, the network or the JVM. They cannot build SQL either: values still reach queries only as bound parameters.
+
 ## Funnels: the first stage where two sides stop agreeing
 
 A result is usually produced in ordered steps, each keeping only some rows. A `<funnel>` finds the step where the two sides start to differ.

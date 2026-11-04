@@ -65,6 +65,7 @@ public final class RuleLoader {
                             case "compress" -> rules.compressions.add(mapper.readValue(reader, Rules.Compress.class));
                             case "expect" -> rules.expectations.add(mapper.readValue(reader, Rules.Expect.class));
                             case "funnel" -> rules.funnels.add(mapper.readValue(reader, Rules.Funnel.class));
+                            case "check" -> rules.checks.add(mapper.readValue(reader, Rules.Check.class));
                             case "parameters" -> {
                                 if (parametersSeen) throw new ToolException("Use only one <parameters> block.");
                                 parametersSeen = true;
@@ -200,6 +201,7 @@ public final class RuleLoader {
                 throw new ToolException("Compression '" + zip.id + "' references unknown SQL/comparison id '"
                     + include.ref + "'. Available ids: " + new TreeSet<>(includable));
         }
+        validateExpressions(rules);
         Expectations.validate(rules, queries.keySet());
         Set<String> outputs = new HashSet<>(Set.of("findings.md", "expectations.md", "summary.md", "parameters.csv", "rules.xml", "error.md", "manual_actions.md", "manual", ".work"));
         for (Rules.Sql query : rules.queries) for (String suffix : List.of(".csv", ".sql", ".md"))
@@ -213,6 +215,40 @@ public final class RuleLoader {
             withInputs.putAll(Chaining.placeholders(q));
             QueryRunner.validateParameters(q, withInputs);
         });
+    }
+
+    /** Syntax and allowed constructs of every expression, without evaluating anything. */
+    static void validateExpressions(Rules rules) {
+        List<String> seen = new ArrayList<>();
+        for (Rules.Param p : rules.parameters) {
+            if (p.expr != null) {
+                if (p.value != null) throw new ToolException("Parameter " + p.name + " has both value= and expr=; use one.");
+                Expressions.parse(p.expr, "Parameter " + p.name, seen, false);
+            }
+            seen.add(p.name);
+        }
+        int n = 0;
+        for (Rules.Check check : rules.checks) {
+            n++;
+            Expressions.parse(check.expr, "<check> number " + n, seen, false);
+        }
+        for (Rules.Expect e : rules.expectations) {
+            if (e.expr != null) Expressions.parse(e.expr, "<expect expr=\"" + Menu.shorten(e.expr, 40) + "\">", seen, true);
+            if (e.when != null) Expressions.parse(e.when, "<expect when=\"" + Menu.shorten(e.when, 40) + "\">", seen, true);
+        }
+    }
+
+    /** Evaluates the checks for the parameter values of this run; the first one that does not hold stops the run. */
+    public static void checks(Rules rules, Map<String, Object> values) {
+        int n = 0;
+        for (Rules.Check check : rules.checks) {
+            n++;
+            String where = "<check> number " + n;
+            var expression = Expressions.parse(check.expr, where, values.keySet(), false);
+            boolean holds = Expressions.bool(Expressions.evaluate(expression, Expressions.context(values, null), where), where, check.expr);
+            if (!holds) throw new ToolException("Check failed: " + (check.message == null || check.message.isBlank() ? check.expr : check.message)
+                + "  [" + check.expr + "; " + values.entrySet().stream().filter(e -> check.expr.contains("#" + e.getKey())).map(e -> e.getKey() + "=" + Expressions.friendly(e.getValue())).toList() + "]");
+        }
     }
 
     public static List<String> keys(Rules.Compare compare) {
@@ -238,7 +274,15 @@ public final class RuleLoader {
         if (rules.parameters != null) for (Rules.Param p : rules.parameters) {
             if (p.name == null || !p.name.matches("[A-Za-z_][A-Za-z0-9_]*") || !declared.add(p.name))
                 throw new ToolException("Parameter names must be valid and unique.");
-            String value = overrides.getOrDefault(p.name, p.value);
+            String value;
+            if (overrides.containsKey(p.name)) value = overrides.get(p.name);
+            else if (p.expr != null) {
+                if (p.value != null) throw new ToolException("Parameter " + p.name + " has both value= and expr=; use one.");
+                String where = "Parameter " + p.name;
+                var expression = Expressions.parse(p.expr, where, values.keySet(), false);
+                value = Expressions.text(Expressions.evaluate(expression, Expressions.context(values, null), where));
+                if (value == null) throw new ToolException(where + ": the expression gave nothing (null): " + p.expr);
+            } else value = p.value;
             try {
                 values.put(p.name, switch (p.type.toLowerCase(Locale.ROOT)) {
                     case "string" -> value;

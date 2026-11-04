@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Expressions example: computed dates, a check that stops a bad run before it connects, one query feeding the next, and an expectation that
+     relates results to each other. Replace the tables and datasources. Expressions are restricted (see README, "Expressions"). -->
+<rules name="expressions-example">
+    <parameters>
+        <param name="cob" type="date" value="2026-10-01"/>
+        <param name="prevCob" type="date" expr="#prevBusinessDay(#cob)"/>
+        <param name="valueDate" type="date" expr="#nextBusinessDay(#cob)"/>
+    </parameters>
+
+    <!-- stops the run, before any connection, when the dates make no sense (also when only validating) -->
+    <check expr="#prevCob &lt; #cob and #cob &lt;= #valueDate" message="Expected PrevCob &lt; Cob &lt;= ValueDate. Check the dates."/>
+
+    <sql id="legacy" db="mysql-oprdb02"><![CDATA[SELECT trade_id, amount FROM legacy_schema.trades WHERE settle_date = :cob]]></sql>
+    <sql id="new"    db="postgres-dev"><![CDATA[SELECT trade_id, amount FROM opera.trades WHERE settle_date = :cob]]></sql>
+    <compare id="trades" source="legacy" target="new"><key columns="trade_id"/></compare>
+
+    <!-- the trades only the legacy side has, looked up in the previous day's table of the new side -->
+    <sql id="missing" db="mysql-oprdb02"><![CDATA[SELECT trade_id FROM legacy_schema.trades WHERE settle_date = :cob AND trade_id NOT IN (SELECT trade_id FROM legacy_schema.trades WHERE settle_date = :prevCob)]]></sql>
+    <sql id="earlier" db="postgres-dev" uses="m=missing"><![CDATA[SELECT trade_id, settle_date FROM opera.trades WHERE trade_id IN (:m.trade_id[])]]></sql>
+
+    <!-- both sides should have the same number of trades once the unmatched ones are taken into account -->
+    <expect expr="#q('legacy').rows - #q('new').rows == #c('trades').onlySource - #c('trades').onlyTarget" judges="trades"
+            reason="row counts reconcile with the unmatched rows"/>
+    <expect ref="trades" different="0" when="#c('trades').onlySource &lt; 100" reason="only worth checking values when few rows are missing"/>
+</rules>

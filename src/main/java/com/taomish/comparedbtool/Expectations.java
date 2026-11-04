@@ -65,7 +65,21 @@ final class Expectations {
         Map<String, Rules.Funnel> funnels = new HashMap<>();
         for (Rules.Funnel f : rules.funnels) funnels.put(f.id, f);
         for (Rules.Expect e : rules.expectations) {
-            if (e.ref == null || e.ref.isBlank()) throw new ToolException("<expect> needs ref=\"query or comparison id\".");
+            if (e.expr != null) {
+                boolean others = e.ref != null || e.rows != null || e.column != null || e.row != null || e.each != null || e.equals != null || e.min != null
+                    || e.max != null || e.between != null || e.isNull != null || e.matched != null || e.equal != null || e.different != null
+                    || e.onlySource != null || e.onlyTarget != null || e.duplicates != null || e.firstDivergence != null || e.diverging != null;
+                if (others) throw new ToolException("<expect expr=\"...\"> cannot be combined with ref= or the other checks; give each its own <expect>.");
+                if (e.judges != null) for (String id : e.judges.split(",", -1)) {
+                    String name = id.strip();
+                    if (!comparisonIds.contains(name) && !funnels.containsKey(name))
+                        throw new ToolException("<expect expr=\"...\" judges=\"" + e.judges + "\">: '" + name + "' is not a comparison or funnel. Known: "
+                            + new TreeSet<>(comparisonIds) + " and " + new TreeSet<>(funnels.keySet()) + ".");
+                }
+                continue;
+            }
+            if (e.judges != null) throw new ToolException("judges= belongs to <expect expr=\"...\">.");
+            if (e.ref == null || e.ref.isBlank()) throw new ToolException("<expect> needs ref=\"query or comparison id\" or expr=\"...\".");
             boolean query = queryIds.contains(e.ref), comparison = comparisonIds.contains(e.ref), funnel = funnels.containsKey(e.ref);
             if (!query && !comparison && !funnel)
                 throw new ToolException("<expect ref=\"" + e.ref + "\"> references an unknown id. Queries: "
@@ -141,6 +155,11 @@ final class Expectations {
 
     static Report evaluate(Rules rules, Map<String, QueryRunner.Result> queries, List<ComparisonRunner.Result> comparisons,
                            List<FunnelRunner.Result> funnels) {
+        return evaluate(rules, queries, comparisons, funnels, Map.of());
+    }
+
+    static Report evaluate(Rules rules, Map<String, QueryRunner.Result> queries, List<ComparisonRunner.Result> comparisons,
+                           List<FunnelRunner.Result> funnels, Map<String, Object> parameters) {
         List<Verdict> verdicts = new ArrayList<>();
         Map<String, FunnelRunner.Result> funnelById = new HashMap<>();
         funnels.forEach(f -> funnelById.put(f.id(), f));
@@ -153,6 +172,12 @@ final class Expectations {
         rules.comparisons.forEach(c -> comparisonIds.add(c.id));
         Set<String> schemaChecked = new HashSet<>();
         for (Rules.Expect e : rules.expectations) {
+            if (e.when != null && !conditionHolds(e, queries, comparisons, funnels, parameters, verdicts)) continue;
+            if (e.expr != null) {
+                if (e.judges != null) for (String id : e.judges.split(",", -1)) judged.add(id.strip());
+                evaluateExpression(e, queries, comparisons, funnels, parameters, verdicts);
+                continue;
+            }
             if (funnelIds.contains(e.ref)) {
                 judged.add(e.ref);
                 evaluateFunnel(e, rules.funnels.stream().filter(f -> f.id.equals(e.ref)).findFirst().orElseThrow(), funnelById.get(e.ref), verdicts);
@@ -162,6 +187,33 @@ final class Expectations {
             } else evaluateQuery(e, queries.get(e.ref), verdicts);
         }
         return new Report(List.copyOf(verdicts), Set.copyOf(judged));
+    }
+
+    /** False when the expectation's when= says to skip it; a when= that cannot be evaluated is reported as a failed check instead of being skipped silently. */
+    private static boolean conditionHolds(Rules.Expect e, Map<String, QueryRunner.Result> queries, List<ComparisonRunner.Result> comparisons,
+                                          List<FunnelRunner.Result> funnels, Map<String, Object> parameters, List<Verdict> out) {
+        String where = "<expect when=\"" + Menu.shorten(e.when, 40) + "\">";
+        try {
+            var context = Expressions.context(parameters, new Expressions.Lookups(queries, comparisons, funnels));
+            var expression = Expressions.parse(e.when, where, parameters.keySet(), true);
+            return Expressions.bool(Expressions.evaluate(expression, context, where), where, e.when);
+        } catch (ToolException ex) {
+            out.add(new Verdict(e.ref == null ? "expression" : e.ref, "when " + e.when, "true or false", ex.getMessage(), false, e.reason));
+            return false;
+        }
+    }
+
+    private static void evaluateExpression(Rules.Expect e, Map<String, QueryRunner.Result> queries, List<ComparisonRunner.Result> comparisons,
+                                           List<FunnelRunner.Result> funnels, Map<String, Object> parameters, List<Verdict> out) {
+        String where = "<expect expr=\"" + Menu.shorten(e.expr, 40) + "\">";
+        var lookups = new Expressions.Lookups(queries, comparisons, funnels);
+        try {
+            var expression = Expressions.parse(e.expr, where, parameters.keySet(), true);
+            boolean holds = Expressions.bool(Expressions.evaluate(expression, Expressions.context(parameters, lookups), where), where, e.expr);
+            out.add(new Verdict("expression", e.expr, "true", holds ? "true" : "false" + Expressions.touchedSummary(lookups.touched), holds, e.reason));
+        } catch (ToolException ex) {
+            out.add(new Verdict("expression", e.expr, "true", ex.getMessage() + Expressions.touchedSummary(lookups.touched), false, e.reason));
+        }
     }
 
     private static void evaluateFunnel(Rules.Expect e, Rules.Funnel funnel, FunnelRunner.Result r, List<Verdict> out) {

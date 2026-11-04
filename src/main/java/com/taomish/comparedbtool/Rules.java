@@ -25,12 +25,16 @@ public class Rules {
     @JacksonXmlProperty(localName = "expect") public List<Expect> expectations = new ArrayList<>();
     @JacksonXmlElementWrapper(useWrapping = false)
     @JacksonXmlProperty(localName = "funnel") public List<Funnel> funnels = new ArrayList<>();
+    @JacksonXmlElementWrapper(useWrapping = false)
+    @JacksonXmlProperty(localName = "check") public List<Check> checks = new ArrayList<>();
 
     public static class Param {
         @JacksonXmlProperty(isAttribute = true) public String name;
         @JacksonXmlProperty(isAttribute = true) public String value;
         /** string, integer, decimal, date, timestamp, boolean, null */
         @JacksonXmlProperty(isAttribute = true) public String type = "string";
+        /** A computed parameter: an expression over the parameters declared before it (instead of value=). A --param override replaces it. */
+        @JacksonXmlProperty(isAttribute = true) public String expr;
     }
     public static class Sql {
         @JacksonXmlProperty(isAttribute = true) public String id;
@@ -98,6 +102,12 @@ public class Rules {
     public static class Expect {
         @JacksonXmlProperty(isAttribute = true) public String ref;
         @JacksonXmlProperty(isAttribute = true) public String reason;
+        /** An expression that must give true, instead of ref= and the attributes below; it can read q('query'), c('comparison'), f('funnel') and the parameters. */
+        @JacksonXmlProperty(isAttribute = true) public String expr;
+        /** Only check this when the expression gives true. */
+        @JacksonXmlProperty(isAttribute = true) public String when;
+        /** With expr=: the comparisons/funnels (comma separated ids) whose differences this expression accounts for, so they are not also reported as differences. */
+        @JacksonXmlProperty(isAttribute = true) public String judges;
         // query ref
         @JacksonXmlProperty(isAttribute = true) public String rows;
         @JacksonXmlProperty(isAttribute = true) public String column;
@@ -118,6 +128,12 @@ public class Rules {
         // funnel ref: a stage id, or "none"; and the number of keys that diverge (or, in a chain, drop out)
         @JacksonXmlProperty(isAttribute = true, localName = "first-divergence") public String firstDivergence;
         @JacksonXmlProperty(isAttribute = true) public String diverging;
+    }
+
+    /** A condition on the parameters, checked before anything connects; a failing check stops the run with its message. */
+    public static class Check {
+        @JacksonXmlProperty(isAttribute = true) public String expr;
+        @JacksonXmlProperty(isAttribute = true) public String message;
     }
 
     /** Ordered stages, each a pair of queries returning the keys that survive it. mode: compare (two sides) or chain (one side). */

@@ -273,4 +273,22 @@ class MenuTests {
         menu(ui).run();
         assertThat(ui.output()).contains("This rule cannot be loaded");
     }
+
+    @Test void computedParametersAreNotPromptedAndFollowAnOverriddenValue() throws Exception {
+        Files.writeString(rules.resolve("dates.xml"), """
+            <!-- Dates with a computed previous business day. -->
+            <rules name="dates">
+              <parameters>
+                <param name="cob" type="date" value="2026-10-01"/>
+                <param name="prevCob" type="date" expr="#prevBusinessDay(#cob)"/>
+              </parameters>
+              <sql id="d" db="test" export="full">SELECT CAST(:cob AS DATE) AS cob, CAST(:prevCob AS DATE) AS prev FROM source_data WHERE id = 1</sql>
+            </rules>""");
+        var ui = new FakeUi().say("/rules", "rule:" + key("dates.xml"), "params", "2026-10-05", "go", "y", "/back", null);
+        menu(ui).run();
+        assertThat(ui.prompts).hasSize(1).first().asString().startsWith("cob (date, declared 2026-10-01)");
+        assertThat(ui.output()).contains("cob: 2026-10-01 -> 2026-10-05").doesNotContain("prevCob:");
+        Path run = Files.list(out).filter(Files::isDirectory).findFirst().orElseThrow();
+        assertThat(Files.readString(run.resolve("d.csv"))).contains("\"2026-10-05\",\"2026-10-02\"");           // Monday: previous business day is the Friday
+    }
 }

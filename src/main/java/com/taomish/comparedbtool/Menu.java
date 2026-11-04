@@ -217,7 +217,7 @@ final class Menu {
         try {
             if (entry.kind() == RuleCatalog.Kind.COMPARE) {
                 Rules rules = RuleLoader.load(entry.path());
-                List<Param> params = rules.parameters.stream().map(p -> new Param(p.name, p.type, p.value)).toList();
+                List<Param> params = rules.parameters.stream().filter(p -> p.expr == null).map(p -> new Param(p.name, p.type, p.value)).toList();
                 List<Db> dbs = rules.queries.stream().map(q -> q.db).distinct().map(this::db).toList();
                 String facts = rules.queries.size() + " queries, " + rules.comparisons.size() + " comparisons, "
                     + (rules.expectations.isEmpty() ? "no expectations" : rules.expectations.size() + " expectations")

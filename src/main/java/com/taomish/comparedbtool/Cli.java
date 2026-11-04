@@ -177,6 +177,7 @@ public final class Cli {
         Rules rules = RuleLoader.load(options.rules);
         RuleLoader.validate(rules, settings, options.validate);
         Map<String, Object> parameters = RuleLoader.parameters(rules, options.parameters);
+        RuleLoader.checks(rules, parameters);                                   // before anything connects, also with --validate
         if (options.validate) {
             LOG.info("VALID: {} queries, {} comparisons, {} ZIP packages. No connections opened.",
                 rules.queries.size(), rules.comparisons.size(), rules.compressions.size());
@@ -288,7 +289,7 @@ public final class Cli {
             }
             boolean partial = queries.values().stream().anyMatch(QueryRunner.Result::partial);
             // Query CSVs still exist here (they live under .work until the run ends), so expectations can read them.
-            Expectations.Report report = Expectations.evaluate(rules, queries, comparisons, funnels);
+            Expectations.Report report = Expectations.evaluate(rules, queries, comparisons, funnels, parameters);
             Expectations.write(directory, report);
             // A comparison the rule has stated expectations for is judged by them; the rest still count as differences.
             boolean differs = comparisons.stream().filter(c -> !report.judgedComparisons().contains(c.id()))
