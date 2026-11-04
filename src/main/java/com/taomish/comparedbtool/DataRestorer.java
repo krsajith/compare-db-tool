@@ -49,15 +49,33 @@ public final class DataRestorer {
         public List<String> key;
         public boolean deleteExtra;
         public String note;
+        /**
+         * Expected counts, each N, &lt;=N, &gt;=N, &lt;N, &gt;N or A..B. Keys: targetBefore, reference, replaced, inserted, extra,
+         * removed, targetAfter. A preview reports unmet ones; --apply refuses to commit when one is unmet.
+         */
+        public Map<String, String> expect;
+    }
+
+    /** A read-only rule (with {@code <expect>} elements) run after --apply has committed. */
+    public static class Verify {
+        public String rule;
+        public Map<String, String> params;
     }
 
     public static class Rule {
         public String name, db, backupSchema = "parity_work", description;
         public List<Step> steps;
+        public List<Verify> verify;
+    }
+
+    private static final Set<String> EXPECT_KEYS = Set.of("targetBefore", "reference", "replaced", "inserted", "extra", "removed", "targetAfter");
+
+    record VerifyResult(String rule, int exit, Path directory, Expectations.Report report, String error) {
+        boolean passed() { return error == null && exit == 0 && report != null && report.any() && report.passed(); }
     }
 
     record StepResult(String id, String table, String from, long targetBefore, long reference, long changed, long missing, long extra,
-                      long removedExtra, long targetAfter, String backup) { }
+                      long removedExtra, long targetAfter, String backup, List<String> unmet) { }
 
     private final DatasourceSettings settings;
 
@@ -66,8 +84,10 @@ public final class DataRestorer {
     public int execute(Cli.Options options) throws Exception {
         Rule rule = JSON.readValue(Files.readString(options.restore), Rule.class);
         validate(rule);
+        validateVerify(rule, options.restore);
         if (options.validate) {
-            LOG.info("VALID: restore rule {} with {} steps; no database connection opened", rule.name, rule.steps.size());
+            LOG.info("VALID: restore rule {} with {} steps and {} verify rule(s); no database connection opened", rule.name,
+                rule.steps.size(), rule.verify == null ? 0 : rule.verify.size());
             return 0;
         }
         var definition = settings.getDatasources().get(rule.db);
@@ -89,7 +109,7 @@ public final class DataRestorer {
         List<StepResult> results = new ArrayList<>();
         try (var pool = new HikariDataSource(config); Connection connection = pool.getConnection()) {
             try {
-                for (Step step : rule.steps) results.add(run(connection, rule, step, stamp));
+                for (Step step : rule.steps) results.add(run(connection, rule, step, stamp, options.apply));
                 if (options.apply) {
                     connection.commit();
                     LOG.info("COMMITTED restore {}: {} steps", rule.name, results.size());
@@ -103,10 +123,52 @@ public final class DataRestorer {
                 throw e;
             }
         }
-        writeSummary(dir, rule, results, options.apply);
+        List<VerifyResult> verified = options.apply ? verify(rule, options) : List.of();
+        writeSummary(dir, rule, results, options.apply, verified);
         if (options.apply) writeUndo(dir, rule, results);
         LOG.info("Summary: {}", dir.resolve("RESTORE.md"));
-        return 0;
+        if (verified.stream().anyMatch(v -> v.error() != null)) return 2;
+        boolean unmet = results.stream().anyMatch(r -> !r.unmet().isEmpty());
+        return unmet || verified.stream().anyMatch(v -> !v.passed()) ? 1 : 0;
+    }
+
+    /** Runs each verify rule against the committed data. The data is already changed: a failure points at the undo rule. */
+    private List<VerifyResult> verify(Rule rule, Cli.Options options) {
+        List<VerifyResult> results = new ArrayList<>();
+        if (rule.verify == null) return results;
+        for (Verify v : rule.verify) {
+            Cli.Options run = new Cli.Options();
+            run.rules = options.restore.toAbsolutePath().getParent().resolve(v.rule);
+            run.out = options.out; run.allowProd = options.allowProd; run.export = options.export;
+            run.sampleRows = options.sampleRows; run.partitions = options.partitions; run.parallel = options.parallel;
+            run.maxPartitionMb = options.maxPartitionMb;
+            if (v.params != null) run.parameters.putAll(v.params);
+            LOG.info("Verifying restore {} with rule {}", rule.name, run.rules);
+            try {
+                Cli.Outcome outcome = new Cli(settings).executeRules(run);
+                results.add(new VerifyResult(v.rule, outcome.exit(), outcome.directory(), outcome.report(), null));
+                LOG.info("Verify {}: exit {}, {}", v.rule, outcome.exit(), outcome.report().headline());
+            } catch (Exception e) {
+                LOG.error("Verify rule {} could not run", v.rule, e);
+                results.add(new VerifyResult(v.rule, 2, null, null, e.getMessage()));
+            }
+        }
+        return results;
+    }
+
+    /** Offline: every verify rule must exist, be valid and state at least one expectation (a check without one proves nothing). */
+    private void validateVerify(Rule rule, Path restoreFile) {
+        if (rule.verify == null) return;
+        for (Verify v : rule.verify) {
+            if (v == null || v.rule == null || v.rule.isBlank()) throw new ToolException("Each verify entry needs rule: the XML file name");
+            Path file = restoreFile.toAbsolutePath().getParent().resolve(v.rule);
+            if (!Files.isRegularFile(file)) throw new ToolException("Verify rule not found: " + file);
+            Rules rules = RuleLoader.load(file);
+            RuleLoader.validate(rules, settings, false);
+            RuleLoader.parameters(rules, v.params == null ? Map.of() : v.params);
+            if (rules.expectations.isEmpty())
+                throw new ToolException("Verify rule " + v.rule + " has no <expect> elements: it could not say PASS or FAIL.");
+        }
     }
 
     static void validate(Rule rule) {
@@ -125,6 +187,11 @@ public final class DataRestorer {
                 throw new ToolException("Step " + s.id + ": key must list column names");
             guard(s.id, "where", s.where, true);
             guard(s.id, "referenceWhere", s.referenceWhere, false);
+            if (s.expect != null) for (var e : s.expect.entrySet()) {
+                if (!EXPECT_KEYS.contains(e.getKey()))
+                    throw new ToolException("Step " + s.id + ": unknown expect key " + e.getKey() + "; use " + new java.util.TreeSet<>(EXPECT_KEYS));
+                Expectations.Spec.parse(e.getKey(), e.getValue());
+            }
         }
     }
 
@@ -137,7 +204,7 @@ public final class DataRestorer {
             throw new ToolException("Step " + id + ": " + name + " may only be a condition (no statements, comments or semicolons)");
     }
 
-    private StepResult run(Connection c, Rule rule, Step s, String stamp) throws Exception {
+    private StepResult run(Connection c, Rule rule, Step s, String stamp, boolean apply) throws Exception {
         long started = System.nanoTime();
         LOG.info("Step {} started: {} from {}", s.id, s.table, s.from);
         List<String> targetColumns = columns(c, s.table);
@@ -186,7 +253,19 @@ public final class DataRestorer {
         if (stillDifferent != 0) throw new ToolException("Step " + s.id + ": " + stillDifferent + " reference rows still differ after the restore");
         LOG.info("Step {}: target {} rows, reference {}; replaced {}, inserted {}, extra {} (removed {}); target now {}; backup {}; {} s",
             s.id, before, refRows, changed, missing, extra, removedExtra, after, backup, (System.nanoTime() - started) / 1_000_000_000);
-        return new StepResult(s.id, s.table, s.from, before, refRows, changed, missing, extra, removedExtra, after, backup);
+        List<String> unmet = new ArrayList<>();
+        if (s.expect != null) {
+            Map<String, Long> actual = Map.of("targetBefore", before, "reference", refRows, "replaced", changed, "inserted", missing,
+                "extra", extra, "removed", removedExtra, "targetAfter", after);
+            for (var e : new java.util.TreeMap<>(s.expect).entrySet())
+                if (!Expectations.Spec.parse(e.getKey(), e.getValue()).test(actual.get(e.getKey())))
+                    unmet.add(e.getKey() + " expected " + e.getValue() + " but is " + actual.get(e.getKey()));
+        }
+        if (apply && !unmet.isEmpty())
+            throw new ToolException("Step " + s.id + ": counts differ from the rule's expect (" + String.join("; ", unmet)
+                + "). Nothing was committed.");
+        if (!unmet.isEmpty()) LOG.warn("Step {}: counts differ from expect: {}", s.id, unmet);
+        return new StepResult(s.id, s.table, s.from, before, refRows, changed, missing, extra, removedExtra, after, backup, unmet);
     }
 
     private static List<String> columns(Connection c, String qualified) throws Exception {
@@ -207,7 +286,7 @@ public final class DataRestorer {
 
     private static String safe(String name) { return name.replaceAll("[^A-Za-z0-9_-]", "_"); }
 
-    private static void writeSummary(Path dir, Rule rule, List<StepResult> results, boolean applied) throws Exception {
+    private static void writeSummary(Path dir, Rule rule, List<StepResult> results, boolean applied, List<VerifyResult> verified) throws Exception {
         StringBuilder md = new StringBuilder("# Restore " + rule.name + "\n\n")
             .append(applied ? "Status: APPLIED (committed).\n\n" : "Status: PREVIEW (rolled back, nothing changed). Run again with --apply to commit.\n\n")
             .append(rule.description == null ? "" : rule.description + "\n\n")
@@ -216,6 +295,29 @@ public final class DataRestorer {
         for (StepResult r : results)
             md.append(String.format(Locale.ROOT, "| %s | %s | %s | %d | %d | %d | %d | %d | %d | %d | %s |%n", r.id, r.table, r.from, r.targetBefore,
                 r.reference, r.changed, r.missing, r.extra, r.removedExtra, r.targetAfter, applied ? r.backup : "(preview: rolled back)"));
+        boolean anyExpect = rule.steps.stream().anyMatch(s -> s.expect != null && !s.expect.isEmpty());
+        if (anyExpect) {
+            md.append("\n## Expected counts\n\n");
+            for (StepResult r : results) {
+                Step s = rule.steps.stream().filter(x -> x.id.equals(r.id)).findFirst().orElseThrow();
+                if (s.expect == null || s.expect.isEmpty()) continue;
+                md.append("- ").append(r.id).append(": ").append(r.unmet.isEmpty() ? "PASS" : "FAIL (" + String.join("; ", r.unmet) + ")").append('\n');
+            }
+        }
+        if (rule.verify != null && !rule.verify.isEmpty()) {
+            md.append("\n## Verification after apply\n\n");
+            if (!applied) md.append("Not run in preview: the changes are rolled back, so there is nothing to verify. It runs after --apply: ")
+                .append(rule.verify.stream().map(v -> v.rule).toList()).append("\n");
+            for (VerifyResult v : verified) {
+                md.append("- `").append(v.rule).append("`: ");
+                if (v.error != null) md.append("COULD NOT RUN (").append(Expectations.cell(v.error)).append(")\n");
+                else md.append(v.passed() ? "PASS" : "FAIL").append(" - ").append(v.report.headline()).append(", exit ").append(v.exit)
+                    .append(", output `").append(v.directory.getFileName()).append("`\n");
+            }
+            if (applied && verified.stream().anyMatch(v -> !v.passed()))
+                md.append("\nThe restore is committed but did not verify. Review the verify output; the undo rule `undo-")
+                    .append(safe(rule.name)).append(".json` in this folder puts the rows back.\n");
+        }
         Files.writeString(dir.resolve("RESTORE.md"), md.toString(), StandardCharsets.UTF_8);
     }
 

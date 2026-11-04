@@ -1,6 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- Cash refresh 12: read-only check after the cash-refresh-restore-cfs-ssv-20261002 restore was applied.
-     Expect CFS only 2026-10-02 with 314,822 rows, equal to the 04-Oct copy and MySQL history, target security 5.2204. -->
+     Expect CFS only 2026-10-02 with 314,822 rows, equal to the 04-Oct copy and MySQL history, target security 5.2204.
+     The <expect> elements below state exactly that: SUMMARY.md says PASS or FAIL and the exit code is 0 only on PASS.
+     The restore rule runs this file by itself after the restore is applied (its "verify" entry). -->
 <rules name="cash-refresh-12-verify-restore-cfs">
   <parameters>
     <param name="valueDate" type="date" value="2026-10-02"/>
@@ -49,6 +51,14 @@
     <key columns="security_id,value_date"/>
     <column name="settle_price"/>
   </compare>
+
+  <expect ref="pg-current-by-date" rows="1" reason="CFS holds one value date only (the 07-Jul load is gone)"/>
+  <expect ref="pg-current-by-date" column="value_date" equals="2026-10-02" reason="the restored date"/>
+  <expect ref="pg-current-by-date" column="row_count" equals="314822" reason="rows of the 04-Oct copy"/>
+  <expect ref="pg-target-security" rows="1" reason="CR BCNUSD NDF 20261001 has its 02-Oct price again"/>
+  <expect ref="pg-target-security" column="settle_price" equals="5.2204" reason="underlying settle value used by S7"/>
+  <expect ref="current-vs-backup-copy" different="0" only-source="0" only-target="0" reason="current equals the 04-Oct migration copy"/>
+  <expect ref="current-vs-mysql-history" different="0" only-source="0" only-target="0" reason="current equals MySQL history"/>
 
   <compress id="bundle" file="cash-refresh-12-verify-restore-cfs.zip">
     <include ref="pg-current-by-date"/>

@@ -14,5 +14,8 @@
       "deleteExtra": true,
       "note": "expect target before = 245109 (07-Jul), reference = 314822 (02-Oct), inserted 314822, removed 245109, target after = 314822"
     }
+  ],
+  "verify": [
+    { "rule": "cash-refresh-12-verify-restore-cfs.xml" }
   ]
 }

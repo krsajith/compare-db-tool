@@ -21,6 +21,8 @@ public class Rules {
     @JacksonXmlProperty(localName = "compare") public List<Compare> comparisons = new ArrayList<>();
     @JacksonXmlElementWrapper(useWrapping = false)
     @JacksonXmlProperty(localName = "compress") public List<Compress> compressions = new ArrayList<>();
+    @JacksonXmlElementWrapper(useWrapping = false)
+    @JacksonXmlProperty(localName = "expect") public List<Expect> expectations = new ArrayList<>();
 
     public static class Param {
         @JacksonXmlProperty(isAttribute = true) public String name;
@@ -80,5 +82,32 @@ public class Rules {
     }
     public static class Include {
         @JacksonXmlProperty(isAttribute = true) public String ref;
+    }
+
+    /**
+     * What the rule expects. Query checks (rows, column + equals/min/max/between/isNull) and comparison checks
+     * (matched, equal, different, only-source, only-target, duplicates) use the same element; {@code ref} says which.
+     * Count attributes accept N, &lt;=N, &gt;=N, &lt;N, &gt;N or A..B.
+     */
+    public static class Expect {
+        @JacksonXmlProperty(isAttribute = true) public String ref;
+        @JacksonXmlProperty(isAttribute = true) public String reason;
+        // query ref
+        @JacksonXmlProperty(isAttribute = true) public String rows;
+        @JacksonXmlProperty(isAttribute = true) public String column;
+        @JacksonXmlProperty(isAttribute = true) public Integer row;
+        @JacksonXmlProperty(isAttribute = true) public Boolean each;
+        @JacksonXmlProperty(isAttribute = true) public String equals;
+        @JacksonXmlProperty(isAttribute = true) public String min;
+        @JacksonXmlProperty(isAttribute = true) public String max;
+        @JacksonXmlProperty(isAttribute = true) public String between;
+        @JacksonXmlProperty(isAttribute = true) public Boolean isNull;
+        // comparison ref
+        @JacksonXmlProperty(isAttribute = true) public String matched;
+        @JacksonXmlProperty(isAttribute = true) public String equal;
+        @JacksonXmlProperty(isAttribute = true) public String different;
+        @JacksonXmlProperty(isAttribute = true, localName = "only-source") public String onlySource;
+        @JacksonXmlProperty(isAttribute = true, localName = "only-target") public String onlyTarget;
+        @JacksonXmlProperty(isAttribute = true) public String duplicates;
     }
 }

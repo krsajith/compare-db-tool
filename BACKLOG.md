@@ -2,7 +2,13 @@
 
 Improvements requested while using the tool. Newest first.
 
-## Expected results in a rule: the tool says PASS or FAIL (requested 03-Nov-2026)
+## DONE 04-Nov-2026: Expected results in a rule: the tool says PASS or FAIL (requested 03-Nov-2026)
+
+**Implemented:** `<expect>` for queries and comparisons, verdicts and exit code, small results in `SUMMARY.md`, restore `expect`
+and `verify` (see README, "Expected results"). **Not done:** the accepted list of keys ("these 254 rows may differ") - use the exact
+count, e.g. `only-target="254"`; per-key lists need a separate design.
+
+Original request:
 
 **Problem.** After a run the user has to send the zip for someone to read the counts and decide whether they are as expected
 (example: `rrr-input-values-20261002` after `rrr-restore-20261002`, 21 comparisons, each with its own expected counts).

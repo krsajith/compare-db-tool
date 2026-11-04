@@ -33,7 +33,8 @@ public final class Cli {
         --template-import FILE  Import one or more templates using a JSON rule (preview by default)
         --template-export FILE  Export requested template files, row metadata and an upload rule
         --template-upload FILE  Alias for --template-import; existing single-template rules still work
-        --restore FILE        Restore table rows from reference tables using a JSON rule (preview by default)
+        --restore FILE        Restore table rows from reference tables using a JSON rule (preview by default);
+                              step "expect" counts are checked, "verify" rules run after --apply
         --apply               Commit template replacement or data restore; otherwise roll back the preview
         --help                Show this help
 
@@ -41,7 +42,7 @@ public final class Cli {
         Logging settings: config/logging.properties; logs/compare-db-tool.log and compare-db-tool-error.log.
         Override with --spring.config.additional-location=file:/path/to/datasources.properties
         One-run logging override: --logging.level.com.taomish.comparedbtool=DEBUG
-        Exit codes: 0 equal/export complete/validated; 1 differences; 2 error or PARTIAL.
+        Exit codes: 0 equal/export complete/validated/all <expect> met; 1 differences or an <expect> not met; 2 error or PARTIAL.
         """;
     public static final class Options {
         public Path rules;
@@ -143,6 +144,9 @@ public final class Cli {
         return options;
     }
 
+    /** Result of one rule run: exit code, the output folder (null for --validate) and the expectation verdicts. */
+    public record Outcome(int exit, Path directory, Expectations.Report report) {}
+
     public int execute(Options options) throws IOException {
         if (options.templateExport != null) return new TemplateExporter(settings).execute(options);
         if (options.templateUpload != null) return new TemplateUploader(settings).execute(options);
@@ -156,6 +160,11 @@ public final class Cli {
             settings.diagnostics().forEach(System.out::println);
             return 0;
         }
+        return executeRules(options).exit();
+    }
+
+    /** Runs one XML rule file. Also used by a restore rule's verify step. */
+    public Outcome executeRules(Options options) throws IOException {
         LOG.info("Loading rules: {}", options.rules.toAbsolutePath().normalize());
         Rules rules = RuleLoader.load(options.rules);
         RuleLoader.validate(rules, settings, options.validate);
@@ -163,7 +172,7 @@ public final class Cli {
         if (options.validate) {
             LOG.info("VALID: {} queries, {} comparisons, {} ZIP packages. No connections opened.",
                 rules.queries.size(), rules.comparisons.size(), rules.compressions.size());
-            return 0;
+            return new Outcome(0, null, new Expectations.Report(List.of(), Set.of()));
         }
         Path base = options.out.toAbsolutePath().normalize();
         Files.createDirectories(base);
@@ -234,10 +243,19 @@ public final class Cli {
                 }
             }
             boolean partial = queries.values().stream().anyMatch(QueryRunner.Result::partial);
-            boolean differs = comparisons.stream().anyMatch(ComparisonRunner.Result::differs);
-            int exit = partial || !failures.isEmpty() ? 2 : differs ? 1 : 0;
+            // Query CSVs still exist here (they live under .work until the run ends), so expectations can read them.
+            Expectations.Report report = Expectations.evaluate(rules, queries, comparisons);
+            Expectations.write(directory, report);
+            // A comparison the rule has stated expectations for is judged by them; the rest still count as differences.
+            boolean differs = comparisons.stream().filter(c -> !report.judgedComparisons().contains(c.id()))
+                .anyMatch(ComparisonRunner.Result::differs);
+            int exit = partial || !failures.isEmpty() ? 2 : differs || !report.passed() ? 1 : 0;
+            if (report.any()) LOG.info("Expectations: {}", report.headline());
             StringBuilder summary = new StringBuilder("# " + rules.name + "\n\nStatus: "
-                + (!failures.isEmpty() ? "INCOMPLETE / MANUAL ACTIONS REQUIRED" : partial ? "PARTIAL" : differs ? "DIFFERENCES" : "COMPLETE / EQUAL") + "; exit code: " + exit
+                + (!failures.isEmpty() ? "INCOMPLETE / MANUAL ACTIONS REQUIRED" : partial ? "PARTIAL"
+                    : !report.passed() ? "EXPECTATIONS NOT MET" : differs ? "DIFFERENCES"
+                    : report.any() ? "COMPLETE / EXPECTATIONS MET" : "COMPLETE / EQUAL") + "; exit code: " + exit
+                + (report.any() ? "\n\nVerdict: " + report.headline() + "\n\n" + Expectations.table(report) : "")
                 + "\n\nExport default: " + options.export.name().toLowerCase(Locale.ROOT) + "; sample cap: " + options.sampleRows
                 + ". Counts cover complete inputs; sampling never limits comparison accuracy. Query CSVs are exported only in full mode; inputs used only by engine=db stay inside the database.\n\n"
                 + "| Query | Datasource | Rows | Time ms | Status |\n|---|---|---|---|---|\n");
@@ -251,6 +269,7 @@ public final class Cli {
                     .append(" | ").append(r.millis()).append(" | ").append(r.partial() ? "PARTIAL" : "COMPLETE").append(" |\n");
             }
             summary.append("\n");
+            summary.append(Expectations.smallResults(rules, queries));
             summary.append("Manual actions: ").append(failures.size()).append(". See MANUAL_ACTIONS.md for failed queries and skipped comparisons.\n\n");
             for (var result : comparisons) summary.append("- ").append(result.id()).append(": ").append(result.headline()).append("\n");
             summary.append("\nQueries run with bounded concurrency and one active query per datasource; identical SQL is reused. "
@@ -260,6 +279,7 @@ public final class Cli {
             for (Rules.Compress compression : rules.compressions) {
                 LinkedHashSet<Path> included = new LinkedHashSet<>(List.of(directory.resolve("SUMMARY.md"),
                     directory.resolve("RULES.xml"), directory.resolve("PARAMETERS.csv"), directory.resolve("MANUAL_ACTIONS.md")));
+                if (report.any()) included.add(directory.resolve("EXPECTATIONS.md"));
                 for (Rules.Sql query : rules.queries) if (failures.containsKey(query.id))
                     included.add(directory.resolve(query.id + ".sql"));
                 for (Rules.Include include : compression.includes) included.addAll(artifacts.get(include.ref));
@@ -279,7 +299,7 @@ public final class Cli {
             }
             LOG.info("Summary: {}", directory.resolve("SUMMARY.md"));
             LOG.info("Manual actions: {} ({} issue(s))", directory.resolve("MANUAL_ACTIONS.md"), failures.size());
-            return exit;
+            return new Outcome(exit, directory, report);
         } catch (Exception e) {
             String message = e instanceof ToolException ? e.getMessage() : "File processing failed. Check paths, free disk space and permissions.";
             try {

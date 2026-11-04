@@ -248,6 +248,69 @@ Cell changes are classified as `CASE_ONLY`, `WHITESPACE_ONLY`, `NULL_VS_EMPTY`, 
 `differences.csv` with `accepted=true`; only `accepted=false` cells fail comparison. Automatic scale-ratio inference,
 funnel/probe diagnostics and PDF/Excel input comparison are not included in this phase.
 
+## Expected results: PASS or FAIL
+
+A rule can state what it expects. The tool checks it and prints one verdict per check, plus an overall PASS or FAIL
+at the top of `SUMMARY.md` (and in `EXPECTATIONS.md`, which every ZIP includes). Failing checks are listed first.
+The checks use the exact counts and values of the finished run, in every export mode (`none`, `sample`, `full`).
+`<expect>` elements are direct children of `<rules>`; `ref` names the query or comparison.
+
+```xml
+<!-- a query -->
+<expect ref="inputs-summary" rows="1"/>
+<expect ref="inputs-summary" column="only_in_reference" equals="0" reason="7 client names repaired by script 18: expected"/>
+<expect ref="inputs-summary" column="row_count" between="73000,74500"/>
+<expect ref="inputs-summary" column="differences" max="0"/>
+<expect ref="by-date" column="row_count" each="true" min="1"/>     <!-- every row -->
+<expect ref="by-date" column="value_date" row="2" equals="2026-10-02"/>   <!-- row 1 by default -->
+
+<!-- a comparison -->
+<expect ref="trades" different="0" only-source="0" only-target="0" reason="parity after the restore"/>
+<expect ref="qc" only-target="254" reason="our deliberate correction: 254 rows may differ"/>
+```
+
+| Applies to | Attributes |
+|---|---|
+| Query | `rows`; `column` with `equals`, `min`, `max`, `between="lo,hi"`, `isNull`; `row` (1-based, default 1) or `each="true"` |
+| Comparison | `matched`, `equal`, `different`, `only-source`, `only-target`, `duplicates` |
+| Both | `reason`: short text printed with the verdict |
+
+Counts accept `N`, `<=N`, `>=N`, `<N`, `>N` or `A..B`. Numbers compare as decimals (`2.50` equals `2.5`); other
+values compare as text. Several attributes in one element are separate checks. `--validate` rejects unknown ids,
+mixed query/comparison attributes, bad numbers and a `column` without a condition, without connecting.
+
+Rules of the verdict:
+
+- A comparison that has at least one `<expect>` is judged by it, so expected differences no longer give exit code 1.
+  A comparison without one still counts as DIFFERENCES.
+- A column that exists on one side only fails the comparison's checks (a `schema` verdict), whatever the counts say.
+- A query or comparison that failed, or is PARTIAL, fails its checks. Exit code 2 still wins.
+- The rows of an input used only by an `engine="db"` comparison are not kept: use `rows=` or check in SQL.
+- Exit codes: 0 equal or all expectations met; 1 differences or an expectation not met; 2 error or PARTIAL.
+- Lists of accepted keys are not supported: state the exact count instead (`only-target="254"`).
+
+`SUMMARY.md` also prints queries with at most 5 rows and 12 columns under "Small query results" (about 3 KB at most),
+so counts and one-row summaries are readable in `sample` and `none` mode without `--export full`.
+
+### Restore: expected counts and verify
+
+In a `--restore` JSON rule:
+
+```json
+{ "id": "cfs-prices-1002", "table": "...", "from": "...", "where": "...", "key": ["..."],
+  "expect": { "targetBefore": "245109", "reference": "314822", "inserted": "314822", "removed": "245109", "targetAfter": "314822" } }
+...
+"verify": [ { "rule": "cash-refresh-12-verify-restore-cfs.xml", "params": { "valueDate": "2026-10-02" } } ]
+```
+
+- `expect` (keys `targetBefore`, `reference`, `replaced`, `inserted`, `extra`, `removed`, `targetAfter`): a preview marks unmet
+  counts FAIL in `RESTORE.md` (exit 1); `--apply` refuses to commit when one is unmet, and everything is rolled back.
+- `verify`: after `--apply` has committed, each named read-only rule (path relative to the restore file) is run
+  and its `<expect>` verdict is written to `RESTORE.md`. The rule must contain at least one `<expect>`: `--validate`
+  rejects one that cannot say PASS or FAIL. Each verify run has its own output folder. Preview does not run it, because
+  its changes are rolled back. The data is already committed when verify fails: `RESTORE.md` then points at the undo rule.
+  Exit code: 0 all pass, 1 a verify failed, 2 a verify rule could not run.
+
 ## Outputs and ZIP selection
 
 Each execution creates a unique folder under `out/`:
