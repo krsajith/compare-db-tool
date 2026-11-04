@@ -18,7 +18,7 @@ It can also restore rows from a backup table (always preview first) and move rep
 5. **Put SQL in `<![CDATA[ ... ]]>`.** Otherwise `<`, `>` and `&` break the XML.
 6. **In XML attributes escape `<` as `&lt;` and `&` as `&amp;`** (`expr`, `when`, ...). `>` may stay or be `&gt;`.
 7. **Never write `--` inside an XML comment.** `<!-- use --validate -->` is invalid XML. Write "use the validate flag".
-8. **SQL is a single `SELECT` or `WITH` statement.** Bind values with `:name` parameters; never concatenate values into SQL. Bare words such as `INTO`, `SET`, `REPLACE`, `LOAD`, `COPY`, `BEGIN`, `DO`, `CALL`, `EXEC`, `LOCK`, `ANALYZE` are rejected anywhere, even as function or column names (section 9).
+8. **SQL is a single `SELECT` or `WITH` statement.** Bind values with `:name` parameters; never concatenate values into SQL. Writes, locks, file output and side-effecting functions are rejected; a function, column, alias or table that merely is called `replace`, `truncate`, `load`, `call`, `begin`... is accepted (section 5.3).
 9. **List the columns you need; do not `SELECT *`.** Less data to move, and the comparison and findings work on those columns.
 10. **Return extra columns in queries** (client, product, status, `updated_by`, a timestamp). They are what makes the findings and profiles say *why*.
 11. **Use `uses=` / `when=` / `<suggest>` instead of a second round trip** when the next question depends on this result (section 6.6, 6.7, 6.9).
@@ -145,6 +145,27 @@ Identical SQL on the same datasource with identical inputs runs once and is shar
 
 ### 5.3 SQL dialect notes
 Named parameters `:name`; PostgreSQL `::` casts are fine. A hyphen ends a parameter name, so `:legacy-trades.x` is not valid: give the input an alias in `uses=`. Comments: `-- text` needs a space after the dashes. No `;` except a trailing one. No `$$` quoting, no backslash escapes.
+
+**Why a SQL guard exists.** Read-only sessions and a SELECT-only account are the real protection, but a read-only session still allows things that hurt production: `SELECT ... INTO OUTFILE`, `GET_LOCK`, `pg_advisory_lock`, `lo_import`/`lo_export`, locking reads (`FOR UPDATE`, `FOR SHARE`, `LOCK IN SHARE MODE`) and writable CTEs. The guard is a second layer that does not depend on how the database was configured.
+
+**It is position-aware.** The guard looks at where a word stands, not only at the word. Accepted (a warning is printed for the flagged names):
+```sql accepted
+SELECT replace(name, 'a', 'b') AS replace FROM t
+SELECT truncate(amount, 2), load, call FROM t WHERE lock = 1
+SELECT * FROM load JOIN copy ON copy.id = load.id
+(SELECT 1) UNION (SELECT 2)
+```
+Rejected (statements, writes, locks, file output, side effects, nested statements):
+```sql rejected
+SELECT * FROM t FOR UPDATE
+SELECT * FROM t FOR SHARE
+SELECT a FROM t INTO OUTFILE '/tmp/x'
+SELECT nextval('seq')
+SELECT pg_advisory_lock(1)
+WITH x AS MATERIALIZED (DELETE FROM t RETURNING *) SELECT * FROM x
+SELECT 1; DELETE FROM t
+```
+If a name is rejected by mistake, quote it (`"name"`).
 
 ### 5.4 `<compare>`: key-based comparison of two queries
 ```xml
@@ -461,7 +482,7 @@ Cheapest investigation order: `--check` -> `--export none` -> read `SUMMARY.md` 
 | Message / symptom | Cause | Fix |
 |---|---|---|
 | `Cannot read rules XML ... (WstxParsingException)` | invalid XML: `--` in a comment, an unescaped `<` or `&`, unclosed tag | use CDATA for SQL, `&lt;` in attributes, no `--` in comments |
-| `SQL contains a disallowed operation: REPLACE` (or `SET`, `INTO`, `LOAD`, `COPY`, `DO`, `CALL`, `EXEC`, `BEGIN`, `LOCK`, `ANALYZE`, ...) | the guard rejects these bare words anywhere | rename the alias; use `OVERLAY`/`translate`/`regexp_replace` instead of `REPLACE`; quote a column name that equals one |
+| `SQL contains a disallowed operation: REPLACE` (or `SET`, `INTO`, `LOAD`, `COPY`, `DO`, `CALL`, `EXEC`, `BEGIN`, `LOCK`, `ANALYZE`, ...) | the word stands where a statement, write, lock, file output or side-effecting function would (e.g. `INSERT ...`, `INTO OUTFILE`, `FOR UPDATE`, `nextval(...)`) | rewrite as a plain read; if it is only a name that was caught by mistake, quote it (`"name"`) - see section 5.3 |
 | `Only SELECT/WITH queries are supported` / `single statement` | wrong first word or a second statement | one `SELECT`/`WITH` only |
 | `Missing/invalid bind parameters` | `:name` not declared, or a typo | declare it in `<parameters>` |
 | `Undeclared parameter override` | `--param` for a name not in the rule | declare the parameter |

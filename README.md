@@ -731,8 +731,10 @@ can be reused, but cross-engine canonical serialization and identical hashing ne
 
 Only single SELECT/WITH statements pass the conservative SQL guard. Write operations, SELECT INTO, writable CTEs,
 multiple statements, executable/nested comments and ambiguous quoting are rejected. Use bound parameters rather
-than backslash or dollar quoting. Use whitespace after `--` comments. The guard may conservatively reject unusual
-vendor syntax. SQL syntax still has to be valid for the selected database.
+than backslash or dollar quoting. Use whitespace after `--` comments. The guard is position-aware: a function, column, alias or table that merely has the name of a blocked word
+(`replace`, `truncate`, `load`, `call`, ...) is accepted with a warning, while writes, locking reads (`FOR UPDATE/SHARE`,
+`LOCK IN SHARE MODE`), file output, side-effecting functions and nested statements are rejected. Quote a name that is
+rejected by mistake. The guard may conservatively reject unusual vendor syntax. SQL syntax still has to be valid for the selected database.
 
 Connections use JDBC read-only mode and rollback after each query. PostgreSQL and MySQL also receive session
 read-only settings. Use SELECT-only database accounts: arbitrary stored functions and all JDBC dialects cannot be

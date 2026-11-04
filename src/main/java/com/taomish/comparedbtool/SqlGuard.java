@@ -81,8 +81,11 @@ public final class SqlGuard {
         }
         if (words.isEmpty() || !(words.getFirst().equals("SELECT") || words.getFirst().equals("WITH")))
             throw new ToolException("Only SELECT/WITH queries are supported.");
-        for (String word : words) if (FORBIDDEN.contains(word))
-            throw new ToolException("SQL contains a disallowed operation: " + word);
+        // A flagged word is dangerous where it can start a statement or write, lock, write a file or have a side effect; as a function name,
+        // a column, an alias or a table name it is an ordinary read. SqlAssessment makes that judgement from the word's position.
+        for (SqlAssessment.Finding f : SqlAssessment.scan(sql).findings()) if (f.level() == SqlAssessment.Level.DANGER)
+            throw new ToolException("SQL contains a disallowed operation: " + f.word() + " (line " + f.line() + ", column " + f.column() + "). " + f.reason()
+                + " A column, alias, table or function that merely has such a name is fine; quote the name (\"name\") if it is rejected by mistake.");
         return sql.strip().replaceFirst(";\\s*$", "");
     }
 }

@@ -34,6 +34,16 @@ class GuideTests {
         return found;
     }
 
+    @Test void sqlExamplesBehaveAsTheGuideSays() throws Exception {
+        List<String> accepted = blocks("sql accepted"), rejected = blocks("sql rejected");
+        assertThat(accepted).isNotEmpty();
+        assertThat(rejected).isNotEmpty();
+        for (String block : accepted) for (String line : block.strip().split("\\R"))
+            org.junit.jupiter.api.Assertions.assertDoesNotThrow(() -> SqlGuard.validate(line), line);
+        for (String block : rejected) for (String line : block.strip().split("\\R"))
+            org.junit.jupiter.api.Assertions.assertThrows(ToolException.class, () -> SqlGuard.validate(line), line);
+    }
+
     @Test void everyCompleteRuleInTheGuideIsValidAndItsChecksHold() throws Exception {
         List<String> rules = blocks("xml rule");
         assertThat(rules).as("the guide should contain complete example rules").hasSizeGreaterThanOrEqualTo(6);

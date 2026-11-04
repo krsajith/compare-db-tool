@@ -11,6 +11,7 @@ public record SqlAssessment(Level level, List<Finding> findings) {
     public enum Level { OK, WARN, DANGER }
     public record Finding(Level level, String word, int line, int column, String context, String reason) {}
     private record Token(String text, int offset) {}
+    private static final Set<String> SET_OPERATORS = Set.of("UNION", "EXCEPT", "INTERSECT", "MINUS");
     private static final Pattern DOLLAR = Pattern.compile("\\$(?:[A-Za-z_][A-Za-z0-9_]*)?\\$");
     private static final Set<String> EFFECT_FUNCTIONS = Set.of("NEXTVAL", "SETVAL", "PG_ADVISORY_LOCK",
         "PG_ADVISORY_XACT_LOCK", "PG_TERMINATE_BACKEND", "PG_CANCEL_BACKEND", "DBLINK_EXEC",
@@ -86,13 +87,16 @@ public record SqlAssessment(Level level, List<Finding> findings) {
             if (word.equals(";")) { start = true; continue; }
             String previous = i > 0 ? tokens.get(i - 1).text : "";
             String next = i + 1 < tokens.size() ? tokens.get(i + 1).text : "";
-            boolean statementStart = start || previous.equals("UNION")
-                || (previous.equals("ALL") && i > 1 && tokens.get(i - 2).text.equals("UNION"));
+            boolean statementStart = start || SET_OPERATORS.contains(previous)
+                || (previous.equals("ALL") && i > 1 && SET_OPERATORS.contains(tokens.get(i - 2).text));
+            if (start && word.equals("(")) continue; // a parenthesised SELECT: judge the word inside
             if (start) {
                 statements++; start = false;
                 if (!word.equals("SELECT") && !word.equals("WITH"))
                     add(findings, sql, t.offset, Level.DANGER, word, "Statement does not start with SELECT/WITH.");
             }
+            if (word.equals("FOR") && (next.equals("SHARE") || next.equals("KEY") || next.equals("NO")))
+                add(findings, sql, t.offset, Level.DANGER, word, "Locking read (FOR SHARE / FOR KEY SHARE / FOR NO KEY UPDATE) takes row locks.");
             if (!SqlGuard.flagged(word)) continue;
             boolean function = next.equals("(");
             boolean alias = previous.equals("AS") || previous.equals(".");
@@ -102,16 +106,20 @@ public record SqlAssessment(Level level, List<Finding> findings) {
                 || previous.equals("THEN") || previous.equals("ELSE") || previous.equals("BY")
                 || previous.equals("WHERE") || previous.equals("AND") || previous.equals("OR")
                 || previous.equals("ON") || previous.equals("HAVING") || previous.equals("NOT")
-                || previous.equals("|") || previous.equals("<") || previous.equals(">");
+                || previous.equals("|") || previous.equals("<") || previous.equals(">") || previous.equals("%")
+                || previous.equals("CASE") || previous.equals("DISTINCT") || previous.equals("BETWEEN") || previous.equals("LIKE")
+                || previous.equals("ILIKE") || previous.equals("IN") || previous.equals("IS");
+            // A table (or its alias) named like a keyword: FROM load, JOIN copy. A statement cannot start here.
+            boolean tablePosition = previous.equals("FROM") || previous.equals("JOIN");
             // INTO immediately after SELECT or a comma can be an identifier; after an expression it writes a table/file.
-            boolean columnEnd = next.equals(",") || next.equals("FROM") || next.equals("AS")
-                || next.equals(";") || next.isEmpty() || next.equals(")") || next.equals("=");
+            boolean columnEnd = next.equals(",") || (next.equals("FROM") && !previous.equals("(")) || next.equals("AS")
+                || next.equals(";") || next.isEmpty() || next.equals(")") || next.equals("=") || next.equals(".");
             boolean cteBodyStart = previous.equals("(") && i > 1 && tokens.get(i - 2).text.equals("AS");
-            boolean benignPosition = alias || (expression && (function || columnEnd));
+            boolean benignPosition = alias || (expression && (function || columnEnd)) || (tablePosition && !next.equals("INTO"));
             boolean danger = statementStart || (function && EFFECT_FUNCTIONS.contains(word))
                 || cteBodyStart || (!benignPosition) || (word.equals("REPLACE") && next.equals("INTO"));
             add(findings, sql, t.offset, danger ? Level.DANGER : Level.WARN, word,
-                danger ? "Possible statement, write, lock or side-effecting operation; explicit datasource confirmation required."
+                danger ? "Looks like a statement, a write, a lock, file output or a side-effecting function; only plain reads are allowed."
                     : function ? "Flagged word used as a function; verify that the function has no side effects."
                     : "Flagged word in an identifier/expression position; verify its dialect-specific meaning.");
         }

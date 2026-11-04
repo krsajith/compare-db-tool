@@ -10,7 +10,7 @@ class SqlAssessmentTests {
     @ParameterizedTest
     @ValueSource(strings = {"SELECT 1", "WITH x AS (SELECT 1) SELECT * FROM x; -- end",
         "SELECT 'DROP; DELETE', \"INSERT\", `UPDATE`, [SET], :delete::text /* DROP */",
-        "SELECT dollar$column FROM t"})
+        "SELECT dollar$column FROM t", "(SELECT 1) UNION (SELECT 2)"})
     void benign(String sql) { assertEquals(OK, SqlGuard.assess(sql).level()); }
 
     @ParameterizedTest
@@ -42,10 +42,31 @@ class SqlAssessmentTests {
         assertThrows(UnsupportedOperationException.class, () -> result.findings().clear());
     }
 
-    @Test void assessmentDoesNotRelaxExecutionBeforeConfirmationIsImplemented() {
-        assertEquals(WARN, SqlGuard.assess("SELECT replace('a','a','b')").level());
-        assertThrows(ToolException.class, () -> SqlGuard.validate("SELECT replace('a','a','b')"));
+    @ParameterizedTest
+    @ValueSource(strings = {"SELECT truncate(amount, 2) FROM t", "SELECT load, call FROM t", "SELECT begin FROM periods WHERE lock = 1",
+        "SELECT * FROM load", "SELECT * FROM t JOIN copy ON copy.id = t.id", "SELECT cast(call AS int) FROM t",
+        "SELECT coalesce(load, 0) FROM t", "SELECT replace(name, 'a', 'b') AS replace FROM t"})
+    void benignUsesOfBlockedWordsAreOnlyWarnings(String sql) {
+        assertEquals(WARN, SqlGuard.assess(sql).level(), sql);
+        assertDoesNotThrow(() -> SqlGuard.validate(sql), sql);
     }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"WITH x AS MATERIALIZED (DELETE FROM t RETURNING *) SELECT * FROM x",
+        "WITH x AS NOT MATERIALIZED (UPDATE t SET a = 1 RETURNING *) SELECT * FROM x",
+        "SELECT * FROM t FOR SHARE", "SELECT * FROM t FOR NO KEY UPDATE", "SELECT * FROM t FOR KEY SHARE",
+        "SELECT * FROM t LOCK IN SHARE MODE", "SELECT 1 EXCEPT DELETE FROM t", "SELECT pg_catalog.setval('s', 1)",
+        "SELECT a FROM t INTO OUTFILE '/tmp/x'", "SELECT get_lock('a', 1)", "SELECT * FROM (COPY t TO PROGRAM 'x') s",
+        "SELECT (CALL f())", "SELECT * FROM t WHERE x IN (DELETE FROM t RETURNING 1)", "(DELETE FROM t)"})
+    void writesLocksAndSideEffectsAreStillRejected(String sql) {
+        assertEquals(DANGER, SqlGuard.assess(sql).level(), sql);
+        assertThrows(ToolException.class, () -> SqlGuard.validate(sql), sql);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"REPLACE INTO t VALUES(1)", "INSERT INTO t VALUES(1)", "DROP TABLE t", "SELECT * INTO backup FROM t",
+        "SELECT * FROM t FOR UPDATE", "SELECT nextval('seq')", "SELECT pg_advisory_lock(1)", "SELECT 1; DELETE FROM t"})
+    void everyDangerIsRejectedByValidate(String sql) { assertThrows(ToolException.class, () -> SqlGuard.validate(sql), sql); }
 
     @Test void shippedRulesValidateAndProduceOfflineFindingInventory() throws Exception {
         int count = 0;
