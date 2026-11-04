@@ -6,6 +6,7 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Stream;
 import java.util.zip.*;
 import org.apache.commons.csv.CSVPrinter;
 import org.slf4j.Logger;
@@ -232,13 +233,16 @@ public final class Cli {
             Set<String> drilled = new HashSet<>();
             needs.values().forEach(n -> n.stream().filter(x -> x.startsWith("cmp:")).forEach(x -> drilled.add(x.substring(4))));
             Set<String> comparisonDone = ConcurrentHashMap.newKeySet();
+            Set<String> skipped = ConcurrentHashMap.newKeySet();                    // ids skipped by a when= condition (queries, comparisons, funnels)
+            Map<String, String> skippedReasons = new LinkedHashMap<>();
             Map<String, ComparisonRunner.Result> comparisonById = new ConcurrentHashMap<>();
             QueryScheduler.run(rules.queries.stream().filter(q -> !dbOnly.contains(q.id)).toList(), needs, comparisonDone, options.parallel,
-                (group, finished) -> executeGroup(group, finished, comparisonById, runner, parameters, directory, options),
+                (group, finished) -> executeGroup(group, finished, comparisonById, rules, skipped, runner, parameters, directory, options),
                 outcomes -> {
                     for (var outcome : outcomes) {
                         completedQueries.add(outcome.query().id);
-                        recordQuery(outcome, directory, manualDirectory, queries, artifacts, failures);
+                        if (outcome.error() instanceof QueryScheduler.Skipped) skipped.add(outcome.query().id);
+                        recordQuery(outcome, directory, manualDirectory, queries, artifacts, failures, skippedReasons);
                     }
                     for (Rules.Compare compare : rules.comparisons) {
                         if ("db".equals(compare.engine)) continue;
@@ -247,7 +251,7 @@ public final class Cli {
                         attemptedComparisons.add(compare.id);
                         Path retain = drilled.contains(compare.id) ? directory.resolve(".work/drill").resolve(compare.id) : null;
                         if (retain != null) Files.createDirectories(retain);
-                        compareReady(compare, comparator, directory, manualDirectory, queries, artifacts, failures, comparisons, options, retain);
+                        compareReady(compare, comparator, directory, manualDirectory, queries, artifacts, failures, comparisons, options, retain, skipped, skippedReasons);
                         comparisons.stream().filter(r -> r.id().equals(compare.id)).findFirst().ifPresent(r -> comparisonById.put(compare.id, r));
                         comparisonDone.add("cmp:" + compare.id);       // also when it failed: what waits for it is then blocked with a reason
                     }
@@ -282,6 +286,14 @@ public final class Cli {
             // Funnels read the finished stage queries, like comparisons do.
             List<FunnelRunner.Result> funnels = new ArrayList<>();
             for (Rules.Funnel funnel : rules.funnels) {
+                var skippedStage = funnel.stages.stream().flatMap(st -> Stream.of(st.source, st.target)).filter(Objects::nonNull).filter(skipped::contains).findFirst();
+                if (skippedStage.isPresent()) {
+                    skipped.add(funnel.id);
+                    skippedReasons.put(funnel.id, "its stage query " + skippedStage.get() + " was skipped");
+                    artifacts.put(funnel.id, List.of());
+                    Progress.get().line("  - skipped funnel " + funnel.id + ": its stage query " + skippedStage.get() + " was skipped");
+                    continue;
+                }
                 LOG.info("Starting funnel {} ({} stages)...", funnel.id, funnel.stages.size());
                 try {
                     var result = new FunnelRunner(options.partitions, options.maxPartitionMb).run(funnel, queries, directory, options.export, options.sampleRows);
@@ -300,7 +312,7 @@ public final class Cli {
             }
             boolean partial = queries.values().stream().anyMatch(QueryRunner.Result::partial);
             // Query CSVs still exist here (they live under .work until the run ends), so expectations can read them.
-            Expectations.Report report = Expectations.evaluate(rules, queries, comparisons, funnels, parameters);
+            Expectations.Report report = Expectations.evaluate(rules, queries, comparisons, funnels, parameters, skipped);
             Expectations.write(directory, report);
             // A comparison the rule has stated expectations for is judged by them; the rest still count as differences.
             boolean differs = comparisons.stream().filter(c -> !report.judgedComparisons().contains(c.id()))
@@ -326,7 +338,7 @@ public final class Cli {
             for (Rules.Sql query : rules.queries) {
                 var r = queries.get(query.id);
                 if (r == null) {
-                    summary.append("| ").append(query.id).append(" | ").append(query.db).append(" | - | - | FAILED / BLOCKED |\n");
+                    summary.append("| ").append(query.id).append(" | ").append(query.db).append(" | - | - | ").append(skipped.contains(query.id) ? "SKIPPED" : "FAILED / BLOCKED").append(" |\n");
                     continue;
                 }
                 summary.append("| ").append(query.id).append(" | ").append(query.db).append(" | ").append(r.rows())
@@ -339,6 +351,12 @@ public final class Cli {
                 topFindings.forEach(l -> summary.append("- ").append(l).append("\n"));
                 summary.append("\n");
             }
+            if (!skippedReasons.isEmpty()) {
+                summary.append("Skipped, not failures (a when= condition was false):\n\n");
+                skippedReasons.forEach((id, why) -> summary.append("- ").append(id).append(": ").append(why).append("\n"));
+                summary.append("\n");
+            }
+            if (!report.notEvaluated().isEmpty()) summary.append("Expectations not evaluated: ").append(String.join(", ", report.notEvaluated())).append("\n\n");
             summary.append("Manual actions: ").append(failures.size()).append(". See MANUAL_ACTIONS.md for failed queries and skipped comparisons.\n\n");
             for (var result : comparisons) summary.append("- ").append(result.id()).append(": ").append(result.headline()).append("\n");
             for (var result : funnels) summary.append("- funnel ").append(result.id()).append(": ").append(result.headline()).append("\n");
@@ -422,13 +440,42 @@ public final class Cli {
     }
 
     private List<QueryScheduler.Outcome> executeGroup(QueryScheduler.Group group, Map<String, QueryScheduler.Outcome> finished,
-            Map<String, ComparisonRunner.Result> comparisonById, QueryRunner runner,
+            Map<String, ComparisonRunner.Result> comparisonById, Rules rules, Set<String> skipped, QueryRunner runner,
             Map<String, Object> baseParameters, Path directory, Options options) throws IOException {
         List<QueryScheduler.Outcome> outcomes = new ArrayList<>();
-        // Inputs from earlier queries: only when every query this one uses finished completely.
         Map<String, Object> parameters = baseParameters;
         String inputs = "";
         Rules.Sql probe = group.rules().getFirst();
+        // Skipped upstream => skipped here. Then this query's own when= condition, read from what has finished.
+        for (String need : group.needs()) {
+            boolean upstreamSkipped = need.startsWith("cmp:") ? skipped.contains(need.substring(4)) : finished.get(need) != null && finished.get(need).error() instanceof QueryScheduler.Skipped;
+            if (upstreamSkipped) {
+                String why = "its input " + (need.startsWith("cmp:") ? "comparison " + need.substring(4) : "query " + need) + " was skipped";
+                group.rules().forEach(q -> outcomes.add(new QueryScheduler.Outcome(q, null, new QueryScheduler.Skipped(why), false)));
+                return outcomes;
+            }
+        }
+        if (probe.when != null) {
+            Map<String, QueryRunner.Result> available = new HashMap<>();
+            finished.forEach((id, o) -> { if (o.result() != null) available.put(id, o.result()); });
+            String where = "Query " + probe.id + " when=\"" + Menu.shorten(probe.when, 40) + "\"";
+            try {
+                Set<String> names = new TreeSet<>(baseParameters.keySet());
+                names.addAll(Expressions.resultNames(rules));
+                var expression = Expressions.parse(probe.when, where, names, true);
+                var lookups = new Expressions.Lookups(rules, available, new ArrayList<>(comparisonById.values()), List.of(), skipped);
+                boolean runIt = Expressions.bool(Expressions.evaluate(expression, Expressions.context(baseParameters, lookups, expression), where), where, probe.when);
+                if (!runIt) {
+                    String why = "condition not met: " + probe.when;
+                    group.rules().forEach(q -> outcomes.add(new QueryScheduler.Outcome(q, null, new QueryScheduler.Skipped(why), false)));
+                    return outcomes;
+                }
+            } catch (ToolException error) {
+                group.rules().forEach(q -> outcomes.add(new QueryScheduler.Outcome(q, null, error, false)));
+                return outcomes;
+            }
+        }
+        // Inputs from earlier queries: only when every query this one uses finished completely.
         if (!Chaining.uses(probe).isEmpty()) {
             Map<String, QueryRunner.Result> results = new HashMap<>();
             for (String target : Chaining.uses(probe).values()) {
@@ -505,8 +552,14 @@ public final class Cli {
     }
 
     private static void recordQuery(QueryScheduler.Outcome outcome, Path directory, Path manualDirectory,
-            Map<String, QueryRunner.Result> queries, Map<String, List<Path>> artifacts, Map<String, String> failures) throws IOException {
+            Map<String, QueryRunner.Result> queries, Map<String, List<Path>> artifacts, Map<String, String> failures, Map<String, String> skippedReasons) throws IOException {
         Rules.Sql query = outcome.query();
+        if (outcome.error() instanceof QueryScheduler.Skipped) {
+            skippedReasons.put(query.id, outcome.error().getMessage());
+            artifacts.put(query.id, List.of());
+            Progress.get().line("  - skipped " + query.id + ": " + outcome.error().getMessage());
+            return;
+        }
         if (outcome.error() == null) {
             QueryRunner.Result result = outcome.result();
             Progress.get().line(Progress.queryFound(query.id, query.db, result.rows(), result.millis(), result.partial()));
@@ -537,7 +590,15 @@ public final class Cli {
 
     private static void compareReady(Rules.Compare compare, ComparisonRunner comparator, Path directory, Path manualDirectory,
             Map<String, QueryRunner.Result> queries, Map<String, List<Path>> artifacts, Map<String, String> failures,
-            List<ComparisonRunner.Result> comparisons, Options options, Path retain) throws IOException {
+            List<ComparisonRunner.Result> comparisons, Options options, Path retain, Set<String> skipped, Map<String, String> skippedReasons) throws IOException {
+        String skippedInput = skipped.contains(compare.source) ? compare.source : skipped.contains(compare.target) ? compare.target : null;
+        if (skippedInput != null) {
+            skipped.add(compare.id);
+            skippedReasons.put(compare.id, "its input query " + skippedInput + " was skipped");
+            artifacts.put(compare.id, List.of());
+            Progress.get().line("  - skipped compare " + compare.id + ": its input query " + skippedInput + " was skipped");
+            return;
+        }
         LOG.info("Starting ready comparison {}...", compare.id);
         try {
             var source = queries.get(compare.source); var target = queries.get(compare.target);

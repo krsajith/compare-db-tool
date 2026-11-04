@@ -45,6 +45,10 @@ public class Rules {
         @JacksonXmlProperty(isAttribute = true) public boolean tempTables;
         /** Inputs from earlier queries: "alias=query-id, other"; the SQL refers to :alias.column or :alias.column[]. */
         @JacksonXmlProperty(isAttribute = true) public String uses;
+        /** Run only after these queries or comparisons (comma separated ids) have finished, without using their rows. */
+        @JacksonXmlProperty(isAttribute = true) public String after;
+        /** Run only if this expression is true; it can read the queries and comparisons named in uses= and after=. Otherwise the query is skipped, and so is what depends on it. */
+        @JacksonXmlProperty(isAttribute = true) public String when;
         /** Longest list of values per statement taken from another query; longer lists run in batches. */
         @JacksonXmlProperty(isAttribute = true) public int listBatch = 1000;
         @JacksonXmlProperty(isAttribute = true) public String export;

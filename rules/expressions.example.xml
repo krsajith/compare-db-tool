@@ -19,8 +19,11 @@
     <sql id="missing" db="mysql-oprdb02"><![CDATA[SELECT trade_id FROM legacy_schema.trades WHERE settle_date = :cob AND trade_id NOT IN (SELECT trade_id FROM legacy_schema.trades WHERE settle_date = :prevCob)]]></sql>
     <sql id="earlier" db="postgres-dev" uses="m=missing"><![CDATA[SELECT trade_id, settle_date FROM opera.trades WHERE trade_id IN (:m.trade_id[])]]></sql>
 
+    <!-- look further only when a manageable number of trades is unmatched; otherwise this query is skipped (not a failure) -->
+    <sql id="detail" db="postgres-dev" after="trades" when="#trades.onlySource &gt; 0 and #trades.onlySource &lt; 500"><![CDATA[SELECT trade_id, status FROM opera.trades WHERE settle_date = :cob]]></sql>
+
     <!-- both sides should have the same number of trades once the unmatched ones are taken into account -->
     <expect expr="#q('legacy').rows - #q('new').rows == #c('trades').onlySource - #c('trades').onlyTarget" judges="trades"
             reason="row counts reconcile with the unmatched rows"/>
-    <expect ref="trades" different="0" when="#c('trades').onlySource &lt; 100" reason="only worth checking values when few rows are missing"/>
+    <expect ref="trades" different="0" when="#trades.onlySource &lt; 100" reason="only worth checking values when few rows are missing"/>
 </rules>

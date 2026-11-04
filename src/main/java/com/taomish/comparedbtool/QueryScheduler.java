@@ -12,7 +12,11 @@ final class QueryScheduler {
         String datasource() { return rules.getFirst().db; }
     }
     record Outcome(Rules.Sql query, QueryRunner.Result result, Throwable error, boolean permitted) {}
-    private record Key(String datasource, String text, boolean tempTables, String uses) {}
+    private record Key(String datasource, String text, boolean tempTables, String uses, String after, String when) {}
+    /** A query whose when= condition was false, or that depends on one that was skipped. Not a failure. */
+    static final class Skipped extends ToolException {
+        Skipped(String message) { super(message); }
+    }
     private record Completed(Group group, List<Outcome> outcomes) {}
     @FunctionalInterface interface Work { List<Outcome> execute(Group group) throws Exception; }
     /** Work that needs the outcomes of the queries it depends on (by query id). */
@@ -34,7 +38,7 @@ final class QueryScheduler {
     static void run(List<Rules.Sql> queries, Map<String, Set<String>> needs, Set<String> external, int parallel, DependentWork work, Consumer consumer) throws Exception {
         Map<Key, List<Rules.Sql>> equivalent = new LinkedHashMap<>();
         for (Rules.Sql query : queries)
-            equivalent.computeIfAbsent(new Key(query.db, query.text, query.tempTables, Objects.toString(query.uses, "")), k -> new ArrayList<>()).add(query);
+            equivalent.computeIfAbsent(new Key(query.db, query.text, query.tempTables, Objects.toString(query.uses, ""), Objects.toString(query.after, ""), Objects.toString(query.when, "")), k -> new ArrayList<>()).add(query);
         Map<String, List<Group>> lanes = new LinkedHashMap<>();
         int order = 0;
         for (var group : equivalent.values()) {

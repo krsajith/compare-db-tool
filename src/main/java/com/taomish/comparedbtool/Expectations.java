@@ -16,7 +16,8 @@ final class Expectations {
 
     record Verdict(String ref, String check, String expected, String actual, boolean pass, String reason) {}
 
-    record Report(List<Verdict> verdicts, Set<String> judgedComparisons) {
+    record Report(List<Verdict> verdicts, Set<String> judgedComparisons, List<String> notEvaluated) {
+        Report(List<Verdict> verdicts, Set<String> judgedComparisons) { this(verdicts, judgedComparisons, List.of()); }
         boolean any() { return !verdicts.isEmpty(); }
         long failed() { return verdicts.stream().filter(v -> !v.pass()).count(); }
         boolean passed() { return failed() == 0; }
@@ -160,7 +161,14 @@ final class Expectations {
 
     static Report evaluate(Rules rules, Map<String, QueryRunner.Result> queries, List<ComparisonRunner.Result> comparisons,
                            List<FunnelRunner.Result> funnels, Map<String, Object> parameters) {
+        return evaluate(rules, queries, comparisons, funnels, parameters, Set.of());
+    }
+
+    /** {@code skipped}: ids of queries, comparisons and funnels that were skipped by a when= condition; expectations on them are listed as not evaluated. */
+    static Report evaluate(Rules rules, Map<String, QueryRunner.Result> queries, List<ComparisonRunner.Result> comparisons,
+                           List<FunnelRunner.Result> funnels, Map<String, Object> parameters, Set<String> skipped) {
         List<Verdict> verdicts = new ArrayList<>();
+        List<String> notEvaluated = new ArrayList<>();
         Map<String, FunnelRunner.Result> funnelById = new HashMap<>();
         funnels.forEach(f -> funnelById.put(f.id(), f));
         Set<String> funnelIds = new HashSet<>();
@@ -172,10 +180,11 @@ final class Expectations {
         rules.comparisons.forEach(c -> comparisonIds.add(c.id));
         Set<String> schemaChecked = new HashSet<>();
         for (Rules.Expect e : rules.expectations) {
-            if (e.when != null && !conditionHolds(e, queries, comparisons, funnels, parameters, verdicts)) continue;
+            if (e.ref != null && skipped.contains(e.ref)) { notEvaluated.add(e.ref + " (skipped)"); continue; }
+            if (e.when != null && !conditionHolds(rules, e, queries, comparisons, funnels, parameters, skipped, verdicts)) continue;
             if (e.expr != null) {
                 if (e.judges != null) for (String id : e.judges.split(",", -1)) judged.add(id.strip());
-                evaluateExpression(e, queries, comparisons, funnels, parameters, verdicts);
+                evaluateExpression(rules, e, queries, comparisons, funnels, parameters, skipped, verdicts);
                 continue;
             }
             if (funnelIds.contains(e.ref)) {
@@ -186,16 +195,22 @@ final class Expectations {
                 evaluateComparison(e, byId.get(e.ref), verdicts, schemaChecked);
             } else evaluateQuery(e, queries.get(e.ref), verdicts);
         }
-        return new Report(List.copyOf(verdicts), Set.copyOf(judged));
+        return new Report(List.copyOf(verdicts), Set.copyOf(judged), List.copyOf(notEvaluated));
     }
 
     /** False when the expectation's when= says to skip it; a when= that cannot be evaluated is reported as a failed check instead of being skipped silently. */
-    private static boolean conditionHolds(Rules.Expect e, Map<String, QueryRunner.Result> queries, List<ComparisonRunner.Result> comparisons,
-                                          List<FunnelRunner.Result> funnels, Map<String, Object> parameters, List<Verdict> out) {
+    private static Set<String> names(Rules rules, Map<String, Object> parameters) {
+        Set<String> names = new TreeSet<>(parameters.keySet());
+        names.addAll(Expressions.resultNames(rules));
+        return names;
+    }
+
+    private static boolean conditionHolds(Rules rules, Rules.Expect e, Map<String, QueryRunner.Result> queries, List<ComparisonRunner.Result> comparisons,
+                                          List<FunnelRunner.Result> funnels, Map<String, Object> parameters, Set<String> skipped, List<Verdict> out) {
         String where = "<expect when=\"" + Menu.shorten(e.when, 40) + "\">";
         try {
-            var context = Expressions.context(parameters, new Expressions.Lookups(queries, comparisons, funnels));
-            var expression = Expressions.parse(e.when, where, parameters.keySet(), true);
+            var expression = Expressions.parse(e.when, where, names(rules, parameters), true);
+            var context = Expressions.context(parameters, new Expressions.Lookups(rules, queries, comparisons, funnels, skipped), expression);
             return Expressions.bool(Expressions.evaluate(expression, context, where), where, e.when);
         } catch (ToolException ex) {
             out.add(new Verdict(e.ref == null ? "expression" : e.ref, "when " + e.when, "true or false", ex.getMessage(), false, e.reason));
@@ -203,13 +218,13 @@ final class Expectations {
         }
     }
 
-    private static void evaluateExpression(Rules.Expect e, Map<String, QueryRunner.Result> queries, List<ComparisonRunner.Result> comparisons,
-                                           List<FunnelRunner.Result> funnels, Map<String, Object> parameters, List<Verdict> out) {
+    private static void evaluateExpression(Rules rules, Rules.Expect e, Map<String, QueryRunner.Result> queries, List<ComparisonRunner.Result> comparisons,
+                                           List<FunnelRunner.Result> funnels, Map<String, Object> parameters, Set<String> skipped, List<Verdict> out) {
         String where = "<expect expr=\"" + Menu.shorten(e.expr, 40) + "\">";
-        var lookups = new Expressions.Lookups(queries, comparisons, funnels);
+        var lookups = new Expressions.Lookups(rules, queries, comparisons, funnels, skipped);
         try {
-            var expression = Expressions.parse(e.expr, where, parameters.keySet(), true);
-            boolean holds = Expressions.bool(Expressions.evaluate(expression, Expressions.context(parameters, lookups), where), where, e.expr);
+            var expression = Expressions.parse(e.expr, where, names(rules, parameters), true);
+            boolean holds = Expressions.bool(Expressions.evaluate(expression, Expressions.context(parameters, lookups, expression), where), where, e.expr);
             out.add(new Verdict("expression", e.expr, "true", holds ? "true" : "false" + Expressions.touchedSummary(lookups.touched), holds, e.reason));
         } catch (ToolException ex) {
             out.add(new Verdict("expression", e.expr, "true", ex.getMessage() + Expressions.touchedSummary(lookups.touched), false, e.reason));
@@ -353,7 +368,8 @@ final class Expectations {
 
     static void write(Path directory, Report report) throws IOException {
         if (!report.any()) return;
-        Files.writeString(directory.resolve("EXPECTATIONS.md"), "# Expectations: " + report.headline() + "\n\n" + table(report));
+        Files.writeString(directory.resolve("EXPECTATIONS.md"), "# Expectations: " + report.headline() + "\n\n" + table(report)
+            + (report.notEvaluated().isEmpty() ? "" : "\nNot evaluated: " + String.join(", ", report.notEvaluated()) + "\n"));
     }
 
     /** One-row and other tiny results printed in the summary, so counts are visible without --export full. */

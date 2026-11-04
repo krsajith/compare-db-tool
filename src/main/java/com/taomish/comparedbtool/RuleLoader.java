@@ -239,9 +239,24 @@ public final class RuleLoader {
             n++;
             Expressions.parse(check.expr, "<check> number " + n, seen, false);
         }
+        List<String> withResults = new ArrayList<>(seen);
+        withResults.addAll(Expressions.resultNames(rules));
         for (Rules.Expect e : rules.expectations) {
-            if (e.expr != null) Expressions.parse(e.expr, "<expect expr=\"" + Menu.shorten(e.expr, 40) + "\">", seen, true);
-            if (e.when != null) Expressions.parse(e.when, "<expect when=\"" + Menu.shorten(e.when, 40) + "\">", seen, true);
+            if (e.expr != null) Expressions.parse(e.expr, "<expect expr=\"" + Menu.shorten(e.expr, 40) + "\">", withResults, true);
+            if (e.when != null) Expressions.parse(e.when, "<expect when=\"" + Menu.shorten(e.when, 40) + "\">", withResults, true);
+        }
+        // when= on a query may read only the queries and comparisons it waits for (uses= and after=), so it cannot depend on something that has not run yet
+        Set<String> comparisonIds = new HashSet<>();
+        rules.comparisons.forEach(c -> comparisonIds.add(c.id));
+        Set<String> queryIds = new HashSet<>();
+        rules.queries.forEach(q -> queryIds.add(q.id));
+        for (Rules.Sql q : rules.queries) if (q.when != null) {
+            List<String> allowed = new ArrayList<>(seen);
+            for (String need : Chaining.needs(q, queryIds, comparisonIds)) {
+                String id = need.startsWith("cmp:") ? need.substring(4) : need;
+                if (id.matches("[A-Za-z_][A-Za-z0-9_]*")) allowed.add(id);
+            }
+            Expressions.parse(q.when, "Query " + q.id + " when=\"" + Menu.shorten(q.when, 40) + "\"", allowed, true);
         }
     }
 

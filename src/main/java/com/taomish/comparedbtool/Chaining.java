@@ -108,6 +108,15 @@ final class Chaining {
                 needs.add("cmp:" + t.id());
             }
         }
+        if (sql.after != null && !sql.after.isBlank()) for (String part : sql.after.split(",", -1)) {
+            String id = part.strip();
+            if (queryIds.contains(id)) {
+                if (id.equals(sql.id)) throw new ToolException("Query " + sql.id + " cannot run after itself.");
+                needs.add(id);
+            } else if (comparisonIds.contains(id)) needs.add("cmp:" + id);
+            else throw new ToolException("Query " + sql.id + ": after=\"" + sql.after + "\" names '" + id + "', which is not a query or comparison. Queries: "
+                + new TreeSet<>(queryIds) + "; comparisons: " + new TreeSet<>(comparisonIds));
+        }
         Set<String> referenced = new HashSet<>();
         for (Ref ref : references(sql)) {
             if (!uses.containsKey(ref.alias()))

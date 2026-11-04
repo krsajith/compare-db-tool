@@ -10,7 +10,7 @@ checksums. Depersonalisation is parked (depends on the project).
 
 ## DONE 04-Nov-2026: Restricted SpEL expressions (computed parameters, `<check>`, `when=`, `<expect expr=>`; see README, "Expressions")
 
-**Not done:** expressions in `when=` on queries/comparisons (skip a query conditionally); a holiday calendar for business days; expressions that read a funnel's per-stage counts.
+**Done later:** `when=`/`after=` on queries with skipping, result variables (`#query1.first.first_name`), list/map/text functions, `rows()`/`values()`. **Not done:** `when=` on comparisons and funnels; a holiday calendar for business days; expressions that read a funnel's per-stage counts.
 
 ## DONE 04-Nov-2026: One query's result as input of another (`uses=`, `:alias.col`, `:alias.col[]`, batching; see README)
 

@@ -191,6 +191,19 @@ A small, restricted expression language (Spring SpEL) is available in four place
   A failing verdict shows what the expression read, for example `false [q(legacy): rows=9251; q(new): rows=9248; c(trades): onlySource=15 ...]`.
   `judges="trades,other"` says the expression accounts for those comparisons or funnels, so their differences are not also reported as differences.
 - **`when="..."`** on any `<expect>`: the check applies only if this is true. A `when` that cannot be evaluated is a failed check, not a silent skip.
+- **Reading results by id:** a query, comparison or funnel whose id is a plain identifier can be written as a variable: `#query1.first.first_name == 'sajith'`, `#query1.rows > 0`,
+  `#trades.onlySource == 0`. For ids with a hyphen use `#q('legacy-trades')`, `#c('trades')`, `#f('deals')`. Column names are lower case. A parameter with the same name wins. A result that failed
+  or was skipped does not turn into a silent null or false: reading it fails with the reason.
+- **Conditions on text, lists and maps** (methods cannot be called on values, so these are functions): `size(x)`, `isEmpty(x)`, `contains(x, v)` (a list holds the value, a map has the key,
+  a text contains the text; numbers compare by value, so `1` equals `1.0`), `startsWith`, `endsWith`, `equalsIgnoreCase`, `trim`, `isBlank`, `upper`, `lower`, `sum(list)`, `distinct(list)`.
+  `rows('id')` is every row of a query as a map by column name (at most 20,000 rows) and `values('id', 'column')` is one column as a list (at most 100,000). With SpEL selection and projection:
+  `#size(#rows('people').?[age > 25 and first_name == 'anna']) == 1`, `#contains(#rows('people').![first_name], 'anna')`, `#sum(#values('orders', 'amount')) == 35.75`,
+  `#isEmpty(#rows('exceptions'))`.
+- **Run a query only if a condition holds:** `<sql id="detail" after="trades" when="#trades.onlySource &gt; 0 and #trades.onlySource &lt; 500">`. `after="id1, id2"` makes the query wait for those queries or
+  comparisons without using their rows (with `uses=` it already waits); `when` may read only what the query waits for, so it can never depend on something that has not run. When the condition is false the query is
+  **skipped, which is not a failure**: nothing runs, the exit code is unaffected, and `SUMMARY.md` lists it under "Skipped" with the condition. What depends on a skipped query (a query using it, a comparison or funnel
+  with it as input, a drill-down from that comparison) is skipped too; an `<expect ref="...">` on something skipped is listed as "not evaluated" rather than passed or failed, and an expression that reads a skipped result
+  fails with "was skipped". A `when` that cannot be evaluated (wrong column, not true/false) blocks the query as a failure, never as a silent skip.
 - **Functions** (call as `#name(...)`): `plusDays, minusDays, plusMonths, minusMonths, startOfMonth, endOfMonth, nextBusinessDay, prevBusinessDay, addBusinessDays, isBusinessDay,
   daysBetween, dayOfWeek, date('2026-10-02'), today, abs, min, max, round, upper, lower`. Dates are `LocalDate` and compare with `<`, `==`; business days are Monday to Friday
   (no holiday calendar). Operators: `+ - * / % == != < <= > >= and or not`, `? :`, `?:`, `[index]`, `.property`.
