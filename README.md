@@ -159,6 +159,11 @@ ends a parameter name in SQL.
   100,000 values.
 - **Empty list:** `IN (:mk.trade_id[])` with no values matches nothing and the query returns no rows, which is the normal answer to "are there any missing?". `NOT IN` with an
   empty list cannot be expressed safely and is refused.
+- **Drill-down from a comparison:** `uses="m=cmp:only-source"` (also `:only-target` and `:different`) takes the **complete** unmatched or differing rows of a stream comparison, not the capped
+  sample in `only-source.csv`; `:only-source` and `:different` have the source query's columns, `:only-target` the target's. The query waits for the comparison, then runs with
+  `IN (:m.trade_id[])` (batched like any list), so "why are these 12 missing?" is answered in the same run, for example by looking the keys up in a backup schema or in the other system.
+  With nothing unmatched the follow-up returns no rows. If the comparison fails, the query is not run and `MANUAL_ACTIONS.md` says so. An `engine="db"` comparison keeps only counts and samples
+  and cannot be used this way. The complete rows are written only to the run's temporary work folder, and only for comparisons that something uses; they are removed when the run ends.
 - Queries with the same SQL but different `uses` are not merged. An input of an `engine="db"` comparison cannot use or feed another query. The scalar values used are shown in
   the progress line and the metadata; lists show only counts.
 

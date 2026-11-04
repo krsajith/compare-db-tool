@@ -5,6 +5,7 @@ import java.nio.file.*;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.zip.*;
 import org.apache.commons.csv.CSVPrinter;
 import org.slf4j.Logger;
@@ -223,11 +224,17 @@ public final class Cli {
                 dbOnly.remove(compare.source); dbOnly.remove(compare.target);
             }
             Map<String, Set<String>> needs = new HashMap<>();
-            Set<String> queryIds = new HashSet<>();
+            Set<String> queryIds = new HashSet<>(), comparisonIds = new HashSet<>();
             rules.queries.forEach(q -> queryIds.add(q.id));
-            rules.queries.forEach(q -> needs.put(q.id, Chaining.needs(q, queryIds)));
-            QueryScheduler.run(rules.queries.stream().filter(q -> !dbOnly.contains(q.id)).toList(), needs, options.parallel,
-                (group, finished) -> executeGroup(group, finished, runner, parameters, directory, options),
+            rules.comparisons.forEach(c -> comparisonIds.add(c.id));
+            rules.queries.forEach(q -> needs.put(q.id, Chaining.needs(q, queryIds, comparisonIds)));
+            // Comparisons whose unmatched rows a later query uses keep them complete; the scheduler learns when each comparison is done.
+            Set<String> drilled = new HashSet<>();
+            needs.values().forEach(n -> n.stream().filter(x -> x.startsWith("cmp:")).forEach(x -> drilled.add(x.substring(4))));
+            Set<String> comparisonDone = ConcurrentHashMap.newKeySet();
+            Map<String, ComparisonRunner.Result> comparisonById = new ConcurrentHashMap<>();
+            QueryScheduler.run(rules.queries.stream().filter(q -> !dbOnly.contains(q.id)).toList(), needs, comparisonDone, options.parallel,
+                (group, finished) -> executeGroup(group, finished, comparisonById, runner, parameters, directory, options),
                 outcomes -> {
                     for (var outcome : outcomes) {
                         completedQueries.add(outcome.query().id);
@@ -238,7 +245,11 @@ public final class Cli {
                         if (attemptedComparisons.contains(compare.id) || !completedQueries.contains(compare.source)
                             || !completedQueries.contains(compare.target)) continue;
                         attemptedComparisons.add(compare.id);
-                        compareReady(compare, comparator, directory, manualDirectory, queries, artifacts, failures, comparisons, options);
+                        Path retain = drilled.contains(compare.id) ? directory.resolve(".work/drill").resolve(compare.id) : null;
+                        if (retain != null) Files.createDirectories(retain);
+                        compareReady(compare, comparator, directory, manualDirectory, queries, artifacts, failures, comparisons, options, retain);
+                        comparisons.stream().filter(r -> r.id().equals(compare.id)).findFirst().ifPresent(r -> comparisonById.put(compare.id, r));
+                        comparisonDone.add("cmp:" + compare.id);       // also when it failed: what waits for it is then blocked with a reason
                     }
                 });
             // After query workers finish, database comparisons cannot overlap a datasource's scheduler lane.
@@ -410,7 +421,8 @@ public final class Cli {
         return top;
     }
 
-    private List<QueryScheduler.Outcome> executeGroup(QueryScheduler.Group group, Map<String, QueryScheduler.Outcome> finished, QueryRunner runner,
+    private List<QueryScheduler.Outcome> executeGroup(QueryScheduler.Group group, Map<String, QueryScheduler.Outcome> finished,
+            Map<String, ComparisonRunner.Result> comparisonById, QueryRunner runner,
             Map<String, Object> baseParameters, Path directory, Options options) throws IOException {
         List<QueryScheduler.Outcome> outcomes = new ArrayList<>();
         // Inputs from earlier queries: only when every query this one uses finished completely.
@@ -419,14 +431,25 @@ public final class Cli {
         Rules.Sql probe = group.rules().getFirst();
         if (!Chaining.uses(probe).isEmpty()) {
             Map<String, QueryRunner.Result> results = new HashMap<>();
-            for (String need : group.needs()) {
-                var done = finished.get(need);
-                if (done == null || done.error() != null || done.result() == null || done.result().partial()) {
-                    String why = "Not run: it uses the result of query " + need + ", which failed, was blocked or is PARTIAL.";
-                    group.rules().forEach(q -> outcomes.add(new QueryScheduler.Outcome(q, null, new ToolException(why), false)));
+            for (String target : Chaining.uses(probe).values()) {
+                Chaining.Target t = Chaining.target(target);
+                String why = null;
+                if (t.part() == null) {
+                    var done = finished.get(t.id());
+                    if (done == null || done.error() != null || done.result() == null || done.result().partial())
+                        why = "Not run: it uses the result of query " + t.id() + ", which failed, was blocked or is PARTIAL.";
+                    else results.put(target, done.result());
+                } else {
+                    var comparison = comparisonById.get(t.id());
+                    if (comparison == null || comparison.retained() == null)
+                        why = "Not run: it uses the " + t.part() + " rows of comparison " + t.id() + ", which did not complete.";
+                    else results.put(target, comparison.retained().table(t.part()));
+                }
+                if (why != null) {
+                    final String reason = why;
+                    group.rules().forEach(q -> outcomes.add(new QueryScheduler.Outcome(q, null, new ToolException(reason), false)));
                     return outcomes;
                 }
-                results.put(need, done.result());
             }
             try {
                 Map<String, Object> bound = Chaining.bind(probe, results);
@@ -514,14 +537,14 @@ public final class Cli {
 
     private static void compareReady(Rules.Compare compare, ComparisonRunner comparator, Path directory, Path manualDirectory,
             Map<String, QueryRunner.Result> queries, Map<String, List<Path>> artifacts, Map<String, String> failures,
-            List<ComparisonRunner.Result> comparisons, Options options) throws IOException {
+            List<ComparisonRunner.Result> comparisons, Options options, Path retain) throws IOException {
         LOG.info("Starting ready comparison {}...", compare.id);
         try {
             var source = queries.get(compare.source); var target = queries.get(compare.target);
             if (source == null || target == null || source.partial() || target.partial())
                 throw new ToolException("Comparison skipped: source " + compare.source + " or target " + compare.target
                     + " failed, was blocked, or is PARTIAL. Resolve those queries and rerun this comparison.");
-            var result = comparator.run(compare, source, target, directory, options.export, options.sampleRows);
+            var result = comparator.run(compare, source, target, directory, options.export, options.sampleRows, retain);
             comparisons.add(result); artifacts.put(compare.id, result.files());
             LOG.info("Compare {}: {}", compare.id, result.headline());
             Progress.get().line(Progress.compared(compare.id, compare.source, compare.target, result));

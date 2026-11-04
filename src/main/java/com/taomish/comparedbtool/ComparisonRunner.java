@@ -23,19 +23,37 @@ public final class ComparisonRunner {
     public record Result(String id, long matched, long equal, long different, long onlySource, long onlyTarget,
                          long duplicateSourceKeys, long duplicateTargetKeys, long ambiguousKeys,
                          long differentCells, long acceptedChanges, boolean schemaDifferent,
-                         boolean partial, List<Path> files, String headline, List<Findings.Finding> findings) {
+                         boolean partial, List<Path> files, String headline, List<Findings.Finding> findings, Retained retained) {
         public Result(String id, long matched, long equal, long different, long onlySource, long onlyTarget,
                       long duplicateSourceKeys, long duplicateTargetKeys, long ambiguousKeys,
                       long differentCells, long acceptedChanges, boolean schemaDifferent,
                       boolean partial, List<Path> files, String headline) {
             this(id, matched, equal, different, onlySource, onlyTarget, duplicateSourceKeys, duplicateTargetKeys, ambiguousKeys,
-                differentCells, acceptedChanges, schemaDifferent, partial, files, headline, List.of());
+                differentCells, acceptedChanges, schemaDifferent, partial, files, headline, List.of(), null);
         }
         public boolean differs() {
             return different > 0 || onlySource > 0 || onlyTarget > 0 || duplicateSourceKeys > 0
                 || duplicateTargetKeys > 0 || schemaDifferent;
         }
     }
+    /**
+     * The complete unmatched and differing rows of a comparison, kept in the run's work folder for queries that use them
+     * ({@code uses="m=cmp:only-source"}). Unlike only-source.csv they are never capped by the sample size.
+     */
+    public record Retained(Path directory, List<QueryRunner.Column> sourceColumns, List<QueryRunner.Column> targetColumns,
+                           long onlySource, long onlyTarget, long different) {
+        /** A table that looks like a query result, so the same binding code reads it. */
+        QueryRunner.Result table(String side) {
+            return switch (side) {
+                case "only-source" -> new QueryRunner.Result("only-source", directory.resolve("only-source.csv"), sourceColumns, onlySource, false, 0, List.of());
+                case "only-target" -> new QueryRunner.Result("only-target", directory.resolve("only-target.csv"), targetColumns, onlyTarget, false, 0, List.of());
+                case "different" -> new QueryRunner.Result("different", directory.resolve("different.csv"), sourceColumns, different, false, 0, List.of());
+                default -> throw new ToolException("Unknown part of a comparison: " + side + " (only-source, only-target or different).");
+            };
+        }
+    }
+    static final Set<String> PARTS = Set.of("only-source", "only-target", "different");
+
     private final int partitions;
     private final int maxPartitionMb;
     public ComparisonRunner(int partitions) { this(partitions, 256); }
@@ -46,6 +64,11 @@ public final class ComparisonRunner {
     }
     public Result run(Rules.Compare rule, QueryRunner.Result source, QueryRunner.Result target, Path root,
                       ExportMode defaultMode, int sampleRows) throws IOException {
+        return run(rule, source, target, root, defaultMode, sampleRows, null);
+    }
+    /** {@code retain}: a folder for the complete unmatched/differing rows, when a later query uses them (null otherwise). */
+    public Result run(Rules.Compare rule, QueryRunner.Result source, QueryRunner.Result target, Path root,
+                      ExportMode defaultMode, int sampleRows, Path retain) throws IOException {
         ExportMode mode = ExportMode.resolve(rule.export, defaultMode);
         LOG.debug("Comparison={} sourceRows={} targetRows={} partitions={}", rule.id, source.rows(), target.rows(), partitions);
         List<String> keyNames = RuleLoader.keys(rule);
@@ -78,7 +101,14 @@ public final class ComparisonRunner {
         Breakdowns breakdowns = new Breakdowns(rule, source, target, budget);
         Findings findings = new Findings(rule, source, target, bindings, keyBindings);
         Map<String, String> exports = new LinkedHashMap<>();
+        Retained retained = null;
+        CSVPrinter keepSource = null, keepTarget = null, keepDifferent = null;
         try {
+            if (retain != null) {
+                keepSource = CsvFiles.writer(retain.resolve("only-source.csv"), source.columns().stream().map(QueryRunner.Column::name).toList());
+                keepTarget = CsvFiles.writer(retain.resolve("only-target.csv"), target.columns().stream().map(QueryRunner.Column::name).toList());
+                keepDifferent = CsvFiles.writer(retain.resolve("different.csv"), source.columns().stream().map(QueryRunner.Column::name).toList());
+            }
             LOG.debug("Partitioning source CSV for comparison {}", rule.id);
             partition(source, keyBindings, true, work.resolve("source"));
             LOG.debug("Partitioning target CSV for comparison {}", rule.id);
@@ -105,8 +135,8 @@ public final class ComparisonRunner {
                         }
                         // Duplicate keys are ambiguous, never silently paired or counted as equal.
                         if (duplicate) { totals[7]++; continue; }
-                        if (x == null) { totals[4]++; right.printRecord(y.first); breakdowns.add("only-target", y.first, false); findings.onlyTarget(y.first, key.values()); continue; }
-                        if (y == null) { totals[3]++; left.printRecord(x.first); breakdowns.add("only-source", x.first, true); findings.onlySource(x.first, key.values()); continue; }
+                        if (x == null) { totals[4]++; right.printRecord(y.first); if (keepTarget != null) keepTarget.printRecord(y.first); breakdowns.add("only-target", y.first, false); findings.onlyTarget(y.first, key.values()); continue; }
+                        if (y == null) { totals[3]++; left.printRecord(x.first); if (keepSource != null) keepSource.printRecord(x.first); breakdowns.add("only-source", x.first, true); findings.onlySource(x.first, key.values()); continue; }
                         totals[0]++;
                         boolean different = false;
                         for (Binding binding : bindings) {
@@ -119,7 +149,7 @@ public final class ComparisonRunner {
                                 diff.printRecord(concat(key.values(), Arrays.asList(binding.name(), lv, rv, change.classification(),
                                     String.valueOf(change.accepted()), change.absoluteDifference(), change.relativeDifference())));
                         }
-                        if (different) { totals[2]++; breakdowns.add("different", x.first, true); } else totals[1]++;
+                        if (different) { totals[2]++; if (keepDifferent != null) keepDifferent.printRecord(x.first); breakdowns.add("different", x.first, true); } else totals[1]++;
                         findings.matched(x.first, y.first, different);
                     }
                 }
@@ -127,21 +157,23 @@ public final class ComparisonRunner {
                 exports.put("only-target.csv", right.showing()); exports.put("duplicates.csv", dup.showing());
             }
         } finally {
+            for (CSVPrinter keep : new CSVPrinter[]{keepSource, keepTarget, keepDifferent}) if (keep != null) try { keep.close(); } catch (IOException e) { LOG.warn("Could not close a retained file of comparison {}", rule.id, e); }
             try { CsvFiles.deleteTree(work); }
             catch (IOException cleanup) { LOG.warn("Could not remove comparison temporary files at {}", work, cleanup); }
         }
-        return finish(rule, source, target, directory, mode, totals, groups, breakdowns, exports, sourceExtra, targetExtra, findings);
+        if (retain != null) retained = new Retained(retain, source.columns(), target.columns(), totals[3], totals[4], totals[2]);
+        return finish(rule, source, target, directory, mode, totals, groups, breakdowns, exports, sourceExtra, targetExtra, findings, retained);
     }
 
     static Result finish(Rules.Compare rule, QueryRunner.Result source, QueryRunner.Result target, Path directory,
                          ExportMode mode, long[] totals, Map<Group, Long> groups, Breakdowns breakdowns,
                          Map<String, String> exports, List<String> sourceExtra, List<String> targetExtra) throws IOException {
-        return finish(rule, source, target, directory, mode, totals, groups, breakdowns, exports, sourceExtra, targetExtra, null);
+        return finish(rule, source, target, directory, mode, totals, groups, breakdowns, exports, sourceExtra, targetExtra, null, null);
     }
 
     static Result finish(Rules.Compare rule, QueryRunner.Result source, QueryRunner.Result target, Path directory,
                          ExportMode mode, long[] totals, Map<Group, Long> groups, Breakdowns breakdowns,
-                         Map<String, String> exports, List<String> sourceExtra, List<String> targetExtra, Findings collector) throws IOException {
+                         Map<String, String> exports, List<String> sourceExtra, List<String> targetExtra, Findings collector, Retained retained) throws IOException {
         List<Findings.Finding> found = List.of();
         if (collector != null) {
             try { found = collector.evaluate(groups); }
@@ -190,7 +222,7 @@ public final class ComparisonRunner {
         Findings.write(directory, rule.id, found);
         if (!found.isEmpty()) files.addAll(List.of(directory.resolve("FINDINGS.md"), directory.resolve("findings.json")));
         return new Result(rule.id, totals[0], totals[1], totals[2], totals[3], totals[4], totals[5], totals[6], totals[7],
-            totals[8], totals[9], schemaDifferent, partial, List.copyOf(files), headline, found);
+            totals[8], totals[9], schemaDifferent, partial, List.copyOf(files), headline, found, retained);
     }
 
     static List<Binding> bindings(Rules.Compare compare, QueryRunner.Result a, QueryRunner.Result b) {

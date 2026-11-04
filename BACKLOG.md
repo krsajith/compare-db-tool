@@ -14,7 +14,7 @@ checksums. Depersonalisation is parked (depends on the project).
 
 ## DONE 04-Nov-2026: One query's result as input of another (`uses=`, `:alias.col`, `:alias.col[]`, batching; see README)
 
-**Not done:** inputs from a comparison's only-source/only-target keys (drill-down), from a funnel's diverging keys; temp-table based filtering for lists above 100,000.
+**Not done:** inputs from a funnel's diverging keys; temp-table based filtering for lists above 100,000. (A comparison's unmatched and differing rows are done: `uses="m=cmp:only-source"`.)
 
 ## DONE 04-Nov-2026: Console messages while running and when done (see README, "What the console tells you")
 

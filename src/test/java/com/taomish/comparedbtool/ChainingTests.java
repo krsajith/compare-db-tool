@@ -206,4 +206,97 @@ class ChainingTests {
         assertThat(Chaining.typed("abc", java.sql.Types.INTEGER)).isEqualTo("abc");                                  // unparsable stays text
         assertThat(Chaining.typed(null, java.sql.Types.INTEGER)).isNull();
     }
+
+    // ------------------------------------------------------------------ drill-down: a comparison's unmatched rows as input
+
+    private Cli.Outcome run(String body, int sampleRows) throws Exception {
+        Path xml = tmp.resolve("r" + System.nanoTime() + ".xml");
+        Files.writeString(xml, "<rules name=\"drill\">" + body + "</rules>");
+        Cli.Options o = new Cli.Options(); o.rules = xml; o.out = tmp.resolve("out"); o.partitions = 2; o.parallel = 2; o.sampleRows = sampleRows;
+        return new Cli(settings).executeRules(o);
+    }
+
+    private static final String ONLY_SOURCE = """
+        <sql id="old" db="test">SELECT id FROM wanted</sql>
+        <sql id="new" db="second">SELECT id FROM trades WHERE id &lt;= 2000</sql>
+        <compare id="cmp" source="old" target="new"><key columns="id"/></compare>""";
+
+    @Test void theCompleteOnlySourceKeysFeedTheNextQueryNotJustTheSample() throws Exception {
+        var outcome = run(ONLY_SOURCE + """
+            <sql id="why" db="second" uses="m=cmp:only-source" listBatch="1000" export="full">SELECT id, amount FROM trades WHERE id IN (:m.id[])</sql>""", 5);   // the CSV sample keeps 5 rows
+        assertThat(read(outcome, "cmp/only-source.csv").lines().count()).isEqualTo(1 + 5);                                  // the published sample is capped
+        assertThat(read(outcome, "why.csv").lines().count()).isEqualTo(1 + 500);                                            // the lookup got all 500 keys
+        assertThat(read(outcome, "why.md")).contains("500 values from cmp:only-source.id in 1 batches".replace(" in 1 batches", "")).doesNotContain("batches of");
+        assertThat(outcome.exit()).isEqualTo(1);                                                                           // the comparison still differs
+    }
+
+    @Test void longUnmatchedListsAreBatchedLikeAnyOtherList() throws Exception {
+        var outcome = run("""
+            <sql id="old" db="test">SELECT id FROM wanted</sql>
+            <sql id="new" db="second">SELECT id FROM trades WHERE id &lt;= 100</sql>
+            <compare id="cmp" source="old" target="new"><key columns="id"/></compare>
+            <sql id="why" db="second" uses="m=cmp:only-source" listBatch="1000" export="full">SELECT id FROM trades WHERE id IN (:m.id[])</sql>""", 200);
+        assertThat(read(outcome, "why.csv").lines().count()).isEqualTo(1 + 2400);
+        assertThat(read(outcome, "why.md")).contains("2,400 values from cmp:only-source.id in 3 batches of 1,000");
+    }
+
+    @Test void onlyTargetAndDifferentRowsAreAvailableToo() throws Exception {
+        var outcome = run("""
+            <sql id="old" db="second">SELECT id, amount FROM trades WHERE id &lt;= 5</sql>
+            <sql id="new" db="second">SELECT id, amount + CASE WHEN id = 3 THEN 1 ELSE 0 END AS amount FROM trades WHERE id &lt;= 5 OR id = 9</sql>
+            <compare id="cmp" source="old" target="new"><key columns="id"/></compare>
+            <sql id="extra" db="test" uses="t=cmp:only-target" export="full">SELECT id FROM wanted WHERE id IN (:t.id[])</sql>
+            <sql id="changed" db="second" uses="d=cmp:different" export="full">SELECT id, code FROM trades WHERE id IN (:d.id[])</sql>""");
+        assertThat(read(outcome, "extra.csv")).contains("\"9\"");                                  // the key that exists only in the target
+        assertThat(read(outcome, "extra.csv").lines().count()).isEqualTo(2);
+        assertThat(read(outcome, "changed.csv")).contains("\"3\",\"k3\"");                       // the one row whose amount differs
+        assertThat(read(outcome, "changed.csv").lines().count()).isEqualTo(2);
+    }
+
+    @Test void whenNothingIsUnmatchedTheFollowUpReturnsNothingWithoutError() throws Exception {
+        var outcome = run("""
+            <sql id="a" db="second">SELECT id FROM trades WHERE id &lt;= 5</sql><sql id="b" db="second">SELECT id FROM trades WHERE id &lt;= 5</sql>
+            <compare id="cmp" source="a" target="b"><key columns="id"/></compare>
+            <sql id="why" db="second" uses="m=cmp:only-source" export="full">SELECT id FROM trades WHERE id IN (:m.id[])</sql>
+            <expect ref="cmp" different="0" only-source="0" only-target="0"/><expect ref="why" rows="0"/>""");
+        assertThat(outcome.exit()).isZero();
+        assertThat(read(outcome, "why.csv").lines().count()).isEqualTo(1);
+    }
+
+    @Test void aComparisonThatFailsBlocksTheQueryThatUsesItsRows() throws Exception {
+        var outcome = run("""
+            <sql id="bad" db="test">SELECT * FROM no_such_table</sql><sql id="ok" db="second">SELECT id FROM trades WHERE id &lt;= 5</sql>
+            <compare id="cmp" source="bad" target="ok"><key columns="id"/></compare>
+            <sql id="why" db="second" uses="m=cmp:only-target">SELECT id FROM trades WHERE id IN (:m.id[])</sql>""");
+        assertThat(outcome.exit()).isEqualTo(2);
+        assertThat(read(outcome, "MANUAL_ACTIONS.md")).contains("it uses the only-target rows of comparison cmp, which did not complete");
+    }
+
+    @Test void theQueryWaitsForTheComparisonAndTheComparisonFeedsTheNextComparison() throws Exception {
+        var outcome = run(ONLY_SOURCE + """
+            <sql id="why" db="second" uses="m=cmp:only-source" export="full">SELECT id, amount FROM trades WHERE id IN (:m.id[])</sql>
+            <sql id="expected" db="test">SELECT id, x * 2.5 AS amount FROM (SELECT id, id AS x FROM wanted WHERE id &gt; 2000)</sql>
+            <compare id="second-look" source="why" target="expected"><key columns="id"/></compare>
+            <expect ref="second-look" different="0" only-source="0" only-target="0" judges="" reason="the unmatched keys exist in the other system with the amounts we expect"/>
+            """.replace(" judges=\"\"", ""));
+        assertThat(outcome.report().verdicts()).hasSize(3).allMatch(Expectations.Verdict::pass);
+    }
+
+    @Test void drillDownMistakesAreFoundWithoutConnecting() throws Exception {
+        for (var bad : new String[][]{
+            {ONLY_SOURCE + "<sql id=\"w\" db=\"second\" uses=\"m=ghost:only-source\">SELECT id FROM trades WHERE id IN (:m.id[])</sql>", "names an unknown comparison"},
+            {ONLY_SOURCE + "<sql id=\"w\" db=\"second\" uses=\"m=cmp:everything\">SELECT id FROM trades WHERE id IN (:m.id[])</sql>", "after the comparison id write"},
+            {"<sql id=\"w\" db=\"second\" uses=\"m=old\">SELECT id FROM trades WHERE id IN (:m.id[])</sql>"
+                + "<sql id=\"old\" db=\"test\">SELECT id FROM wanted</sql><sql id=\"x\" db=\"test\" uses=\"m=cmp:only-source\">SELECT id FROM wanted WHERE id IN (:m.id[])</sql>"
+                + "<compare id=\"cmp\" source=\"x\" target=\"w\"><key columns=\"id\"/></compare>", "in a circle"},
+            {"<sql id=\"a\" db=\"test\">SELECT id FROM wanted</sql><sql id=\"b\" db=\"test\">SELECT id FROM wanted</sql>"
+                + "<compare id=\"cmp\" engine=\"db\" source=\"a\" target=\"b\"><key columns=\"id\"/></compare>"
+                + "<sql id=\"w\" db=\"test\" uses=\"m=cmp:only-source\">SELECT id FROM wanted WHERE id IN (:m.id[])</sql>", "keeps only counts and samples"},
+        }) {
+            Path file = tmp.resolve("d" + Math.abs(bad[0].hashCode()) + ".xml");
+            Files.writeString(file, "<rules name=\"v\">" + bad[0] + "</rules>");
+            Cli.Options o = new Cli.Options(); o.rules = file; o.validate = true;
+            assertThatThrownBy(() -> new Cli(settings).executeRules(o)).as(bad[0]).hasMessageContaining(bad[1]);
+        }
+    }
 }

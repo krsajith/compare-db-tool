@@ -75,15 +75,38 @@ final class Chaining {
         return refs;
     }
 
-    /** Offline checks: aliases declared, targets exist, no self reference, no unused alias. Returns the query ids this query needs. */
-    static Set<String> needs(Rules.Sql sql, Set<String> queryIds) {
+    /** What a uses= entry points at: a query ({@code part} null), or a part of a comparison's result: {@code cmp:only-source}. */
+    record Target(String id, String part) {}
+
+    static Target target(String text) {
+        int colon = text.indexOf(':');
+        return colon < 0 ? new Target(text.strip(), null) : new Target(text.substring(0, colon).strip(), text.substring(colon + 1).strip());
+    }
+
+    static Set<String> needs(Rules.Sql sql, Set<String> queryIds) { return needs(sql, queryIds, Set.of()); }
+
+    /**
+     * Offline checks: aliases declared, targets exist, no self reference, no unused alias. Returns the nodes this query waits for:
+     * query ids, and {@code cmp:<id>} for the comparisons whose unmatched rows it uses.
+     */
+    static Set<String> needs(Rules.Sql sql, Set<String> queryIds, Set<String> comparisonIds) {
         Map<String, String> uses = uses(sql);
         Set<String> needs = new LinkedHashSet<>();
         for (var e : uses.entrySet()) {
-            if (!queryIds.contains(e.getValue()))
-                throw new ToolException("Query " + sql.id + ": uses=\"" + e.getKey() + "=" + e.getValue() + "\" names an unknown query. Available: " + new TreeSet<>(queryIds));
-            if (e.getValue().equals(sql.id)) throw new ToolException("Query " + sql.id + " cannot use its own result.");
-            needs.add(e.getValue());
+            Target t = target(e.getValue());
+            if (t.part() == null) {
+                if (!queryIds.contains(t.id()))
+                    throw new ToolException("Query " + sql.id + ": uses=\"" + e.getKey() + "=" + e.getValue() + "\" names an unknown query. Available: " + new TreeSet<>(queryIds)
+                        + (comparisonIds.isEmpty() ? "" : "; or use a comparison's rows as <comparison id>:only-source, :only-target or :different (comparisons: " + new TreeSet<>(comparisonIds) + ")"));
+                if (t.id().equals(sql.id)) throw new ToolException("Query " + sql.id + " cannot use its own result.");
+                needs.add(t.id());
+            } else {
+                if (!comparisonIds.contains(t.id()))
+                    throw new ToolException("Query " + sql.id + ": uses=\"" + e.getKey() + "=" + e.getValue() + "\" names an unknown comparison. Available: " + new TreeSet<>(comparisonIds));
+                if (!ComparisonRunner.PARTS.contains(t.part()))
+                    throw new ToolException("Query " + sql.id + ": uses=\"" + e.getKey() + "=" + e.getValue() + "\": after the comparison id write :only-source, :only-target or :different.");
+                needs.add("cmp:" + t.id());
+            }
         }
         Set<String> referenced = new HashSet<>();
         for (Ref ref : references(sql)) {

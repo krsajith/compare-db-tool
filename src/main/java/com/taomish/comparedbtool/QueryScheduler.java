@@ -24,6 +24,14 @@ final class QueryScheduler {
     }
 
     static void run(List<Rules.Sql> queries, Map<String, Set<String>> needs, int parallel, DependentWork work, Consumer consumer) throws Exception {
+        run(queries, needs, Set.of(), parallel, work, consumer);
+    }
+
+    /**
+     * {@code external}: names of things that are not queries (such as {@code cmp:<id>}) which the consumer adds when they are done.
+     * A group waiting for one is submitted as soon as the consumer has added it.
+     */
+    static void run(List<Rules.Sql> queries, Map<String, Set<String>> needs, Set<String> external, int parallel, DependentWork work, Consumer consumer) throws Exception {
         Map<Key, List<Rules.Sql>> equivalent = new LinkedHashMap<>();
         for (Rules.Sql query : queries)
             equivalent.computeIfAbsent(new Key(query.db, query.text, query.tempTables, Objects.toString(query.uses, "")), k -> new ArrayList<>()).add(query);
@@ -40,15 +48,17 @@ final class QueryScheduler {
         Map<String, Outcome> finished = new ConcurrentHashMap<>();
         try (ExecutorService executor = Executors.newFixedThreadPool(threads)) {
             CompletionService<Completed> completions = new ExecutorCompletionService<>(executor);
-            int inFlight = submit(lanes, active, finished, threads, completions, work);
+            int inFlight = submit(lanes, active, finished, external, threads, completions, work);
             while (inFlight > 0) {
                 Completed completion = completions.take().get();
                 inFlight--; active.remove(completion.group.datasource());
                 // Record before refilling: a query waiting for this one becomes runnable now.
                 completion.outcomes.forEach(o -> finished.put(o.query().id, o));
                 // Refill before comparing: query IO continues while the coordinator compares ready inputs.
-                inFlight += submit(lanes, active, finished, threads - inFlight, completions, work);
+                inFlight += submit(lanes, active, finished, external, threads - inFlight, completions, work);
                 consumer.completed(completion.outcomes);
+                // The consumer may have finished a comparison that a waiting query needs.
+                inFlight += submit(lanes, active, finished, external, threads - inFlight, completions, work);
             }
         }
         // Whatever is still waiting depends on a query that never ran (a rule error that validation should have caught).
@@ -58,7 +68,7 @@ final class QueryScheduler {
         if (!stuck.isEmpty()) consumer.completed(stuck);
     }
 
-    private static int submit(Map<String, List<Group>> lanes, Set<String> active, Map<String, Outcome> finished, int slots,
+    private static int submit(Map<String, List<Group>> lanes, Set<String> active, Map<String, Outcome> finished, Set<String> external, int slots,
                               CompletionService<Completed> completions, DependentWork work) {
         int submitted = 0;
         while (submitted < slots) {
@@ -66,7 +76,7 @@ final class QueryScheduler {
             for (var lane : lanes.entrySet()) {
                 if (active.contains(lane.getKey())) continue;
                 for (Group candidate : lane.getValue()) {
-                    if (!finished.keySet().containsAll(candidate.needs())) continue;
+                    if (!candidate.needs().stream().allMatch(n -> finished.containsKey(n) || external.contains(n))) continue;
                     if (selected == null || candidate.order < selected.order) selected = candidate;
                     break;                                  // the first runnable group of a lane is its earliest
                 }

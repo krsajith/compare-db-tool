@@ -142,17 +142,24 @@ public final class RuleLoader {
         }
         // Inputs from earlier queries: declared aliases, existing targets, no cycles. Structure only; the values arrive at run time.
         Map<String, Set<String>> needs = new LinkedHashMap<>();
-        for (Rules.Sql sql : rules.queries) needs.put(sql.id, Chaining.needs(sql, queries.keySet()));
+        Set<String> comparisonIds = new LinkedHashSet<>();
+        if (rules.comparisons == null) rules.comparisons = new ArrayList<>();
+        rules.comparisons.forEach(c -> comparisonIds.add(c.id));
+        for (Rules.Sql sql : rules.queries) needs.put(sql.id, Chaining.needs(sql, queries.keySet(), comparisonIds));
+        // a comparison waits for its two queries, so a query that uses its rows must not (indirectly) feed it
+        for (Rules.Compare c : rules.comparisons) needs.put("cmp:" + c.id, new LinkedHashSet<>(Arrays.asList(c.source, c.target)));
         String cycle = Chaining.cycle(needs);
         if (cycle != null) throw new ToolException("Queries use each other's results in a circle: " + cycle + ".");
         for (Rules.Sql sql : rules.queries) if (sql.listBatch < 1 || sql.listBatch > 30_000)
             throw new ToolException("Query " + sql.id + ": listBatch must be between 1 and 30000.");
         if (rules.comparisons == null) rules.comparisons = new ArrayList<>();
         for (Rules.Compare compare : rules.comparisons) if ("db".equals(compare.engine)) {
+            if (rules.queries.stream().anyMatch(q -> needs.getOrDefault(q.id, Set.of()).contains("cmp:" + compare.id)))
+                throw new ToolException("Comparison " + compare.id + " (engine=db) keeps only counts and samples, so a query cannot use its unmatched rows. Use the stream engine for it.");
             for (String inputId : new String[]{compare.source, compare.target}) {
                 if (needs.containsKey(inputId) && !needs.get(inputId).isEmpty())
                     throw new ToolException("Comparison " + compare.id + " (engine=db): query " + inputId + " uses the result of another query, which engine=db cannot do.");
-                if (needs.values().stream().anyMatch(n -> n.contains(inputId)))
+                if (needs.entrySet().stream().filter(e -> !e.getKey().startsWith("cmp:")).anyMatch(e -> e.getValue().contains(inputId)))
                     throw new ToolException("Comparison " + compare.id + " (engine=db): query " + inputId + " is an input of the database comparison and cannot also feed another query.");
             }
         }
