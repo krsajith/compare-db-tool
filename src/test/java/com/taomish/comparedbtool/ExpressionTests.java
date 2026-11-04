@@ -153,7 +153,7 @@ class ExpressionTests {
             {"<check expr=\"\"/>", "the expression is empty"},
             {"<check expr=\"#cob == #date('2026-10-01')\"/>", null},                // allowed, and true
             {"<expect expr=\"#q('l').rows == 1\" ref=\"l\"/>", "cannot be combined"},
-            {"<expect expr=\"#q('l').rows == 1\" judges=\"ghost\"/>", "is not a comparison or funnel"},
+            {"<expect expr=\"#q('l').rows == 1\" judges=\"ghost\"/>", "is not a comparison, funnel or presence"},
             {"<expect ref=\"l\" rows=\"1\" judges=\"l\"/>", "judges= belongs to"},
             {"<expect expr=\"T(java.lang.Runtime).getRuntime()\"/>", "a type reference"},
             {"<expect ref=\"l\" rows=\"1\" when=\"new java.util.Date()\"/>", "creating objects with new"},

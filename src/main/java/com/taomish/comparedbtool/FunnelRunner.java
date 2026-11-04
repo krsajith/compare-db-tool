@@ -33,8 +33,10 @@ final class FunnelRunner {
     private final int partitions, maxPartitionMb;
     FunnelRunner(int partitions, int maxPartitionMb) { this.partitions = partitions; this.maxPartitionMb = maxPartitionMb; }
 
-    static List<String> keys(Rules.Funnel funnel) {
-        return funnel.key == null ? List.of() : Arrays.stream(funnel.key.split(",", -1)).map(String::strip).toList();
+    static List<String> keys(Rules.Funnel funnel) { return keysOf(funnel.key); }
+
+    static List<String> keysOf(String key) {
+        return key == null ? List.of() : Arrays.stream(key.split(",", -1)).map(String::strip).toList();
     }
 
     static boolean chain(Rules.Funnel funnel) { return "chain".equalsIgnoreCase(funnel.mode); }
@@ -217,7 +219,7 @@ final class FunnelRunner {
         return new Result(funnel.id, chain, List.copyOf(stages), first, totalDiverging[0], anomalies, List.copyOf(files), headline, detail, List.copyOf(profile));
     }
 
-    private Map<ComparisonRunner.Key, long[]> loadMasks(Path work, int partition, MemoryBudget budget) throws IOException {
+    static Map<ComparisonRunner.Key, long[]> loadMasks(Path work, int partition, MemoryBudget budget) throws IOException {
         Map<ComparisonRunner.Key, long[]> masks = new LinkedHashMap<>();
         try (var rows = CsvFiles.reader(work.resolve("part-" + partition + ".csv"), false)) {
             for (var record : rows) {
@@ -244,7 +246,7 @@ final class FunnelRunner {
         return first * 2 + ((a >> first & 1) == 1 ? 0 : 1);
     }
 
-    private static final int PROFILE_MIN_KEYS = 3, PROFILE_BUCKETS = 3, PROFILE_KEY_CAP = 100_000;
+    static final int PROFILE_MIN_KEYS = 3, PROFILE_BUCKETS = 3, PROFILE_KEY_CAP = 100_000;
 
     /**
      * What do the diverging keys have in common? For the first-divergence stage and the biggest other buckets, the keys are collected
@@ -289,42 +291,49 @@ final class FunnelRunner {
             }
             lines.add(title);
             QueryRunner.Result r = queries.get(queryId);
-            if (r == null || r.csv() == null || !Files.exists(r.csv())) { lines.add("- the rows of that query are not available"); lines.add(""); continue; }
-            int[] index = keyIndexes(r, keyNames);
-            boolean[] numeric = keyNumeric(r, index);
-            // A single key column is an identifier and says nothing; the columns of a composite key (client, product, month ...) often do.
-            Set<Integer> skip = new HashSet<>();
-            if (index.length == 1) skip.add(index[0]);
-            Findings.Dims profiled = new Findings.Dims(r.columns(), skip), everything = new Findings.Dims(r.columns(), skip);
-            if (profiled.columns.length == 0) {
-                lines.add("- the stage query returns only the key column. Add the columns you want to look at (for example product, client, status) to its SELECT and run again.");
-                lines.add("");
-                continue;
-            }
-            Set<ComparisonRunner.Key> wanted = keys.get(b.id());
-            Rules.Column plain = new Rules.Column();
-            try (var rows = CsvFiles.reader(r.csv(), true)) {
-                for (var row : rows) {
-                    List<String> values = CsvFiles.values(row);
-                    List<String> key = new ArrayList<>(index.length);
-                    for (int k = 0; k < index.length; k++) key.add(Values.normalize(values.get(index[k]), plain, numeric[k]));
-                    everything.add(values);
-                    if (wanted.contains(new ComparisonRunner.Key(key))) profiled.add(values);
-                }
-            }
             String subject = chain ? "keys that dropped out here" : "keys that diverge here";
-            var found = Findings.concentrate(subject, "all keys of that query", profiled, everything, profiled.rows, PROFILE_MIN_KEYS, 0.5);
-            if (found.isEmpty()) lines.add("- no single value stands out among " + String.join(", ", Arrays.stream(profiled.names).limit(8).toList())
-                + (profiled.names.length > 8 ? ", ..." : ""));
-            else found.forEach(f -> lines.add("- " + f.title()));
-            if (profiled.rows < b.count()) lines.add("- " + profiled.rows + " of the " + b.count() + " keys were found in that query's rows"
-                + (wanted.size() >= PROFILE_KEY_CAP ? " (the profile uses the first " + Progress.count(PROFILE_KEY_CAP) + " keys)" : ""));
-            lines.add("");
+            profileRows(r, keyNames, keys.get(b.id()), b.count(), subject, "all keys of that query", lines);
         }
         return lines;
     }
 
-    private static int[] keyIndexes(QueryRunner.Result r, List<String> keyNames) {
+    /**
+     * What do the given keys have in common? Reads the rows of {@code r}, profiles the columns beyond the key for the wanted keys
+     * against all rows, and appends markdown lines. Shared by funnels and the presence matrix.
+     */
+    static void profileRows(QueryRunner.Result r, List<String> keyNames, Set<ComparisonRunner.Key> wanted, long expected, String subject, String baseName, List<String> lines) throws IOException {
+        if (r == null || r.csv() == null || !Files.exists(r.csv())) { lines.add("- the rows of that query are not available"); lines.add(""); return; }
+        int[] index = keyIndexes(r, keyNames);
+        boolean[] numeric = keyNumeric(r, index);
+        // A single key column is an identifier and says nothing; the columns of a composite key (client, product, month ...) often do.
+        Set<Integer> skip = new HashSet<>();
+        if (index.length == 1) skip.add(index[0]);
+        Findings.Dims profiled = new Findings.Dims(r.columns(), skip), everything = new Findings.Dims(r.columns(), skip);
+        if (profiled.columns.length == 0) {
+            lines.add("- the query returns only the key column. Add the columns you want to look at (for example product, client, status) to its SELECT and run again.");
+            lines.add("");
+            return;
+        }
+        Rules.Column plain = new Rules.Column();
+        try (var rows = CsvFiles.reader(r.csv(), true)) {
+            for (var row : rows) {
+                List<String> values = CsvFiles.values(row);
+                List<String> key = new ArrayList<>(index.length);
+                for (int k = 0; k < index.length; k++) key.add(Values.normalize(values.get(index[k]), plain, numeric[k]));
+                everything.add(values);
+                if (wanted.contains(new ComparisonRunner.Key(key))) profiled.add(values);
+            }
+        }
+        var found = Findings.concentrate(subject, baseName, profiled, everything, profiled.rows, PROFILE_MIN_KEYS, 0.5);
+        if (found.isEmpty()) lines.add("- no single value stands out among " + String.join(", ", Arrays.stream(profiled.names).limit(8).toList())
+            + (profiled.names.length > 8 ? ", ..." : ""));
+        else found.forEach(f -> lines.add("- " + f.title()));
+        if (profiled.rows < expected) lines.add("- " + profiled.rows + " of the " + expected + " keys were found in that query's rows"
+            + (wanted.size() >= PROFILE_KEY_CAP ? " (the profile uses the first " + Progress.count(PROFILE_KEY_CAP) + " keys)" : ""));
+        lines.add("");
+    }
+
+    static int[] keyIndexes(QueryRunner.Result r, List<String> keyNames) {
         int[] index = new int[keyNames.size()];
         for (int k = 0; k < index.length; k++) {
             index[k] = -1;
@@ -333,7 +342,7 @@ final class FunnelRunner {
         return index;
     }
 
-    private static boolean[] keyNumeric(QueryRunner.Result r, int[] index) {
+    static boolean[] keyNumeric(QueryRunner.Result r, int[] index) {
         boolean[] numeric = new boolean[index.length];
         for (int k = 0; k < index.length; k++) numeric[k] = index[k] >= 0 && r.columns().get(index[k]).numeric();
         return numeric;

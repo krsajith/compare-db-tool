@@ -222,6 +222,7 @@ final class Menu {
                 String facts = rules.queries.size() + " queries, " + rules.comparisons.size() + " comparisons, "
                     + (rules.expectations.isEmpty() ? "no expectations" : rules.expectations.size() + " expectations")
                     + (rules.funnels.isEmpty() ? "" : ", " + rules.funnels.size() + " funnels")
+                    + (rules.presences.isEmpty() ? "" : ", " + rules.presences.size() + " presence matrices")
                     + ", " + rules.compressions.size() + " ZIP";
                 return new Info(params, dbs, facts, null, rules);
             }

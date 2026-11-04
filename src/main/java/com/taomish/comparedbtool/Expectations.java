@@ -65,27 +65,38 @@ final class Expectations {
         for (Rules.Compare c : rules.comparisons) comparisonIds.add(c.id);
         Map<String, Rules.Funnel> funnels = new HashMap<>();
         for (Rules.Funnel f : rules.funnels) funnels.put(f.id, f);
+        Set<String> presenceIds = new HashSet<>();
+        for (Rules.Presence p : rules.presences) presenceIds.add(p.id);
         for (Rules.Expect e : rules.expectations) {
             if (e.expr != null) {
-                boolean others = e.ref != null || e.rows != null || e.column != null || e.row != null || e.each != null || e.equals != null || e.min != null
+                boolean others = e.mismatched != null || e.inAll != null || e.ref != null || e.rows != null || e.column != null || e.row != null || e.each != null || e.equals != null || e.min != null
                     || e.max != null || e.between != null || e.isNull != null || e.matched != null || e.equal != null || e.different != null
                     || e.onlySource != null || e.onlyTarget != null || e.duplicates != null || e.firstDivergence != null || e.diverging != null;
                 if (others) throw new ToolException("<expect expr=\"...\"> cannot be combined with ref= or the other checks; give each its own <expect>.");
                 if (e.judges != null) for (String id : e.judges.split(",", -1)) {
                     String name = id.strip();
-                    if (!comparisonIds.contains(name) && !funnels.containsKey(name))
-                        throw new ToolException("<expect expr=\"...\" judges=\"" + e.judges + "\">: '" + name + "' is not a comparison or funnel. Known: "
-                            + new TreeSet<>(comparisonIds) + " and " + new TreeSet<>(funnels.keySet()) + ".");
+                    if (!comparisonIds.contains(name) && !funnels.containsKey(name) && !presenceIds.contains(name))
+                        throw new ToolException("<expect expr=\"...\" judges=\"" + e.judges + "\">: '" + name + "' is not a comparison, funnel or presence. Known: "
+                            + new TreeSet<>(comparisonIds) + ", " + new TreeSet<>(funnels.keySet()) + " and " + new TreeSet<>(presenceIds) + ".");
                 }
                 continue;
             }
             if (e.judges != null) throw new ToolException("judges= belongs to <expect expr=\"...\">.");
             if (e.ref == null || e.ref.isBlank()) throw new ToolException("<expect> needs ref=\"query or comparison id\" or expr=\"...\".");
-            boolean query = queryIds.contains(e.ref), comparison = comparisonIds.contains(e.ref), funnel = funnels.containsKey(e.ref);
-            if (!query && !comparison && !funnel)
+            boolean query = queryIds.contains(e.ref), comparison = comparisonIds.contains(e.ref), funnel = funnels.containsKey(e.ref), presence = presenceIds.contains(e.ref);
+            if (!query && !comparison && !funnel && !presence)
                 throw new ToolException("<expect ref=\"" + e.ref + "\"> references an unknown id. Queries: "
-                    + new TreeSet<>(queryIds) + "; comparisons: " + new TreeSet<>(comparisonIds) + "; funnels: " + new TreeSet<>(funnels.keySet()));
+                    + new TreeSet<>(queryIds) + "; comparisons: " + new TreeSet<>(comparisonIds) + "; funnels: " + new TreeSet<>(funnels.keySet()) + "; presences: " + new TreeSet<>(presenceIds));
             boolean funnelAttrs = e.firstDivergence != null || e.diverging != null;
+            boolean presenceAttrs = e.mismatched != null || e.inAll != null;
+            if (!presence && presenceAttrs) throw new ToolException("<expect ref=\"" + e.ref + "\">: mismatched and in-all apply to a <presence>.");
+            if (presence) {
+                if (queryAttrs(e) || compareAttrs(e) || funnelAttrs) throw new ToolException("<expect ref=\"" + e.ref + "\"> is a presence: use mismatched or in-all.");
+                if (!presenceAttrs) throw new ToolException("<expect ref=\"" + e.ref + "\"> states nothing to check.");
+                if (e.mismatched != null) Spec.parse("mismatched", e.mismatched);
+                if (e.inAll != null) Spec.parse("in-all", e.inAll);
+                continue;
+            }
             boolean queryAttrs = e.rows != null || e.column != null || e.row != null || e.each != null || e.equals != null
                 || e.min != null || e.max != null || e.between != null || e.isNull != null;
             boolean compareAttrs = e.matched != null || e.equal != null || e.different != null || e.onlySource != null
@@ -167,7 +178,16 @@ final class Expectations {
     /** {@code skipped}: ids of queries, comparisons and funnels that were skipped by a when= condition; expectations on them are listed as not evaluated. */
     static Report evaluate(Rules rules, Map<String, QueryRunner.Result> queries, List<ComparisonRunner.Result> comparisons,
                            List<FunnelRunner.Result> funnels, Map<String, Object> parameters, Set<String> skipped) {
+        return evaluate(rules, queries, comparisons, funnels, List.of(), parameters, skipped);
+    }
+
+    static Report evaluate(Rules rules, Map<String, QueryRunner.Result> queries, List<ComparisonRunner.Result> comparisons,
+                           List<FunnelRunner.Result> funnels, List<PresenceRunner.Result> presences, Map<String, Object> parameters, Set<String> skipped) {
         List<Verdict> verdicts = new ArrayList<>();
+        Map<String, PresenceRunner.Result> presenceById = new HashMap<>();
+        presences.forEach(p -> presenceById.put(p.id(), p));
+        Set<String> presenceIds = new HashSet<>();
+        rules.presences.forEach(p -> presenceIds.add(p.id));
         List<String> notEvaluated = new ArrayList<>();
         Map<String, FunnelRunner.Result> funnelById = new HashMap<>();
         funnels.forEach(f -> funnelById.put(f.id(), f));
@@ -181,10 +201,15 @@ final class Expectations {
         Set<String> schemaChecked = new HashSet<>();
         for (Rules.Expect e : rules.expectations) {
             if (e.ref != null && skipped.contains(e.ref)) { notEvaluated.add(e.ref + " (skipped)"); continue; }
-            if (e.when != null && !conditionHolds(rules, e, queries, comparisons, funnels, parameters, skipped, verdicts)) continue;
+            if (e.when != null && !conditionHolds(rules, e, queries, comparisons, funnels, presences, parameters, skipped, verdicts)) continue;
             if (e.expr != null) {
                 if (e.judges != null) for (String id : e.judges.split(",", -1)) judged.add(id.strip());
-                evaluateExpression(rules, e, queries, comparisons, funnels, parameters, skipped, verdicts);
+                evaluateExpression(rules, e, queries, comparisons, funnels, presences, parameters, skipped, verdicts);
+                continue;
+            }
+            if (presenceIds.contains(e.ref)) {
+                judged.add(e.ref);
+                evaluatePresence(e, presenceById.get(e.ref), verdicts);
                 continue;
             }
             if (funnelIds.contains(e.ref)) {
@@ -206,11 +231,11 @@ final class Expectations {
     }
 
     private static boolean conditionHolds(Rules rules, Rules.Expect e, Map<String, QueryRunner.Result> queries, List<ComparisonRunner.Result> comparisons,
-                                          List<FunnelRunner.Result> funnels, Map<String, Object> parameters, Set<String> skipped, List<Verdict> out) {
+                                          List<FunnelRunner.Result> funnels, List<PresenceRunner.Result> presences, Map<String, Object> parameters, Set<String> skipped, List<Verdict> out) {
         String where = "<expect when=\"" + Menu.shorten(e.when, 40) + "\">";
         try {
             var expression = Expressions.parse(e.when, where, names(rules, parameters), true);
-            var context = Expressions.context(parameters, new Expressions.Lookups(rules, queries, comparisons, funnels, skipped), expression);
+            var context = Expressions.context(parameters, new Expressions.Lookups(rules, queries, comparisons, funnels, skipped).withPresences(presences), expression);
             return Expressions.bool(Expressions.evaluate(expression, context, where), where, e.when);
         } catch (ToolException ex) {
             out.add(new Verdict(e.ref == null ? "expression" : e.ref, "when " + e.when, "true or false", ex.getMessage(), false, e.reason));
@@ -219,15 +244,40 @@ final class Expectations {
     }
 
     private static void evaluateExpression(Rules rules, Rules.Expect e, Map<String, QueryRunner.Result> queries, List<ComparisonRunner.Result> comparisons,
-                                           List<FunnelRunner.Result> funnels, Map<String, Object> parameters, Set<String> skipped, List<Verdict> out) {
+                                           List<FunnelRunner.Result> funnels, List<PresenceRunner.Result> presences, Map<String, Object> parameters, Set<String> skipped, List<Verdict> out) {
         String where = "<expect expr=\"" + Menu.shorten(e.expr, 40) + "\">";
-        var lookups = new Expressions.Lookups(rules, queries, comparisons, funnels, skipped);
+        var lookups = new Expressions.Lookups(rules, queries, comparisons, funnels, skipped).withPresences(presences);
         try {
             var expression = Expressions.parse(e.expr, where, names(rules, parameters), true);
             boolean holds = Expressions.bool(Expressions.evaluate(expression, Expressions.context(parameters, lookups, expression), where), where, e.expr);
             out.add(new Verdict("expression", e.expr, "true", holds ? "true" : "false" + Expressions.touchedSummary(lookups.touched), holds, e.reason));
         } catch (ToolException ex) {
             out.add(new Verdict("expression", e.expr, "true", ex.getMessage() + Expressions.touchedSummary(lookups.touched), false, e.reason));
+        }
+    }
+
+    private static boolean queryAttrs(Rules.Expect e) {
+        return e.rows != null || e.column != null || e.row != null || e.each != null || e.equals != null || e.min != null || e.max != null || e.between != null || e.isNull != null;
+    }
+
+    private static boolean compareAttrs(Rules.Expect e) {
+        return e.matched != null || e.equal != null || e.different != null || e.onlySource != null || e.onlyTarget != null || e.duplicates != null;
+    }
+
+    private static void evaluatePresence(Rules.Expect e, PresenceRunner.Result r, List<Verdict> out) {
+        if (r == null) {
+            String why = "presence did not complete (see MANUAL_ACTIONS.md)";
+            if (e.mismatched != null) out.add(new Verdict(e.ref, "mismatched keys", e.mismatched, why, false, e.reason));
+            if (e.inAll != null) out.add(new Verdict(e.ref, "keys in every source", e.inAll, why, false, e.reason));
+            return;
+        }
+        if (e.mismatched != null) {
+            Spec spec = Spec.parse("mismatched", e.mismatched);
+            out.add(new Verdict(e.ref, "mismatched keys", spec.text, r.mismatched() + (r.mismatched() > 0 ? " (" + r.headline() + ")" : ""), spec.test(r.mismatched()), e.reason));
+        }
+        if (e.inAll != null) {
+            Spec spec = Spec.parse("in-all", e.inAll);
+            out.add(new Verdict(e.ref, "keys in every source", spec.text, String.valueOf(r.inAll()), spec.test(r.inAll()), e.reason));
         }
     }
 

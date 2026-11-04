@@ -268,7 +268,7 @@ class FunnelTests {
 
     @Test void whenNothingStandsOutOrThereAreNoExtraColumnsItSaysSo() throws Exception {
         var keyOnly = run(COMPARE_FUNNEL);                              // stage queries return only id
-        assertThat(Files.readString(keyOnly.directory().resolve("deals/SUMMARY.md"))).contains("the stage query returns only the key column");
+        assertThat(Files.readString(keyOnly.directory().resolve("deals/SUMMARY.md"))).contains("the query returns only the key column");
         String url = "jdbc:h2:mem:" + UUID.randomUUID() + ";DB_CLOSE_DELAY=-1";
         try (Connection c = DriverManager.getConnection(url, "sa", ""); Statement s = c.createStatement()) {
             s.execute("CREATE TABLE lg(id INTEGER, region VARCHAR(10), a INTEGER)");

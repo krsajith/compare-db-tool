@@ -66,6 +66,7 @@ public final class RuleLoader {
                             case "expect" -> rules.expectations.add(mapper.readValue(reader, Rules.Expect.class));
                             case "funnel" -> rules.funnels.add(mapper.readValue(reader, Rules.Funnel.class));
                             case "check" -> rules.checks.add(mapper.readValue(reader, Rules.Check.class));
+                            case "presence" -> rules.presences.add(mapper.readValue(reader, Rules.Presence.class));
                             case "parameters" -> {
                                 if (parametersSeen) throw new ToolException("Use only one <parameters> block.");
                                 parametersSeen = true;
@@ -91,8 +92,8 @@ public final class RuleLoader {
                             || (event == XMLStreamConstants.CHARACTERS && !reader.isWhiteSpace()))
                             throw new ToolException("Unexpected content after </rules>.");
                     }
-                    LOG.info("Loaded XML: queries={} comparisons={} funnels={} ZIPs={} parameters={}", rules.queries.size(),
-                        rules.comparisons.size(), rules.funnels.size(), rules.compressions.size(), rules.parameters.size());
+                    LOG.info("Loaded XML: queries={} comparisons={} funnels={} presences={} ZIPs={} parameters={}", rules.queries.size(),
+                        rules.comparisons.size(), rules.funnels.size(), rules.presences.size(), rules.compressions.size(), rules.parameters.size());
                     LOG.debug("SQL ids={} comparison ids={}", rules.queries.stream().map(q -> q.id).toList(),
                         rules.comparisons.stream().map(c -> c.id).toList());
                     return rules;
@@ -194,9 +195,12 @@ public final class RuleLoader {
         }
         if (rules.funnels == null) rules.funnels = new ArrayList<>();
         for (Rules.Funnel funnel : rules.funnels) FunnelRunner.validate(funnel, queries, ids);
+        if (rules.presences == null) rules.presences = new ArrayList<>();
+        for (Rules.Presence presence : rules.presences) PresenceRunner.validate(presence, queries, ids);
         Set<String> includable = new HashSet<>(queries.keySet());
         rules.comparisons.forEach(c -> includable.add(c.id));
         rules.funnels.forEach(f -> includable.add(f.id));
+        rules.presences.forEach(p -> includable.add(p.id));
         Set<String> zipNames = new HashSet<>();
         if (rules.compressions == null) rules.compressions = new ArrayList<>();
         for (Rules.Compress zip : rules.compressions) {
@@ -215,6 +219,7 @@ public final class RuleLoader {
             outputName(query.id + suffix, outputs);
         for (Rules.Compare compare : rules.comparisons) outputName(compare.id, outputs);
         for (Rules.Funnel funnel : rules.funnels) outputName(funnel.id, outputs);
+        for (Rules.Presence presence : rules.presences) outputName(presence.id, outputs);
         for (Rules.Compress zip : rules.compressions) outputName(zip.file, outputs);
         Map<String, Object> values = parameters(rules, Map.of());
         if (checkQueries) rules.queries.forEach(q -> {

@@ -27,6 +27,8 @@ public class Rules {
     @JacksonXmlProperty(localName = "funnel") public List<Funnel> funnels = new ArrayList<>();
     @JacksonXmlElementWrapper(useWrapping = false)
     @JacksonXmlProperty(localName = "check") public List<Check> checks = new ArrayList<>();
+    @JacksonXmlElementWrapper(useWrapping = false)
+    @JacksonXmlProperty(localName = "presence") public List<Presence> presences = new ArrayList<>();
 
     public static class Param {
         @JacksonXmlProperty(isAttribute = true) public String name;
@@ -132,6 +134,18 @@ public class Rules {
         // funnel ref: a stage id, or "none"; and the number of keys that diverge (or, in a chain, drop out)
         @JacksonXmlProperty(isAttribute = true, localName = "first-divergence") public String firstDivergence;
         @JacksonXmlProperty(isAttribute = true) public String diverging;
+        // presence ref: keys that are not in every source, and keys that are
+        @JacksonXmlProperty(isAttribute = true) public String mismatched;
+        @JacksonXmlProperty(isAttribute = true, localName = "in-all") public String inAll;
+    }
+
+    /** Which of several sources has each key: counts per combination, examples, and what the mismatching keys have in common. */
+    public static class Presence {
+        @JacksonXmlProperty(isAttribute = true) public String id;
+        @JacksonXmlProperty(isAttribute = true) public String key;
+        /** Query ids, comma separated (at least two, at most 30). */
+        @JacksonXmlProperty(isAttribute = true) public String sources;
+        @JacksonXmlProperty(isAttribute = true) public String export;
     }
 
     /** A condition on the parameters, checked before anything connects; a failing check stops the run with its message. */

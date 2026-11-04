@@ -39,7 +39,7 @@ final class Expressions {
     private static final SpelExpressionParser PARSER = new SpelExpressionParser();
     private static final Set<String> FORBIDDEN = Set.of("TypeReference", "ConstructorReference", "BeanReference", "MethodReference", "Assign",
         "OperatorInstanceof", "OperatorMatches", "OpInc", "OpDec");
-    static final Set<String> RESULT_FUNCTIONS = Set.of("q", "c", "f", "rows", "values");
+    static final Set<String> RESULT_FUNCTIONS = Set.of("q", "c", "f", "p", "rows", "values");
     private static final Pattern IDENTIFIER = Pattern.compile("[A-Za-z_][A-Za-z0-9_]*");
     private static final Map<String, Method> FUNCTIONS = new TreeMap<>();
     static {
@@ -196,6 +196,7 @@ final class Expressions {
         rules.queries.forEach(q -> { if (IDENTIFIER.matcher(q.id).matches()) names.add(q.id); });
         rules.comparisons.forEach(c -> { if (IDENTIFIER.matcher(c.id).matches()) names.add(c.id); });
         rules.funnels.forEach(f -> { if (IDENTIFIER.matcher(f.id).matches()) names.add(f.id); });
+        rules.presences.forEach(p -> { if (IDENTIFIER.matcher(p.id).matches()) names.add(p.id); });
         return names;
     }
 
@@ -210,11 +211,23 @@ final class Expressions {
         private final List<ComparisonRunner.Result> comparisons;
         private final List<FunnelRunner.Result> funnels;
         private final Set<String> skipped;
+        private List<PresenceRunner.Result> presences = List.of();
         private final Map<String, List<Map<String, Object>>> rowCache = new HashMap<>();
         final Map<String, Map<String, Object>> touched = new LinkedHashMap<>();
 
         Lookups(Rules rules, Map<String, QueryRunner.Result> queries, List<ComparisonRunner.Result> comparisons, List<FunnelRunner.Result> funnels, Set<String> skipped) {
             this.rules = rules; this.queries = queries; this.comparisons = comparisons; this.funnels = funnels; this.skipped = skipped;
+        }
+
+        Lookups withPresences(List<PresenceRunner.Result> presences) { this.presences = presences; return this; }
+
+        public Map<String, Object> p(String id) {
+            notSkipped("presence", id);
+            var r = presences.stream().filter(x -> x.id().equals(id)).findFirst()
+                .orElseThrow(() -> new IllegalStateException("presence " + id + " did not complete (see MANUAL_ACTIONS.md)"));
+            Map<String, Object> m = r.asMap();
+            touched.put("p(" + id + ")", m);
+            return m;
         }
 
         private void notSkipped(String kind, String id) {
@@ -313,6 +326,7 @@ final class Expressions {
                 if (rules.queries.stream().anyMatch(x -> x.id.equals(id))) return q(id);
                 if (rules.comparisons.stream().anyMatch(x -> x.id.equals(id))) return c(id);
                 if (rules.funnels.stream().anyMatch(x -> x.id.equals(id))) return f(id);
+                if (rules.presences.stream().anyMatch(x -> x.id.equals(id))) return p(id);
             } catch (IllegalStateException e) { return new Missing(e.getMessage()); }
             return null;
         }
@@ -331,6 +345,7 @@ final class Expressions {
                 context.setVariable("q", lookup.findVirtual(Lookups.class, "q", MethodType.methodType(Map.class, String.class)).bindTo(lookups));
                 context.setVariable("c", lookup.findVirtual(Lookups.class, "c", MethodType.methodType(Map.class, String.class)).bindTo(lookups));
                 context.setVariable("f", lookup.findVirtual(Lookups.class, "f", MethodType.methodType(Map.class, String.class)).bindTo(lookups));
+                context.setVariable("p", lookup.findVirtual(Lookups.class, "p", MethodType.methodType(Map.class, String.class)).bindTo(lookups));
                 context.setVariable("rows", lookup.findVirtual(Lookups.class, "rows", MethodType.methodType(List.class, String.class)).bindTo(lookups));
                 context.setVariable("values", lookup.findVirtual(Lookups.class, "values", MethodType.methodType(List.class, String.class, String.class)).bindTo(lookups));
             } catch (ReflectiveOperationException e) { throw new IllegalStateException(e); }
@@ -393,6 +408,7 @@ final class Expressions {
             List<String> fields = new ArrayList<>();
             for (var f : e.getValue().entrySet()) {
                 if (f.getKey().equals("columns") || f.getKey().equals("first") || f.getKey().equals("partial")) continue;
+                if (f.getValue() instanceof Map) continue;
                 fields.add(f.getKey() + "=" + f.getValue());
             }
             parts.add(e.getKey() + ": " + String.join(", ", fields));

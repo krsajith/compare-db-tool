@@ -8,6 +8,10 @@ Re-keyed rows, near-miss keys, snapshot timing, concentration by value (who/whic
 one-column differences, empty side. **Not done:** findings for `engine="db"` comparisons; baseline/drift fingerprints; `--catalog` (read-only schema/function listing for building funnels); column profiling. Not wanted: cross-database
 checksums. Depersonalisation is parked (depends on the project).
 
+## DONE 04-Nov-2026: Presence matrix (`<presence>`: which of N sources has each key; see README)
+
+**Not done:** value differences between the sources for keys they share (use `<compare>` for the pair); a graphical matrix.
+
 ## DONE 04-Nov-2026: Restricted SpEL expressions (computed parameters, `<check>`, `when=`, `<expect expr=>`; see README, "Expressions")
 
 **Done later:** `when=`/`after=` on queries with skipping, result variables (`#query1.first.first_name`), list/map/text functions, `rows()`/`values()`. **Not done:** `when=` on comparisons and funnels; a holiday calendar for business days; expressions that read a funnel's per-stage counts.

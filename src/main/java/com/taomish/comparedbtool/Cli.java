@@ -200,6 +200,7 @@ public final class Cli {
             + String.join(", ", rules.queries.stream().map(q -> q.db).distinct().toList())
             + (rules.comparisons.isEmpty() ? "" : ", " + rules.comparisons.size() + (rules.comparisons.size() == 1 ? " comparison" : " comparisons"))
             + (rules.funnels.isEmpty() ? "" : ", " + rules.funnels.size() + (rules.funnels.size() == 1 ? " funnel" : " funnels"))
+            + (rules.presences.isEmpty() ? "" : ", " + rules.presences.size() + (rules.presences.size() == 1 ? " presence matrix" : " presence matrices"))
             + "; export " + options.export.name().toLowerCase(Locale.ROOT) + (options.limit > 0 ? ", row limit " + Progress.count(options.limit) : ""));
         Progress.get().line("  output: " + directory);
         Map<String, List<Path>> artifacts = new LinkedHashMap<>();
@@ -310,14 +311,42 @@ public final class Cli {
                     artifacts.put(funnel.id, List.of(note));
                 }
             }
+            // Presence matrices read the finished source queries too.
+            List<PresenceRunner.Result> presences = new ArrayList<>();
+            for (Rules.Presence presence : rules.presences) {
+                var skippedSource = PresenceRunner.sources(presence).stream().filter(skipped::contains).findFirst();
+                if (skippedSource.isPresent()) {
+                    skipped.add(presence.id);
+                    skippedReasons.put(presence.id, "its source query " + skippedSource.get() + " was skipped");
+                    artifacts.put(presence.id, List.of());
+                    Progress.get().line("  - skipped presence " + presence.id + ": its source query " + skippedSource.get() + " was skipped");
+                    continue;
+                }
+                LOG.info("Starting presence {} ({} sources)...", presence.id, PresenceRunner.sources(presence).size());
+                try {
+                    var result = new PresenceRunner(options.partitions, options.maxPartitionMb).run(presence, queries, directory, options.export, options.sampleRows);
+                    presences.add(result); artifacts.put(presence.id, result.files());
+                    LOG.info("Presence {}: {}", presence.id, result.headline());
+                    Progress.get().line("  presence " + presence.id + ": " + result.headline());
+                } catch (Exception error) {
+                    LOG.error("Presence {} did not complete; continuing", presence.id, error);
+                    String detail = failureReason(error);
+                    Progress.get().line("  FAILED presence " + presence.id + ": " + Menu.shorten(detail.replaceAll("\\s+", " "), 200));
+                    failures.put(presence.id, "Presence " + presence.id + ": " + detail);
+                    Path note = manualDirectory.resolve(presence.id + ".md");
+                    Files.writeString(note, "# Presence " + presence.id + " not completed\n\n" + detail + "\n\nAny files in the presence directory are incomplete.\n");
+                    artifacts.put(presence.id, List.of(note));
+                }
+            }
             boolean partial = queries.values().stream().anyMatch(QueryRunner.Result::partial);
             // Query CSVs still exist here (they live under .work until the run ends), so expectations can read them.
-            Expectations.Report report = Expectations.evaluate(rules, queries, comparisons, funnels, parameters, skipped);
+            Expectations.Report report = Expectations.evaluate(rules, queries, comparisons, funnels, presences, parameters, skipped);
             Expectations.write(directory, report);
             // A comparison the rule has stated expectations for is judged by them; the rest still count as differences.
             boolean differs = comparisons.stream().filter(c -> !report.judgedComparisons().contains(c.id()))
                 .anyMatch(ComparisonRunner.Result::differs)
-                || funnels.stream().filter(f -> !report.judgedComparisons().contains(f.id())).anyMatch(FunnelRunner.Result::differs);
+                || funnels.stream().filter(f -> !report.judgedComparisons().contains(f.id())).anyMatch(FunnelRunner.Result::differs)
+                || presences.stream().filter(p -> !report.judgedComparisons().contains(p.id())).anyMatch(PresenceRunner.Result::differs);
             int exit = partial || !failures.isEmpty() ? 2 : differs || !report.passed() ? 1 : 0;
             if (report.any()) {
                 LOG.info("Expectations: {}", report.headline());
@@ -325,7 +354,7 @@ public final class Cli {
                 report.verdicts().stream().filter(v -> !v.pass()).limit(10).forEach(v -> Progress.get().line("    FAIL " + v.ref() + ": " + v.check()
                     + " expected " + v.expected() + ", got " + Menu.shorten(String.valueOf(v.actual()), 120) + (v.reason() == null || v.reason().isBlank() ? "" : " (" + v.reason() + ")")));
             }
-            List<String> topFindings = writeFindings(directory, comparisons, funnels);
+            List<String> topFindings = writeFindings(directory, comparisons, funnels, presences);
             StringBuilder summary = new StringBuilder("# " + rules.name + "\n\nStatus: "
                 + (!failures.isEmpty() ? "INCOMPLETE / MANUAL ACTIONS REQUIRED" : partial ? "PARTIAL"
                     : !report.passed() ? "EXPECTATIONS NOT MET" : differs ? "DIFFERENCES"
@@ -360,6 +389,7 @@ public final class Cli {
             summary.append("Manual actions: ").append(failures.size()).append(". See MANUAL_ACTIONS.md for failed queries and skipped comparisons.\n\n");
             for (var result : comparisons) summary.append("- ").append(result.id()).append(": ").append(result.headline()).append("\n");
             for (var result : funnels) summary.append("- funnel ").append(result.id()).append(": ").append(result.headline()).append("\n");
+            for (var result : presences) summary.append("- presence ").append(result.id()).append(": ").append(result.headline()).append("\n");
             summary.append("\nQueries run with bounded concurrency and one active query per datasource; identical SQL is reused. "
                 + "Ready comparisons run while other queries continue. Results are not a synchronized cross-database snapshot.\n");
             ComparisonRunner.writeSmallSummary(directory.resolve("SUMMARY.md"), summary.toString());
@@ -408,7 +438,8 @@ public final class Cli {
     }
 
     /** One FINDINGS.md for the run, comparisons in rule order, and the few lines worth putting in SUMMARY.md. */
-    private static List<String> writeFindings(Path directory, List<ComparisonRunner.Result> comparisons, List<FunnelRunner.Result> funnels) throws IOException {
+    private static List<String> writeFindings(Path directory, List<ComparisonRunner.Result> comparisons, List<FunnelRunner.Result> funnels,
+                                              List<PresenceRunner.Result> presences) throws IOException {
         List<String> top = new ArrayList<>();
         StringBuilder md = new StringBuilder("# Findings\n\nComputed from the complete comparisons; counts are exact, examples are capped. "
             + "Most important first within each comparison. A finding says what the data shows, not what caused it. Details: <comparison>/FINDINGS.md.\n");
@@ -431,6 +462,14 @@ public final class Cli {
             md.append("\n## funnel ").append(funnel.id()).append("\n\n").append(Findings.line(finding, 900)).append("\n");
             if (!funnel.profile().isEmpty()) { md.append("\nWhat the keys have in common:\n\n"); funnel.profile().forEach(l -> md.append(l).append("\n")); }
             all.add(new Ranked("funnel " + funnel.id(), finding));
+        }
+        for (var presence : presences) {
+            var finding = presence.finding();
+            if (finding == null) continue;
+            any = true;
+            md.append("\n## presence ").append(presence.id()).append("\n\n").append(Findings.line(finding, 900)).append("\n");
+            if (!presence.profile().isEmpty()) { md.append("\nWhat the keys have in common:\n\n"); presence.profile().forEach(l -> md.append(l).append("\n")); }
+            all.add(new Ranked("presence " + presence.id(), finding));
         }
         if (!any) return top;
         Files.writeString(directory.resolve("FINDINGS.md"), md.toString());

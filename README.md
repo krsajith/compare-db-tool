@@ -211,6 +211,41 @@ A small, restricted expression language (Spring SpEL) is available in four place
   assignment, `matches` and `instanceof`, any unknown `#variable` or function (a typo is an error, not a silent null), an expression longer than 500 characters, and `q`/`c`/`f` outside `<expect>`.
   Expressions run in Spring's read-only data-binding context, so they cannot reach files, the network or the JVM. They cannot build SQL either: values still reach queries only as bound parameters.
 
+## Presence matrix: which source has each key
+
+"Is this key in legacy, in the backup, in current?" A `<presence>` answers it for two to thirty queries in one run, instead of one comparison per pair.
+
+```xml
+<sql id="legacy"  db="mysql-oprdb02">SELECT trade_id, client_code FROM ...</sql>
+<sql id="backup"  db="postgres-dev">SELECT trade_id, client_code FROM ...</sql>
+<sql id="current" db="postgres-dev">SELECT trade_id, client_code FROM ...</sql>
+<presence id="trade-presence" key="trade_id" sources="legacy, backup, current"/>
+<expect ref="trade-presence" mismatched="0" in-all=">=9000"/>
+```
+
+`trade-presence/SUMMARY.md` (illustration):
+
+```
+13 of 103 keys are not in every source; the biggest group: in `legacy` and `backup`, not in `current` (6 keys).
+`legacy` lacks 3; `backup` lacks 7; `current` lacks 10.
+
+| legacy | backup | current | Keys | Share | Examples        |
+| yes    | yes    | yes     | 90   | 87.4% |                 |
+| yes    | yes    | -       | 6    | 5.8%  | `91`, `92`, `93` |
+| yes    | -      | -       | 4    | 3.9%  | `97`, `98`, `99` |
+| -      | -      | yes     | 3    | 2.9%  | `101`, `102`, `103` |
+```
+
+- Counts are exact. Keys match by value (an `INTEGER` key equals a `DECIMAL(10,2)` one); a source that has the same key twice counts it once and says "duplicate or empty keys".
+- `presence-keys.csv` lists the **mismatching** keys with one yes/blank column per source and a pattern label; keys that are in every source are counted, not listed. In `sample` mode the list is capped per combination
+  (counts stay exact), `full` lists all, `none` writes no file.
+- **What the mismatching keys have in common:** for the three biggest mismatching combinations (at least three keys each) the extra columns of the query that has those keys are profiled against all its rows, for example
+  "6 of 6 keys in this group (100%) have client = `X`, against 6.0% of all keys". Add the columns you want looked at to the query's SELECT.
+- **Expectations:** `mismatched="0"` and `in-all=">=9000"` (same count forms as other `<expect>`). In expressions: `#id.keys`, `.inAll`, `.mismatched`, `.missingIn['source']`, `.distinct['source']`, `.rows['source']`, or `#p('id')`.
+  A presence with keys missing somewhere is a difference (exit 1) unless an `<expect>` or `judges=` accounts for it.
+- It shows up in the run `SUMMARY.md`, in `FINDINGS.md` and can be put in a ZIP with `<include ref="trade-presence"/>`. A presence whose source query was skipped is skipped; one whose source failed is listed in `MANUAL_ACTIONS.md`.
+- Values are not compared (that is what `<compare>` does for two sources); use a comparison for the pair you care about once the presence has told you where the keys differ. See `rules/presence.example.xml`.
+
 ## Funnels: the first stage where two sides stop agreeing
 
 A result is usually produced in ordered steps, each keeping only some rows. A `<funnel>` finds the step where the two sides start to differ.

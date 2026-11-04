@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Presence example: where does each key exist? One query per source; the tool says, for every combination of sources, how many keys are in exactly those,
+     lists examples, and reports what the keys that only some sources have have in common. Replace the tables and datasources. Read-only. -->
+<rules name="presence-example">
+    <parameters>
+        <param name="cob" type="date" value="2026-10-01"/>
+    </parameters>
+
+    <sql id="legacy"  db="mysql-oprdb02"><![CDATA[SELECT trade_id, client_code, product_code FROM legacy_schema.trades WHERE settle_date = :cob]]></sql>
+    <sql id="backup"  db="postgres-dev"><![CDATA[SELECT trade_id, client_code, product_code FROM opera_backup_04_10.trades WHERE settle_date = :cob]]></sql>
+    <sql id="current" db="postgres-dev"><![CDATA[SELECT trade_id, client_code, product_code FROM opera.trades WHERE settle_date = :cob]]></sql>
+
+    <presence id="trade-presence" key="trade_id" sources="legacy, backup, current"/>
+
+    <expect ref="trade-presence" mismatched="0" reason="every trade should exist in all three"/>
+    <expect expr="#p('trade-presence').missingIn['current'] == 0" judges="trade-presence"/>
+</rules>
