@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Schema audit: which legacy VIEWS became TABLES in Postgres, and which legacy TABLES became VIEWS. Read only, discovery (no pass or fail on the finding itself).
+     Why it matters: in legacy MySQL a view always shows current data. A Postgres base table that used to be a view has data only if someone loaded it,
+     and nothing refreshes it afterwards (this is how helper_var_accounting_report and helper_var_mult_factor_view were missed, XOGA-713).
+     Names: legacy objects are bifurcated per business unit (helper_var_accounting_report_cfs, _rmc ...) and consolidated in Postgres, so the legacy business
+     unit suffix is stripped before names are matched. A base name that is a view for some business units and a table for others is reported as MIXED.
+     Read the result in this order:
+       1. kinds/differences.csv with legacy kind VIEW and Postgres kind TABLE : views turned into tables. Check exact_rows in view-turned-tables.csv:
+          0 or very few rows means the data was probably never loaded. Then ask who fills the table and when.
+       2. kinds/differences.csv with legacy kind TABLE and Postgres kind VIEW : data is now derived, check that the view reproduces the legacy rows.
+       3. kinds/only-source.csv : legacy objects with no Postgres object (dead, replaced, or forgotten). kinds/only-target.csv : new Postgres objects.
+     Datasource postgres-dev is operadb (schema opera); the legacy schema is dbsystemuat on mysql-oprdb02. -->
+<rules name="schema-01-object-kind-audit">
+
+  <sql id="legacy-kinds" db="mysql-oprdb02" timeout="600" export="full"><![CDATA[
+    SELECT base_name AS object_name,
+           CASE WHEN SUM(is_view) = COUNT(*) THEN 'VIEW' WHEN SUM(is_view) = 0 THEN 'TABLE' ELSE 'MIXED' END AS kind,
+           COUNT(*) AS legacy_objects
+    FROM (
+      SELECT CASE WHEN RIGHT(table_name, 4) IN ('_bkr','_cfs','_cto','_ebo','_gpc','_grn','_og2','_ogp','_orm','_osg','_pf6','_pf9','_pg7','_pg8',
+                                                '_qf1','_qf2','_qf3','_qf4','_qf5','_rba','_rbc','_rbh','_rmc','_rov','_stg','_tsy','_usg','_spc','_odr','_oad')
+                  THEN LEFT(table_name, CHAR_LENGTH(table_name) - 4) ELSE table_name END AS base_name,
+             CASE WHEN table_type = 'VIEW' THEN 1 ELSE 0 END AS is_view
+      FROM information_schema.tables
+      WHERE table_schema = 'dbsystemuat'
+    ) t
+    GROUP BY base_name
+    ORDER BY base_name
+  ]]></sql>
+
+  <sql id="pg-kinds" db="postgres-dev" timeout="600" export="full"><![CDATA[
+    SELECT t.table_name AS object_name,
+           CASE WHEN t.table_type = 'VIEW' THEN 'VIEW' ELSE 'TABLE' END AS kind,
+           CASE WHEN t.table_type = 'VIEW' THEN NULL ELSE c.reltuples::bigint END AS approx_rows
+    FROM information_schema.tables t
+    LEFT JOIN pg_class c ON c.relname = t.table_name AND c.relnamespace = 'opera'::regnamespace
+    WHERE t.table_schema = 'opera' AND t.table_name NOT LIKE 'databasechangelog%'
+    ORDER BY t.table_name
+  ]]></sql>
+
+  <compare id="kinds" source="legacy-kinds" target="pg-kinds" export="full">
+    <key columns="object_name"/>
+    <column name="legacy_objects" ignore="true"/>
+    <column name="approx_rows" ignore="true"/>
+    <breakdown columns="kind" top="5"/>
+  </compare>
+
+  <!-- Exact row counts of the Postgres BASE TABLES whose kind differs from legacy (a view that became a table has a count here). -->
+  <sql id="view-turned-tables" db="postgres-dev" timeout="900" uses="m=kinds:different" export="full"><![CDATA[
+    SELECT t.table_name AS object_name,
+           (xpath('/row/c/text()', query_to_xml(format('select count(*) as c from %I.%I', t.table_schema, t.table_name), false, true, '')))[1]::text::bigint AS exact_rows
+    FROM information_schema.tables t
+    WHERE t.table_schema = 'opera' AND t.table_type = 'BASE TABLE' AND t.table_name IN (:m.object_name[])
+    ORDER BY exact_rows, t.table_name
+  ]]></sql>
+
+  <expect ref="legacy-kinds" rows=">=100" reason="the legacy schema dbsystemuat holds hundreds of objects"/>
+  <expect ref="pg-kinds" rows=">=100" reason="schema opera holds hundreds of objects"/>
+  <expect ref="kinds" matched=">=50" reason="most objects exist on both sides under the same name; the differences are the findings"/>
+
+  <compress id="bundle" file="schema-01-object-kind-audit.zip">
+    <include ref="legacy-kinds"/><include ref="pg-kinds"/><include ref="kinds"/><include ref="view-turned-tables"/>
+  </compress>
+
+</rules>
