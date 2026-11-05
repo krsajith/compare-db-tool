@@ -51,7 +51,8 @@
            (SELECT count(*) FROM opera.helper_var_accounting_report WHERE UPPER(business_unit) = 'RMC') AS rmc_rows,
            (SELECT count(*) FROM opera.helper_var_mult_factor_view) AS mult_rows,
            (SELECT count(*) FROM (SELECT DISTINCT a.invenio_product_code, a.value_date FROM opera.helper_var_accounting_report a
-                                   WHERE NOT EXISTS (SELECT 1 FROM opera.helper_var_mult_factor_view m
+                                   WHERE a.business_unit IN ('CFS', 'USG', 'RMC')
+                                     AND NOT EXISTS (SELECT 1 FROM opera.helper_var_mult_factor_view m
                                                       WHERE m.invenio_product_code = a.invenio_product_code AND m.value_date = a.value_date)) x) AS accounting_pairs_without_multiplier
   ]]></sql>
 
@@ -104,7 +105,7 @@
   <expect ref="pod-slices" column="usg_rows" equals="217" reason="USG rows loaded"/>
   <expect ref="pod-slices" column="rmc_rows" equals="5" reason="RMC rows loaded (needed by the rmc and rms_var procedures)"/>
   <expect ref="pod-slices" column="mult_rows" equals="248" reason="124 legacy multiplier rows for each of the two value dates"/>
-  <expect ref="pod-slices" column="accounting_pairs_without_multiplier" equals="0" reason="a product/date without multiplier makes that row's delta and gamma zero silently"/>
+  <expect ref="pod-slices" column="accounting_pairs_without_multiplier" equals="0" reason="a CFS, USG or RMC product/date without multiplier makes that row's delta and gamma zero silently (GRN rows of 2025-10-28 are out of scope)"/>
   <expect ref="acct-copy" different="0" only-source="0" only-target="0" reason="operadb holds exactly the CFS and USG rows of postgres-uat"/>
   <expect ref="mult-copy" different="0" only-source="0" only-target="0" reason="operadb holds exactly the legacy multiplier rows for the two dates"/>
 
