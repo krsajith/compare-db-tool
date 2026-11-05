@@ -1,0 +1,47 @@
+<rules name="recon-position-mapping-legacy-vs-uat">
+  <!-- Legacy source of the RBA/RBC Price/Hedge flag: dbsystemuat.pos_1211_port_trader_mapping_table
+       (columns group, portfolio, subportfolio, trader_name, h_p). The legacy procedure sp_actual_netted_lots_consolidated_sec_ex_pf_rbrchn_rba
+       joins it on portfolio, subportfolio and the last dash part of trade_id (equal to the group column).
+       Read only. Question: which portfolio and subportfolio keys of the BU deals does legacy map, and which not? -->
+  <parameters>
+    <param name="bu" type="string" value="RBA"/>
+  </parameters>
+
+  <!-- 1. the keys the new function builds for the BU: portfolio, subportfolio and group (the BU, as the function appends -BU to trade_id) -->
+  <sql id="pg-keys" db="postgres-uat-2001" export="full"><![CDATA[
+    SELECT portfolio, subportfolio, upper(trim(:bu)) AS trade_group, count(*) AS deal_rows
+    FROM opera.cloned_deal_ticket_table
+    WHERE upper(trim(business_unit)) = upper(trim(:bu)) AND is_latest_version = 1
+    GROUP BY 1, 2
+    ORDER BY deal_rows DESC
+  ]]></sql>
+
+  <!-- 2. the whole legacy mapping table (small), to see which group values exist -->
+  <sql id="legacy-all" db="mysql-oprdb02" export="full"><![CDATA[
+    SELECT `group` AS trade_group, portfolio, subportfolio, trader_name, h_p
+    FROM dbsystemuat.pos_1211_port_trader_mapping_table
+    ORDER BY `group`, portfolio, subportfolio
+  ]]></sql>
+
+  <!-- 3. legacy rows for the keys found in step 1, chained: the subportfolio list of query 1 is used in the legacy query -->
+  <sql id="legacy-map" db="mysql-oprdb02" uses="k=pg-keys" export="full"><![CDATA[
+    SELECT `group` AS trade_group, portfolio, subportfolio, trader_name, h_p
+    FROM dbsystemuat.pos_1211_port_trader_mapping_table
+    WHERE `group` = :bu AND subportfolio IN (:k.subportfolio[])
+  ]]></sql>
+
+  <compare id="keys-vs-legacy" source="pg-keys" target="legacy-map" export="full">
+    <key columns="portfolio,subportfolio,trade_group"/>
+    <column name="deal_rows" ignore="true"/>
+    <column name="trader_name" ignore="true"/>
+    <column name="h_p" ignore="true"/>
+    <column name="portfolio" trim="true" caseInsensitive="true"/>
+    <column name="subportfolio" trim="true" caseInsensitive="true"/>
+  </compare>
+
+  <expect ref="legacy-all" rows="&gt;=1" reason="the legacy mapping table must hold rows"/>
+  <expect ref="keys-vs-legacy" only-source="0" reason="every portfolio and subportfolio of the BU deals needs a legacy mapping"/>
+  <compress id="bundle" file="recon-position-mapping-legacy.zip">
+    <include ref="pg-keys"/><include ref="legacy-all"/><include ref="legacy-map"/><include ref="keys-vs-legacy"/>
+  </compress>
+</rules>
