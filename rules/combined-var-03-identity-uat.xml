@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- XOGA-713 Combined VAR, step 3: is the database behind the datasource postgres-uat the one the operadev pod reads?
+     The pod log of the failed call shows: database operadb on port 10505, schema opera, CFS aggregation 93 levels (pipeline levels=93)
+     but 0 accounting P&amp;L rows (pnlRows=0, dates=0). Step 2 on postgres-uat found 1817 joinable CFS accounting rows.
+     The same code and SQL cannot give both on one database at one time, so either these are two databases or the data changed in between.
+     This rule prints the identity of the connection, when each table was last written (database statistics) and the pod's exact slices again.
+     Read only, small results, exported in full. -->
+<rules name="combined-var-03-identity-uat">
+
+  <parameters>
+    <param name="bu" type="string" value="cfs"/>
+  </parameters>
+
+  <!-- 1. Who am I talking to. The pod log says operadb and port 10505. -->
+  <sql id="identity" db="postgres-uat" export="full"><![CDATA[
+    SELECT current_database() AS db_name, inet_server_port() AS port, current_user AS db_user,
+           now() AS db_time, pg_postmaster_start_time() AS server_started
+  ]]></sql>
+
+  <!-- 2. When were the VAR tables last written in THIS database (inserts, updates, last analyze). -->
+  <sql id="table-stats" db="postgres-uat" export="full"><![CDATA[
+    SELECT relname AS table_name, n_live_tup AS live_rows, n_tup_ins AS inserts_since_stats_reset, n_tup_upd AS updates,
+           n_tup_del AS deletes, last_analyze, last_autoanalyze, last_vacuum, last_autovacuum
+    FROM pg_stat_user_tables
+    WHERE schemaname = 'opera'
+      AND relname IN ('helper_var_accounting_report', 'helper_var_mult_factor_view', 'var_aggregation_level_table',
+                      'cloned_product_master_table', 'var_cont_price_change_table', 'var_cont_vol_change_table')
+    ORDER BY relname
+  ]]></sql>
+
+  <!-- 3. The pod's two slices and their join, evaluated now, in the same form as the pod runs them. One row. -->
+  <sql id="pod-slices" db="postgres-uat" export="full"><![CDATA[
+    WITH acct AS (
+      SELECT subportfolio FROM opera.helper_var_accounting_report WHERE LOWER(business_unit) = :bu
+    ), agg AS (
+      SELECT aggregation_level, subportfolio FROM opera.var_aggregation_level_table
+      WHERE LOWER(business_unit) = :bu AND UPPER(status) = 'ACTIVE'
+    )
+    SELECT (SELECT count(DISTINCT aggregation_level) FROM agg) AS levels_as_in_pod_log,
+           (SELECT count(*) FROM acct) AS acct_rows,
+           (SELECT count(*) FROM acct WHERE subportfolio IN (SELECT subportfolio FROM agg)) AS acct_rows_joined,
+           (SELECT count(*) FROM opera.helper_var_accounting_report) AS acct_rows_all_bu
+  ]]></sql>
+
+  <expect ref="identity" rows="1" reason="one row"/>
+  <expect ref="identity" column="db_name" equals="operadb" reason="the pod reads database operadb (pod log, jdbc url). A FAIL means postgres-uat is NOT the operadev database"/>
+  <expect ref="identity" column="port" equals="10505" reason="the pod reads port 10505. A FAIL means another server (or a tunnel/proxy on another port: then use the statistics below)"/>
+  <expect ref="pod-slices" column="levels_as_in_pod_log" equals="93" reason="the pod log shows levels=93 for cfs"/>
+  <expect ref="pod-slices" column="acct_rows_joined" equals="0" reason="the pod log shows pnlRows=0. A FAIL (rows above 0) means this database holds data the pod did not see"/>
+
+  <compress id="bundle" file="combined-var-03-identity-uat.zip">
+    <include ref="identity"/><include ref="table-stats"/><include ref="pod-slices"/>
+  </compress>
+
+</rules>
