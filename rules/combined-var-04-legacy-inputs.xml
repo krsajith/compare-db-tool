@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- XOGA-713 Combined VAR, step 4: the legacy side of the three data gaps found on the operadev database (operadb).
+       gap 1  CFS and USG accounting rows are missing (only GRN is loaded): copy from postgres-uat, see analysis/combined-var-load.
+       gap 2  helper_var_mult_factor_view is empty everywhere: its values come from the legacy live view (product master x underlying settle value).
+       gap 3  RMC has no accounting rows anywhere: the legacy view helper_var_accounting_report_rmc is the source.
+     This rule reads the legacy views on mysql-oprdb02 (schema dbsystemuat): what they hold per value date, and the rows needed for the load.
+     Read only. Every result is exported in full (the exported rows are the load input). Change the date with the parameter vd. -->
+<rules name="combined-var-04-legacy-inputs">
+
+  <parameters>
+    <param name="vd" type="date" value="2026-11-03"/>
+  </parameters>
+
+  <!-- A. Which value dates does the legacy multiplier view cover, and is anything NULL. -->
+  <sql id="mult-dates" db="mysql-oprdb02" timeout="600" export="full"><![CDATA[
+    SELECT value_date, count(*) AS row_count, count(DISTINCT invenio_product_code) AS products,
+           sum(lot_mult IS NULL) AS null_lot_mult, sum(curr_mult IS NULL) AS null_curr_mult, sum(mult_factor IS NULL) AS null_mult_factor
+    FROM dbsystemuat.helper_var_mult_factor_view
+    GROUP BY value_date
+    ORDER BY value_date DESC
+    LIMIT 15
+  ]]></sql>
+
+  <!-- B. The multiplier rows for the value date of the accounting data: this is the load input for helper_var_mult_factor_view. -->
+  <sql id="mult-export" db="mysql-oprdb02" timeout="600" export="full"><![CDATA[
+    SELECT invenio_product_code, value_date, curr_mult, lot_mult, mult_factor
+    FROM dbsystemuat.helper_var_mult_factor_view
+    WHERE value_date = :vd
+    ORDER BY invenio_product_code
+  ]]></sql>
+
+  <!-- C. What the legacy accounting views hold for the two procedures. -->
+  <sql id="acct-counts" db="mysql-oprdb02" timeout="900" export="full"><![CDATA[
+    SELECT 'cfs' AS bu, count(*) AS row_count, count(DISTINCT subportfolio) AS subportfolios,
+           count(DISTINCT invenio_product_code) AS products, min(value_date) AS min_value_date, max(value_date) AS max_value_date
+    FROM dbsystemuat.helper_var_accounting_report_cfs
+    UNION ALL
+    SELECT 'rmc', count(*), count(DISTINCT subportfolio), count(DISTINCT invenio_product_code), min(value_date), max(value_date)
+    FROM dbsystemuat.helper_var_accounting_report_rmc
+  ]]></sql>
+
+  <!-- D. The legacy accounting rows of RMC (missing in every Postgres database) and of CFS (to prove the Postgres copy is the same data). -->
+  <sql id="acct-rmc" db="mysql-oprdb02" timeout="900" export="full"><![CDATA[
+    SELECT value_date, settlement_date, subportfolio, p1_name, contract_month, vol_id, p1_settleprice, invenio_product_code,
+           future_expiry, option_expiry, future_continuation_series, option_continuation_series, derivative_type, strike,
+           delta, gamma, vega, theta, delta1, gamma1, vega1
+    FROM dbsystemuat.helper_var_accounting_report_rmc
+  ]]></sql>
+
+  <sql id="acct-cfs" db="mysql-oprdb02" timeout="900" export="full"><![CDATA[
+    SELECT value_date, settlement_date, subportfolio, p1_name, contract_month, vol_id, p1_settleprice, invenio_product_code,
+           future_expiry, option_expiry, future_continuation_series, option_continuation_series, derivative_type, strike,
+           delta, gamma, vega, theta, delta1, gamma1, vega1
+    FROM dbsystemuat.helper_var_accounting_report_cfs
+  ]]></sql>
+
+  <expect ref="mult-export" rows=">=1" reason="the legacy multiplier view has rows for the value date vd. Without them delta and gamma stay zero"/>
+  <expect ref="acct-counts" rows="2" reason="one summary row per procedure (cfs and rmc)"/>
+  <expect ref="acct-rmc" rows=">=1" reason="legacy RMC accounting rows exist, otherwise the rmc procedure has no source"/>
+  <expect ref="acct-cfs" rows="1817" reason="the Postgres copy on postgres-uat holds 1817 CFS rows for 2026-11-03"/>
+
+  <compress id="bundle" file="combined-var-04-legacy-inputs.zip">
+    <include ref="mult-dates"/><include ref="mult-export"/><include ref="acct-counts"/><include ref="acct-rmc"/><include ref="acct-cfs"/>
+  </compress>
+
+</rules>
