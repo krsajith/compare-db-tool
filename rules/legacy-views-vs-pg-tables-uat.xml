@@ -1,0 +1,39 @@
+<rules name="legacy-views-vs-pg-tables-uat">
+  <!-- Which legacy MySQL views are plain TABLES in PostgreSQL, and are those tables empty or written to?
+       Background: helper_var_accounting_report and helper_var_mult_factor_view were live views in MySQL and became plain tables
+       that nothing fills (XOGA-713). Row counts of two empty sides look like a match, so views are checked on their own.
+       Read only. The name is normalised by dropping a business unit suffix, as table_mapping.csv does.
+       Read pg-same-name: pg_kind TABLE with exact_rows 0 (listed first) or inserts 0 are the suspects. -->
+
+  <!-- 1. every view of the legacy schema, with its name without the BU suffix -->
+  <sql id="legacy-views" db="mysql-oprdb02" export="full"><![CDATA[
+    SELECT table_name AS legacy_view,
+           CASE WHEN table_name REGEXP '_(alm|bkr|cfs|coc|cof|cto|ebo|grn|gpc|og2|ogp|orm|osg|pf6|pf9|pg7|pg8|qf1|qf2|qf3|qf4|qf5|rba|rbc|rbh|rmc|rov|stg|tsy|usg|pmc|agf)$' THEN SUBSTRING(table_name, 1, CHAR_LENGTH(table_name) - 4) ELSE table_name END AS base_name
+    FROM information_schema.views
+    WHERE table_schema = 'dbsystemuat'
+    ORDER BY table_name
+  ]]></sql>
+
+  <!-- 2. relations in schema opera whose normalised name equals a legacy view name (chained from query 1).
+          exact_rows is a real count for tables; inserts shows whether anything wrote to it since the statistics reset -->
+  <sql id="pg-same-name" db="postgres-uat" uses="v=legacy-views" export="full"><![CDATA[
+    SELECT c.relname AS pg_name,
+           CASE c.relkind WHEN 'r' THEN 'TABLE' WHEN 'p' THEN 'TABLE' WHEN 'v' THEN 'view' WHEN 'm' THEN 'matview' END AS pg_kind,
+           CASE WHEN c.relkind IN ('r', 'p')
+                THEN (xpath('/row/c/text()', query_to_xml(format('select count(*) as c from %I.%I', n.nspname, c.relname), false, true, '')))[1]::text::bigint
+           END AS exact_rows,
+           s.n_tup_ins AS inserts_since_stats_reset,
+           s.n_tup_upd AS updates_since_stats_reset,
+           s.last_autoanalyze
+    FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    LEFT JOIN pg_stat_user_tables s ON s.relid = c.oid
+    WHERE n.nspname = 'opera' AND c.relkind IN ('r', 'p', 'v', 'm')
+      AND (CASE WHEN c.relname ~ '_(alm|bkr|cfs|coc|cof|cto|ebo|grn|gpc|og2|ogp|orm|osg|pf6|pf9|pg7|pg8|qf1|qf2|qf3|qf4|qf5|rba|rbc|rbh|rmc|rov|stg|tsy|usg|pmc|agf)$' THEN left(c.relname, length(c.relname) - 4) ELSE c.relname END) IN (:v.base_name[])
+    ORDER BY 2 DESC, 3 NULLS LAST, 1
+  ]]></sql>
+
+  <expect ref="legacy-views" rows="&gt;=1" reason="the legacy schema must hold views"/>
+  <expect ref="pg-same-name" rows="&gt;=0" reason="PG objects that share a name with a legacy view; read them, the tool cannot judge them"/>
+  <compress id="bundle" file="legacy-views-vs-pg-tables-uat.zip"><include ref="legacy-views"/><include ref="pg-same-name"/></compress>
+</rules>
