@@ -1,64 +1,90 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- XOGA-132 / XOGA-713 Combined VAR on UAT, step 2: the pipeline reads two slices with these exact filters.
-     Accounting slice: helper_var_accounting_report WHERE LOWER(business_unit) = 'cfs'.
-     Aggregation slice: var_aggregation_level_table WHERE LOWER(business_unit) = 'cfs' AND UPPER(status) = 'ACTIVE'.
-     Output rows = levels x value dates x 10 sheets, and an accounting row survives only when its subportfolio is in the
-     aggregation slice. Step 1 showed both tables are filled (2447 and 31572 rows) and helper_var_mult_factor_view is empty (0).
-     This rule shows, per business unit and status, how many rows each slice really holds, how many accounting rows match
-     an aggregation subportfolio, and whether the continuation series of the accounting rows have price and vol history.
-     All results are small, so every query is exported in full. Read only. -->
+<!-- XOGA-132 / XOGA-713 Combined VAR on UAT, step 2: ONE diagnostic for every place the report can end up empty or wrong.
+     Output rows = aggregation levels x value dates x 10 sheets. The pipeline reads these slices (reference SQL taken from the UAT config):
+       accounting   helper_var_accounting_report      WHERE LOWER(business_unit) = :bu
+       aggregation  var_aggregation_level_table       WHERE LOWER(business_unit) = :bu AND UPPER(status) = 'ACTIVE'
+       a row is kept only when its subportfolio is in the aggregation slice (buildBuPnlRows).
+     Failure points and the check that tells them apart (each is an expectation, so a FAIL names the cause):
+       F1 accounting slice empty or business_unit stored differently ......... slice-join.acct_rows, acct-by-bu
+       F2 aggregation slice empty, not ACTIVE, other spelling ................ slice-join.agg_levels, agg-by-bu-status
+       F3 subportfolio names do not join ..................................... slice-join.acct_rows_in_agg, loose_rows_in_agg, unmatched-subportfolios
+       F4 data is a stale snapshot, no EOD refresh ........................... slice-join.acct_rows_at_valuation_date, load-evidence
+       F5 multiplier table empty (all delta and gamma become zero) ........... support.mult_rows, source-objects
+       F6 continuation series have no price or vol history ................... series-coverage
+       F7 scenario history ends before the valuation date .................... scenario-ranges
+       F8 holiday calendar missing ........................................... support.holiday_rows_in_lookback
+       F9 what feeds the helper tables in this database ...................... source-objects
+     Not visible from the database: the service reads archive_folder/combined-var/combined-var-pipeline-config-v2.json on the pod first.
+     The service log of the failed call prints the line generateCombinedVar procedure=cfs pnlRows=.. and levels=.. dates=.. outputRows=..
+     Read only. Every result is small, so every query is exported in full. -->
 <rules name="combined-var-02-slices-uat">
 
   <parameters>
     <param name="bu" type="string" value="cfs"/>
   </parameters>
 
-  <!-- A. What the accounting table holds per tenant and business unit (the exact value of business_unit matters). -->
+  <!-- A. F1, F4, F10: what the accounting table holds per tenant and business unit (exact spelling shown in brackets). -->
   <sql id="acct-by-bu" db="postgres-uat" export="full"><![CDATA[
-    SELECT tenant_id, business_unit, count(*) AS row_count,
-           count(DISTINCT subportfolio) AS subportfolios,
-           count(DISTINCT invenio_product_code) AS products,
-           min(value_date) AS min_value_date, max(value_date) AS max_value_date,
-           min(settlement_date) AS min_settle_date, max(settlement_date) AS max_settle_date,
-           count(*) FILTER (WHERE future_continuation_series IS NULL OR future_continuation_series = '') AS no_future_series,
-           count(*) FILTER (WHERE option_continuation_series IS NOT NULL AND option_continuation_series <> '') AS option_rows,
-           count(*) FILTER (WHERE coalesce(delta, 0) = 0 AND coalesce(gamma, 0) = 0 AND coalesce(vega, 0) = 0) AS all_greeks_zero
-    FROM opera.helper_var_accounting_report
-    GROUP BY tenant_id, business_unit
-    ORDER BY tenant_id, business_unit
+    SELECT a.tenant_id, '[' || a.business_unit || ']' AS business_unit_quoted, count(*) AS row_count,
+           count(DISTINCT a.subportfolio) AS subportfolios,
+           count(DISTINCT a.invenio_product_code) AS products,
+           min(a.value_date) AS min_value_date, max(a.value_date) AS max_value_date,
+           min(a.settlement_date) AS min_settle_date, max(a.settlement_date) AS max_settle_date,
+           max(v.value_date) AS valuation_value_date,
+           count(*) FILTER (WHERE a.value_date = v.value_date) AS rows_at_valuation_date,
+           count(*) FILTER (WHERE a.value_date IS NULL OR a.settlement_date IS NULL) AS null_dates,
+           count(*) FILTER (WHERE a.subportfolio IS NULL OR a.invenio_product_code IS NULL) AS null_keys,
+           count(*) FILTER (WHERE a.future_continuation_series IS NULL OR a.future_continuation_series = '') AS no_future_series,
+           count(*) FILTER (WHERE a.option_continuation_series IS NOT NULL AND a.option_continuation_series <> '') AS option_rows,
+           count(*) FILTER (WHERE coalesce(a.delta, 0) = 0 AND coalesce(a.gamma, 0) = 0 AND coalesce(a.vega, 0) = 0) AS all_greeks_zero,
+           min(a.created_timestamp) AS first_loaded, max(a.created_timestamp) AS last_loaded,
+           string_agg(DISTINCT a.created_by, ',') AS loaded_by
+    FROM opera.helper_var_accounting_report a
+    LEFT JOIN opera.valuation_date_table v ON v.tenant_id = a.tenant_id AND UPPER(v.business_unit) = UPPER(a.business_unit)
+    GROUP BY a.tenant_id, a.business_unit
+    ORDER BY a.tenant_id, a.business_unit
   ]]></sql>
 
-  <!-- B. What the aggregation table holds per business unit and status. -->
+  <!-- B. F2, F4: the aggregation table per business unit and status (exact spelling shown in brackets). -->
   <sql id="agg-by-bu-status" db="postgres-uat" export="full"><![CDATA[
-    SELECT tenant_id, business_unit, status, count(*) AS row_count,
-           count(DISTINCT aggregation_level) AS levels,
-           count(DISTINCT subportfolio) AS subportfolios
+    SELECT tenant_id, '[' || business_unit || ']' AS business_unit_quoted, '[' || status || ']' AS status_quoted,
+           count(*) AS row_count, count(DISTINCT aggregation_level) AS levels, count(DISTINCT subportfolio) AS subportfolios,
+           min(created_timestamp) AS first_loaded, max(updated_timestamp) AS last_changed,
+           string_agg(DISTINCT created_by, ',') AS loaded_by
     FROM opera.var_aggregation_level_table
     GROUP BY tenant_id, business_unit, status
     ORDER BY tenant_id, business_unit, status
   ]]></sql>
 
-  <!-- C. The two slices exactly as the pipeline reads them, and how well they join. One row. -->
+  <!-- C. F1 to F4: the two slices exactly as the pipeline reads them, and how they join. One row, with the predicted output size. -->
   <sql id="slice-join" db="postgres-uat" export="full"><![CDATA[
     WITH acct AS (
       SELECT subportfolio, value_date FROM opera.helper_var_accounting_report WHERE LOWER(business_unit) = :bu
     ), agg AS (
       SELECT DISTINCT aggregation_level, subportfolio FROM opera.var_aggregation_level_table
       WHERE LOWER(business_unit) = :bu AND UPPER(status) = 'ACTIVE'
+    ), joined AS (
+      SELECT acct.value_date FROM acct WHERE acct.subportfolio IN (SELECT subportfolio FROM agg)
+    ), val AS (
+      SELECT max(value_date) AS value_date FROM opera.valuation_date_table WHERE UPPER(business_unit) = UPPER(:bu)
     )
     SELECT (SELECT count(*) FROM acct) AS acct_rows,
            (SELECT count(DISTINCT subportfolio) FROM acct) AS acct_subportfolios,
            (SELECT count(DISTINCT aggregation_level) FROM agg) AS agg_levels,
            (SELECT count(DISTINCT subportfolio) FROM agg) AS agg_subportfolios,
-           (SELECT count(*) FROM acct WHERE subportfolio IN (SELECT subportfolio FROM agg)) AS acct_rows_in_agg,
-           (SELECT count(DISTINCT subportfolio) FROM acct WHERE subportfolio IN (SELECT subportfolio FROM agg)) AS acct_subportfolios_in_agg
+           (SELECT count(*) FROM joined) AS acct_rows_in_agg,
+           (SELECT count(DISTINCT value_date) FROM joined) AS matched_value_dates,
+           (SELECT count(DISTINCT aggregation_level) FROM agg) * (SELECT count(DISTINCT value_date) FROM joined) * 10 AS expected_output_rows,
+           (SELECT count(*) FROM acct WHERE UPPER(TRIM(subportfolio)) IN (SELECT UPPER(TRIM(subportfolio)) FROM agg)) AS loose_rows_in_agg,
+           (SELECT value_date FROM val) AS valuation_value_date,
+           (SELECT count(*) FROM acct WHERE value_date = (SELECT value_date FROM val)) AS acct_rows_at_valuation_date
   ]]></sql>
 
-  <!-- D. Accounting subportfolios that no ACTIVE aggregation row knows (these rows are dropped by the pipeline). -->
+  <!-- D. F3: accounting subportfolios that no ACTIVE aggregation row knows (these rows are dropped by the pipeline). -->
   <sql id="unmatched-subportfolios" db="postgres-uat" export="full"><![CDATA[
     SELECT a.subportfolio, count(*) AS row_count,
            (SELECT string_agg(DISTINCT g.status, ',') FROM opera.var_aggregation_level_table g
-             WHERE g.subportfolio = a.subportfolio AND LOWER(g.business_unit) = :bu) AS status_in_agg_table,
+             WHERE g.subportfolio = a.subportfolio AND LOWER(g.business_unit) = :bu) AS status_in_agg_for_bu,
            (SELECT string_agg(DISTINCT g.business_unit, ',') FROM opera.var_aggregation_level_table g
              WHERE g.subportfolio = a.subportfolio) AS bus_in_agg_table
     FROM opera.helper_var_accounting_report a
@@ -70,7 +96,7 @@
     LIMIT 50
   ]]></sql>
 
-  <!-- E. Do the continuation series of the accounting rows exist in the scenario tables? One row. -->
+  <!-- E. F6: do the continuation series of the accounting rows exist in the scenario tables? One row. -->
   <sql id="series-coverage" db="postgres-uat" timeout="600" export="full"><![CDATA[
     WITH fs AS (
       SELECT DISTINCT future_continuation_series AS s FROM opera.helper_var_accounting_report
@@ -80,21 +106,94 @@
       WHERE LOWER(business_unit) = :bu AND option_continuation_series IS NOT NULL AND option_continuation_series <> ''
     )
     SELECT (SELECT count(*) FROM fs) AS future_series,
-           (SELECT count(*) FROM fs WHERE EXISTS (SELECT 1 FROM opera.var_cont_price_change_table p WHERE p.cont_month = fs.s)) AS future_series_with_price,
+           (SELECT count(*) FROM fs WHERE NOT EXISTS (SELECT 1 FROM opera.var_cont_price_change_table p WHERE p.cont_month = fs.s)) AS future_series_missing_price,
            (SELECT count(*) FROM os) AS option_series,
-           (SELECT count(*) FROM os WHERE EXISTS (SELECT 1 FROM opera.var_cont_vol_change_table v WHERE v.cont_month = os.s)) AS option_series_with_vol
+           (SELECT count(*) FROM os WHERE NOT EXISTS (SELECT 1 FROM opera.var_cont_vol_change_table v WHERE v.cont_month = os.s)) AS option_series_missing_vol
   ]]></sql>
 
-  <expect ref="acct-by-bu" rows=">=1" reason="the accounting table is not empty overall (2447 rows seen in step 1)"/>
-  <expect ref="agg-by-bu-status" rows=">=1" reason="the aggregation table is not empty overall (31572 rows seen in step 1)"/>
+  <!-- F. F7: how far the scenario history reaches compared with the valuation settlement date. One row. -->
+  <sql id="scenario-ranges" db="postgres-uat" timeout="600" export="full"><![CDATA[
+    WITH val AS (
+      SELECT max(settlement_date) AS settlement_date FROM opera.valuation_date_table WHERE UPPER(business_unit) = UPPER(:bu)
+    ), pr AS (
+      SELECT min(settlement_date) AS d0, max(settlement_date) AS d1, count(DISTINCT settlement_date) AS days FROM opera.var_cont_price_change_table
+    ), vo AS (
+      SELECT min(settlement_date) AS d0, max(settlement_date) AS d1, count(DISTINCT settlement_date) AS days FROM opera.var_cont_vol_change_table
+    ), fc AS (
+      SELECT max(settlement_date) AS d1 FROM opera.future_cont_series_table
+    ), oc AS (
+      SELECT max(settlement_date) AS d1 FROM opera.option_cont_series_table
+    )
+    SELECT (SELECT settlement_date FROM val) AS valuation_settlement_date,
+           pr.d0 AS price_first, pr.d1 AS price_last, pr.days AS price_days,
+           vo.d0 AS vol_first, vo.d1 AS vol_last, vo.days AS vol_days,
+           fc.d1 AS future_cont_series_last, oc.d1 AS option_cont_series_last,
+           (SELECT settlement_date FROM val) - pr.d1 AS price_days_behind,
+           (SELECT settlement_date FROM val) - vo.d1 AS vol_days_behind
+    FROM pr, vo, fc, oc
+  ]]></sql>
+
+  <!-- G. F5, F8: the support tables the pipeline needs. One row. -->
+  <sql id="support" db="postgres-uat" export="full"><![CDATA[
+    WITH val AS (
+      SELECT max(settlement_date) AS settlement_date FROM opera.valuation_date_table WHERE UPPER(business_unit) = UPPER(:bu)
+    )
+    SELECT (SELECT count(*) FROM opera.helper_var_mult_factor_view) AS mult_rows,
+           (SELECT count(DISTINCT invenio_product_code) FROM opera.helper_var_accounting_report WHERE LOWER(business_unit) = :bu) AS acct_products,
+           (SELECT count(*) FROM opera.cloned_product_master_table WHERE curr_mult_type = 'division' AND constant_curr_mult <> 1) AS const_curr_mult_rows,
+           (SELECT count(*) FROM opera.product_busdays_table
+             WHERE is_holiday = 1 AND value_date >= (SELECT settlement_date FROM val) - 400) AS holiday_rows_in_lookback,
+           (SELECT max(value_date) FROM opera.product_busdays_table) AS busdays_last_date
+  ]]></sql>
+
+  <!-- H. F4, F5, F9: who loaded the helper tables and when (the code never writes them), and what could feed them here. -->
+  <sql id="load-evidence" db="postgres-uat" export="full"><![CDATA[
+    SELECT 'helper_var_accounting_report' AS table_name, count(*) AS row_count, min(created_timestamp) AS first_loaded,
+           max(created_timestamp) AS last_loaded, string_agg(DISTINCT created_by, ',') AS loaded_by
+    FROM opera.helper_var_accounting_report
+    UNION ALL
+    SELECT 'helper_var_mult_factor_view', count(*), min(created_timestamp), max(created_timestamp), string_agg(DISTINCT created_by, ',')
+    FROM opera.helper_var_mult_factor_view
+    UNION ALL
+    SELECT 'var_aggregation_level_table', count(*), min(created_timestamp), max(created_timestamp), string_agg(DISTINCT created_by, ',')
+    FROM opera.var_aggregation_level_table
+    UNION ALL
+    SELECT 'cloned_product_master_table', count(*), min(created_timestamp), max(created_timestamp), string_agg(DISTINCT created_by, ',')
+    FROM opera.cloned_product_master_table
+  ]]></sql>
+
+  <!-- I. F5, F9: every object in schema opera that is, or could feed, the VAR helper tables. Exact counts for base tables only. -->
+  <sql id="source-objects" db="postgres-uat" timeout="600" export="full"><![CDATA[
+    SELECT table_name, table_type,
+           CASE WHEN table_type = 'BASE TABLE'
+                THEN (xpath('/row/c/text()', query_to_xml(format('select count(*) as c from %I.%I', table_schema, table_name), false, true, '')))[1]::text::bigint
+           END AS exact_rows
+    FROM information_schema.tables
+    WHERE table_schema = 'opera'
+      AND table_name ~ '(helper_var|curr_mult|product_master|var_product_code|underlying_list|vol_id_table|cont_series|^var_)'
+    ORDER BY table_name
+  ]]></sql>
+
+  <!-- Checklist: each line is one failure point, a FAIL names the cause. -->
+  <expect ref="acct-by-bu" rows=">=1" reason="F1: the accounting table holds rows"/>
+  <expect ref="agg-by-bu-status" rows=">=1" reason="F2: the aggregation table holds rows"/>
   <expect ref="slice-join" rows="1" reason="one summary row"/>
-  <expect ref="slice-join" column="acct_rows" min="1" reason="the CFS accounting slice must hold rows, otherwise there is nothing to report"/>
-  <expect ref="slice-join" column="agg_levels" min="1" reason="the CFS ACTIVE aggregation slice must hold levels, otherwise the report has no rows"/>
-  <expect ref="slice-join" column="acct_rows_in_agg" min="1" reason="accounting rows must match an aggregation subportfolio or they are dropped"/>
+  <expect ref="slice-join" column="acct_rows" min="1" reason="F1: the accounting slice for the business unit has rows (spelling of business_unit, see acct-by-bu)"/>
+  <expect ref="slice-join" column="agg_levels" min="1" reason="F2: an ACTIVE aggregation slice for the business unit exists (spelling of business_unit and status, see agg-by-bu-status)"/>
+  <expect ref="slice-join" column="acct_rows_in_agg" min="1" reason="F3: accounting subportfolios join to ACTIVE aggregation subportfolios (see unmatched-subportfolios, loose_rows_in_agg)"/>
+  <expect ref="slice-join" column="expected_output_rows" min="1" reason="the report has rows. If this passes and the API still fails, the pod uses a different config or data (read the service log line generateCombinedVar)"/>
+  <expect ref="slice-join" column="acct_rows_at_valuation_date" min="1" reason="F4: accounting rows exist for the current valuation date, otherwise the data is a stale snapshot (see load-evidence)"/>
+  <expect ref="series-coverage" column="future_series_missing_price" max="0" reason="F6: every future continuation series has price history"/>
+  <expect ref="series-coverage" column="option_series_missing_vol" max="0" reason="F6: every option continuation series has vol history"/>
+  <expect ref="scenario-ranges" column="price_days_behind" max="5" reason="F7: price scenarios reach the valuation settlement date"/>
+  <expect ref="scenario-ranges" column="vol_days_behind" max="5" reason="F7: vol scenarios reach the valuation settlement date"/>
+  <expect ref="support" column="mult_rows" min="1" reason="F5: helper_var_mult_factor_view is filled, otherwise every delta and gamma is zero (see source-objects)"/>
+  <expect ref="support" column="holiday_rows_in_lookback" min="1" reason="F8: product holidays exist inside the 260 day lookback"/>
 
   <compress id="bundle" file="combined-var-02-slices-uat.zip">
     <include ref="acct-by-bu"/><include ref="agg-by-bu-status"/><include ref="slice-join"/>
-    <include ref="unmatched-subportfolios"/><include ref="series-coverage"/>
+    <include ref="unmatched-subportfolios"/><include ref="series-coverage"/><include ref="scenario-ranges"/>
+    <include ref="support"/><include ref="load-evidence"/><include ref="source-objects"/>
   </compress>
 
 </rules>
