@@ -34,6 +34,12 @@ class GuideTests {
         return found;
     }
 
+    @Test void criticalChecklistIsPresentAndAgentsFileTellsToReadAll() throws Exception {
+        assertThat(guide()).contains("READ THIS FIRST").contains("keeps its rows").contains("there is no `all`");
+        String agents = Files.readString(Path.of("AGENTS.md"));
+        assertThat(agents).contains("all of HOW-TO-USE.md").contains("export=\"full\"");
+    }
+
     @Test void sqlExamplesBehaveAsTheGuideSays() throws Exception {
         List<String> accepted = blocks("sql accepted"), rejected = blocks("sql rejected");
         assertThat(accepted).isNotEmpty();

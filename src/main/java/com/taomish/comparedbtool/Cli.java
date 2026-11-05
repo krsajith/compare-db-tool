@@ -193,6 +193,7 @@ public final class Cli {
             Progress.get().quiet(options.quiet);
             Progress.get().line("compare-db-tool: rules are valid - " + rules.queries.size() + " queries, " + rules.comparisons.size() + " comparisons, "
                 + rules.funnels.size() + " funnels, " + rules.expectations.size() + " expectations, " + rules.compressions.size() + " ZIP. No connection was opened.");
+            RuleLint.print(rules, options.export);
             return new Outcome(0, null, new Expectations.Report(List.of(), Set.of()));
         }
         Path base = options.out.toAbsolutePath().normalize();
@@ -203,6 +204,7 @@ public final class Cli {
         LOG.info("Output: {}", directory);
         if (options.check) {
             Progress.get().quiet(options.quiet);
+            RuleLint.print(rules, options.export);
             int exit = LiveCheck.run(rules, parameters, settings, options.allowProd, directory);
             return new Outcome(exit, directory, new Expectations.Report(List.of(), Set.of()));
         }

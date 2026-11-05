@@ -9,12 +9,26 @@ It can also restore rows from a backup table (always preview first) and move rep
 
 ---
 
+## READ THIS FIRST (agents)
+
+**Read this whole file before you write a rule, not only section 0.** It is about 500 lines. Sections 5 (the rule file), 6 (capabilities) and 10 (playbook) hold the details that decide whether your rule works. Agents that skimmed only the top wrote rules that ran but kept no data.
+
+**Critical checks for every rule (do these before you call it done):**
+1. **Does each standalone query keep its rows?** A `<sql>` that is not compared, reused or put in a funnel/presence keeps its rows **only** with `export="full"`. With `sample` or `none` you get just its `.sql` and `.md` (columns and row count). Discovery, config and lookup queries therefore need `export="full"`.
+2. **Is there an `<expect>`?** Without one the run never says PASS or FAIL.
+3. **Is there a `<compress>`?** Nothing is zipped unless the rule says so. Add one when the result will be sent or attached.
+4. **Parameters, not literals,** for dates and ids; one rule per question.
+5. **Run `--validate`, then `--check`.** Both print `advice:` lines for the points above. Read them.
+6. **Output size:** the flag is `--export none|sample|full` (there is no `all`). A rule's own `export=` beats the flag.
+
+---
+
 ## 0. The 14 rules for agents
 
 1. **Work in a loop, never in one big step:** write the rule, `--validate`, `--check`, run, read `SUMMARY.md` (section 2).
 2. **Put the expectation in the rule.** Add `<expect>` elements so the tool prints PASS or FAIL. Do not eyeball counts.
 3. **Read the small files first.** `SUMMARY.md` (about 8 KB) then `FINDINGS.md`. Open a CSV only to look up specific keys. Never paste a large CSV into a conversation.
-4. **Ask for the least data.** First pass: `--export none` (counts only). Second: the default `sample`. Use `full` only for a key list you will read.
+4. **Ask for the least data about big comparisons, all of it for small lookups.** First pass: `--export none` (counts only). Second: the default `sample` (capped samples of *comparisons*). Use `full` for a key list you will read **and for every standalone query whose rows you need** (config, discovery, lookups): sample mode keeps no rows for those.
 5. **Put SQL in `<![CDATA[ ... ]]>`.** Otherwise `<`, `>` and `&` break the XML.
 6. **In XML attributes escape `<` as `&lt;` and `&` as `&amp;`** (`expr`, `when`, ...). `>` may stay or be `&gt;`.
 7. **Never write `--` inside an XML comment.** `<!-- use --validate -->` is invalid XML. Write "use the validate flag".
@@ -82,7 +96,7 @@ Exit codes: `0` success / equal / all `<expect>` met · `1` differences or an `<
 | `--validate` | Offline check of the rule: XML, SQL guard, parameters, ids, expressions, restore rules named in `<suggest>`. Also evaluates `<check>` with your `--param` values. |
 | `--check` | Ask the databases to prepare + EXPLAIN every query and describe its columns, then check the rule against the real columns. Nothing is executed or read. Writes `CHECK.md`. |
 | `--param NAME=VALUE` | Override a declared `<param>` (repeat for several). Undeclared names are an error. Not allowed with `--restore`. |
-| `--export none\|sample\|full` | Output size. `none`: counts and summaries only. `sample` (default): capped CSVs. `full`: everything. A rule's own `export=` wins. |
+| `--export none\|sample\|full` | Output size. `none`: counts and summaries only. `sample` (default): capped sample CSVs for comparisons, funnels and presence; a **standalone query keeps no rows** (only `.sql` and `.md`). `full`: every query's complete CSV. A rule's own `export=` wins; there is no `all`. |
 | `--sample-rows N` | Records per sample CSV (default 200). Counts are always exact. |
 | `--limit N` | Row cap per query. Results become PARTIAL (exit 2); comparisons on them are skipped. Debugging only. |
 | `--parallel N` | Query workers (default: number of distinct datasources; one active query per datasource). |
@@ -134,7 +148,7 @@ Types: `string` (default), `integer`, `decimal`, `date` (`yyyy-MM-dd`), `timesta
 | `timeout` | Seconds (default 120). |
 | `fetchSize` | Default 1000. |
 | `maxRows` | Cap for this query; capped results are PARTIAL. |
-| `export` | `none` / `sample` / `full` for this query. |
+| `export` | `none` / `sample` / `full` for this query. **A query that is not compared, reused or put in a funnel/presence keeps its rows only with `full`.** |
 | `uses` | Inputs from earlier queries: `"alias=query-id, other"`. SQL then uses `:alias.col` (one value) or `:alias.col[]` (a list). Also `"alias=cmp-id:only-source"`. Section 6.6. |
 | `after` | Run after these queries/comparisons (ids, comma separated) without using their rows. |
 | `when` | Expression; run only if true, otherwise **skipped** (not a failure). Section 6.7. |
@@ -142,6 +156,14 @@ Types: `string` (default), `integer`, `decimal`, `date` (`yyyy-MM-dd`), `timesta
 | `tempTables` | `true` for non-production temp-table functions. |
 
 Identical SQL on the same datasource with identical inputs runs once and is shared.
+
+**What a query leaves behind, by export mode**
+
+| Mode | Standalone query | Query used by a comparison / funnel / presence |
+|---|---|---|
+| `none` | row count in `SUMMARY.md`; no files | counts only |
+| `sample` | `.sql` and `.md` (columns, row count); **no rows** (a result of at most 5 rows and 12 columns is also printed in `SUMMARY.md`) | samples from the comparison |
+| `full` | `.sql`, `.md` and the complete `.csv` | the complete query `.csv` as well |
 
 ### 5.3 SQL dialect notes
 Named parameters `:name`; PostgreSQL `::` casts are fine. A hyphen ends a parameter name, so `:legacy-trades.x` is not valid: give the input an alias in `uses=`. Comments: `-- text` needs a space after the dashes. No `;` except a trailing one. No `$$` quoting, no backslash escapes.
@@ -206,7 +228,25 @@ A comparison, funnel or presence that has at least one `<expect>` is judged by i
 ```xml
 <compress id="bundle" file="trade-parity.zip"><include ref="trades"/><include ref="legacy"/></compress>
 ```
-`ref` is a query, comparison, funnel or presence id. Summary, rules, parameters, manual actions, expectations and findings are always included. The console prints the size.
+`ref` is a query, comparison, funnel or presence id. Summary, rules, parameters, manual actions, expectations and findings are always included. The console prints the size. Nothing is zipped unless the rule has a `<compress>`.
+
+### 5.9 Output checklist and a discovery rule
+Before you finish a rule: (1) every standalone query whose rows you need has `export="full"`; (2) there is an `<expect>`; (3) there is a `<compress>` if the result is to be sent; (4) `--validate` and `--check` print no `advice:` you disagree with. A complete read-only discovery rule that does all of this:
+```xml rule
+<rules name="discovery-example">
+  <sql id="config" db="postgres-dev" export="full"><![CDATA[
+    SELECT code, template_name, created_timestamp FROM opera.upload_rules WHERE code = 'PIPELINE CONFIG' ORDER BY created_timestamp DESC LIMIT 3
+  ]]></sql>
+  <sql id="counts" db="postgres-dev" export="full"><![CDATA[
+    SELECT 'trades' AS table_name, count(*) AS row_count FROM opera.trades
+    UNION ALL SELECT 'positions', count(*) FROM opera.positions
+  ]]></sql>
+  <expect ref="config" rows=">=1" reason="the pipeline config should be seeded"/>
+  <expect ref="counts" rows="2"/>
+  <compress id="bundle" file="discovery-example.zip"><include ref="config"/><include ref="counts"/></compress>
+</rules>
+```
+
 
 ---
 
@@ -369,6 +409,7 @@ Reading results by id: `#query1.first.first_name`, `#query1.rows`, `#trades.only
 - `--validate` (offline): XML, ids, SQL guard, parameters, aliases, cycles, expressions, key names.
 - `--check` (connects, reads nothing): for every query the database prepares the statement, describes its columns and runs `EXPLAIN` (never `ANALYZE`). Finds missing tables/columns, syntax and type errors with the database's own message; checks key columns of comparisons/funnels/presence, `:alias.col` inputs and `<expect column>` against the real column lists; shows the planner's row estimate on PostgreSQL (warns above 5 million). An unreachable database is reported once (10 s) and its other queries are skipped. Temp-table queries and `engine="db"` types are not checked.
   Output: console lines `OK / WARN / FAIL / SKIP` and `CHECK.md`.
+- Both print `advice:` lines about a rule that is valid but probably not what you want: a standalone query that keeps no rows, no `<expect>`, no `<compress>`, `SELECT *`. Advice never stops a run.
 
 ### 6.9 Restore from a backup table, verify, and be told when to
 A restore copies rows into a table from a **table in the same database** (a backup or migration copy). It cannot read from another database, so restoring PostgreSQL from MySQL is done by first proving with a comparison that the PostgreSQL copy equals MySQL, then restoring from that copy.
