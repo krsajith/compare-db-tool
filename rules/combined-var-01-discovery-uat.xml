@@ -6,7 +6,7 @@
 <rules name="combined-var-01-discovery-uat">
 
   <!-- 1. The DB copy of the pipeline config (used only when the disk file archive_folder/combined-var is missing). -->
-  <sql id="db-config" db="postgres-uat" export="sample"><![CDATA[
+  <sql id="db-config" db="postgres-uat" export="full"><![CDATA[
     SELECT tenant_id, code, template_name, created_timestamp, updated_timestamp,
            length(rule_data::text) AS rule_chars,
            rule_data::text AS rule_text
@@ -18,7 +18,7 @@
   ]]></sql>
 
   <!-- 2. Anchors read by the controller: one row per tenant and business unit. -->
-  <sql id="valuation-dates" db="postgres-uat" export="sample"><![CDATA[
+  <sql id="valuation-dates" db="postgres-uat" export="full"><![CDATA[
     SELECT tenant_id, business_unit, value_date, settlement_date
     FROM opera.valuation_date_table
     ORDER BY tenant_id, business_unit
@@ -26,7 +26,7 @@
   ]]></sql>
 
   <!-- 3. What kind of object each table is (BASE TABLE or VIEW) and what columns it has. -->
-  <sql id="object-kinds" db="postgres-uat" export="sample"><![CDATA[
+  <sql id="object-kinds" db="postgres-uat" export="full"><![CDATA[
     SELECT table_name, table_type
     FROM information_schema.tables
     WHERE table_schema = 'opera'
@@ -37,7 +37,7 @@
     ORDER BY table_name
   ]]></sql>
 
-  <sql id="columns" db="postgres-uat" export="sample"><![CDATA[
+  <sql id="columns" db="postgres-uat" export="full"><![CDATA[
     SELECT table_name, ordinal_position, column_name, data_type
     FROM information_schema.columns
     WHERE table_schema = 'opera'
@@ -47,7 +47,7 @@
   ]]></sql>
 
   <!-- 4. Row counts of everything the pipeline reads. A zero here is the first suspect. -->
-  <sql id="counts" db="postgres-uat" timeout="600" export="sample"><![CDATA[
+  <sql id="counts" db="postgres-uat" timeout="600" export="full"><![CDATA[
     SELECT 'helper_var_accounting_report' AS table_name, count(*) AS row_count FROM opera.helper_var_accounting_report
     UNION ALL SELECT 'var_aggregation_level_table', count(*) FROM opera.var_aggregation_level_table
     UNION ALL SELECT 'helper_var_mult_factor_view', count(*) FROM opera.helper_var_mult_factor_view
@@ -59,7 +59,16 @@
     UNION ALL SELECT 'option_cont_series_table', count(*) FROM opera.option_cont_series_table
   ]]></sql>
 
+  <!-- All five results are small (at most 3, 50, 10, a few hundred and 9 rows), so they are exported complete: with export="sample" a
+       plain query writes only its .sql and .md files and the rows themselves are not kept. -->
+
   <expect ref="db-config" rows=">=1" reason="the fallback rule PIPELINE CONFIG / Combined VAR should be seeded"/>
   <expect ref="valuation-dates" rows=">=1" reason="the controller needs a valuation_date_table row for the business unit"/>
+
+  <expect ref="object-kinds" rows="10" reason="all ten tables read by the pipeline should exist in schema opera"/>
+
+  <compress id="bundle" file="combined-var-01-discovery-uat.zip">
+    <include ref="db-config"/><include ref="valuation-dates"/><include ref="object-kinds"/><include ref="columns"/><include ref="counts"/>
+  </compress>
 
 </rules>
