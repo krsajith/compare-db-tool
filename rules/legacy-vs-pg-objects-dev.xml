@@ -18,12 +18,15 @@
     ORDER BY base_name, table_name
   ]]></sql>
 
-  <!-- 2. PG tables, views and materialised views of schema opera (est_rows from the planner statistics; the script does not trust it for 0) -->
+  <!-- 2. PG tables, views and materialised views of schema opera (est_rows from the planner statistics, -1 or 0 means never analysed; exact_rows is a real count for tables with an estimate under 100000, empty for bigger tables and for views) -->
   <sql id="pg-relations" db="postgres-dev" export="full"><![CDATA[
     SELECT c.relname AS pg_name,
            CASE c.relkind WHEN 'r' THEN 'table' WHEN 'p' THEN 'table' WHEN 'v' THEN 'view' WHEN 'm' THEN 'matview' END AS pg_kind,
            CASE WHEN c.relname ~ '_(alm|bkr|cfs|coc|cof|cto|ebo|gpc|grn|oad|odr|og2|ogp|orm|osg|pf6|pf9|pg7|pg8|qf1|qf2|qf3|qf4|qf5|rba|rbc|rbh|rmc|rov|spc|stg|tsy|usg)$' THEN left(c.relname, length(c.relname) - 4) ELSE c.relname END AS base_name,
-           c.reltuples::bigint AS est_rows
+           c.reltuples::bigint AS est_rows,
+           CASE WHEN c.relkind IN ('r', 'p') AND c.reltuples < 100000
+                THEN (xpath('/row/c/text()', query_to_xml(format('select count(*) as c from %I.%I', n.nspname, c.relname), false, true, '')))[1]::text::bigint
+           END AS exact_rows
     FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
     WHERE n.nspname = 'opera' AND c.relkind IN ('r', 'p', 'v', 'm')
     ORDER BY c.relname
