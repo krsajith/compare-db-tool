@@ -37,7 +37,9 @@ public final class Cli {
         --template-upload FILE  Alias for --template-import; existing single-template rules still work
         --restore FILE        Restore table rows from reference tables using a JSON rule (preview by default);
                               step "expect" counts are checked, "verify" rules run after --apply
-        --apply               Commit template replacement or data restore; otherwise roll back the preview
+        --load FILE           Copy rows from a SELECT on any datasource into a table using a JSON rule (preview by default, insert only);
+                              step "expect" counts are checked, "verify" rules run after --apply; --param overrides a rule parameter
+        --apply               Commit template replacement, data restore or data load; otherwise roll back the preview
         --check               Ask the databases to EXPLAIN every query and describe its columns, then check the rule against them (nothing is executed or read)
         --quiet               No progress messages on the console (the log files and outputs are unchanged)
         --menu                Interactive menu (also the default when started without arguments in a terminal)
@@ -54,6 +56,7 @@ public final class Cli {
         public Path templateUpload;
         public Path templateExport;
         public Path restore;
+        public Path load;
         public boolean apply;
         public Path out = Path.of("out");
         public Map<String, String> parameters = new LinkedHashMap<>();
@@ -81,7 +84,7 @@ public final class Cli {
             }
             int equal = argument.indexOf('=');
             String name = equal > 0 ? argument.substring(0, equal) : argument;
-            if (Set.of("--template-export", "--template-import", "--template-upload", "--restore", "--rules", "--out", "--param", "--limit", "--partitions", "--export", "--sample-rows", "--parallel", "--max-partition-mb").contains(name)) {
+            if (Set.of("--template-export", "--template-import", "--template-upload", "--restore", "--load", "--rules", "--out", "--param", "--limit", "--partitions", "--export", "--sample-rows", "--parallel", "--max-partition-mb").contains(name)) {
                 String value;
                 if (equal > 0) value = argument.substring(equal + 1);
                 else {
@@ -101,6 +104,10 @@ public final class Cli {
                         case "--restore" -> {
                             if (options.restore != null) throw new ToolException("Supply only one restore rule file");
                             options.restore = Path.of(value);
+                        }
+                        case "--load" -> {
+                            if (options.load != null) throw new ToolException("Supply only one load rule file");
+                            options.load = Path.of(value);
                         }
                         case "--rules" -> options.rules = Path.of(value);
                         case "--out" -> options.out = Path.of(value);
@@ -146,14 +153,17 @@ public final class Cli {
         if (options.restore != null && (options.rules != null || options.templateUpload != null || options.templateExport != null
             || options.datasources || !options.parameters.isEmpty()))
             throw new ToolException("Restore cannot be combined with comparison rules, templates, datasource listing or parameters.");
-        if (options.check && (options.rules == null || options.restore != null || options.templateUpload != null || options.templateExport != null
+        if (options.load != null && (options.rules != null || options.templateUpload != null || options.templateExport != null
+            || options.restore != null || options.datasources))
+            throw new ToolException("Load cannot be combined with comparison rules, templates, restore or datasource listing.");
+        if (options.check && (options.rules == null || options.restore != null || options.load != null || options.templateUpload != null || options.templateExport != null
             || options.validate || options.apply || options.datasources))
-            throw new ToolException("--check needs --rules FILE and cannot be combined with --validate, --apply, --restore, template options or --datasources.");
-        if (options.apply && ((options.templateUpload == null && options.restore == null) || options.validate))
-            throw new ToolException("--apply requires --template-upload or --restore and cannot be combined with --validate.");
+            throw new ToolException("--check needs --rules FILE and cannot be combined with --validate, --apply, --restore, --load, template options or --datasources.");
+        if (options.apply && ((options.templateUpload == null && options.restore == null && options.load == null) || options.validate))
+            throw new ToolException("--apply requires --template-upload, --restore or --load and cannot be combined with --validate.");
         if (!options.help && !options.menu && !options.datasources && options.rules == null && options.templateUpload == null && options.templateExport == null
-            && options.restore == null)
-            throw new ToolException("Supply --rules FILE, --template-import FILE, --template-export FILE or --restore FILE.");
+            && options.restore == null && options.load == null)
+            throw new ToolException("Supply --rules FILE, --template-import FILE, --template-export FILE, --restore FILE or --load FILE.");
         return options;
     }
 
@@ -171,6 +181,11 @@ public final class Cli {
             try { return new DataRestorer(settings).execute(options); }
             catch (ToolException e) { throw e; }
             catch (Exception e) { throw new ToolException("Restore failed", e); }
+        }
+        if (options.load != null) {
+            try { return new DataLoader(settings).execute(options); }
+            catch (ToolException e) { throw e; }
+            catch (Exception e) { throw new ToolException("Load failed", e); }
         }
         if (options.datasources) {
             if (settings.getDatasources().isEmpty()) System.out.println("No datasources configured. Check config/datasources.properties.");

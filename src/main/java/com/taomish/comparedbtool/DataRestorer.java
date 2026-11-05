@@ -36,8 +36,8 @@ import java.util.stream.Collectors;
 public final class DataRestorer {
     private static final Logger LOG = LoggerFactory.getLogger(DataRestorer.class);
     private static final JsonMapper JSON = JsonMapper.builder().enable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES).build();
-    private static final Pattern IDENTIFIER = Pattern.compile("[A-Za-z_][A-Za-z0-9_]*");
-    private static final Pattern QUALIFIED = Pattern.compile("[A-Za-z_][A-Za-z0-9_]*\\.[A-Za-z_][A-Za-z0-9_]*");
+    static final Pattern IDENTIFIER = Pattern.compile("[A-Za-z_][A-Za-z0-9_]*");
+    static final Pattern QUALIFIED =Pattern.compile("[A-Za-z_][A-Za-z0-9_]*\\.[A-Za-z_][A-Za-z0-9_]*");
     private static final Pattern FORBIDDEN = Pattern.compile(
         "(;|--|/\\*|\\b(insert|update|delete|drop|alter|create|truncate|grant|revoke|copy|call|do|execute|merge|vacuum|lock|set)\\b)",
         Pattern.CASE_INSENSITIVE);
@@ -137,18 +137,22 @@ public final class DataRestorer {
         return unmet || verified.stream().anyMatch(v -> !v.passed()) ? 1 : 0;
     }
 
-    /** Runs each verify rule against the committed data. The data is already changed: a failure points at the undo rule. */
     private List<VerifyResult> verify(Rule rule, Cli.Options options) {
+        return verifyRules(settings, rule.name, rule.verify, options.restore, options);
+    }
+
+    /** Runs each verify rule against the committed data. The data is already changed: a failure points at the undo rule. Shared with DataLoader. */
+    static List<VerifyResult> verifyRules(DatasourceSettings settings, String ruleName, List<Verify> verify, Path ruleFile, Cli.Options options) {
         List<VerifyResult> results = new ArrayList<>();
-        if (rule.verify == null) return results;
-        for (Verify v : rule.verify) {
+        if (verify == null) return results;
+        for (Verify v : verify) {
             Cli.Options run = new Cli.Options();
-            run.rules = options.restore.toAbsolutePath().getParent().resolve(v.rule);
+            run.rules = ruleFile.toAbsolutePath().getParent().resolve(v.rule);
             run.out = options.out; run.allowProd = options.allowProd; run.export = options.export;
             run.sampleRows = options.sampleRows; run.partitions = options.partitions; run.parallel = options.parallel;
             run.maxPartitionMb = options.maxPartitionMb;
             if (v.params != null) run.parameters.putAll(v.params);
-            LOG.info("Verifying restore {} with rule {}", rule.name, run.rules);
+            LOG.info("Verifying {} with rule {}", ruleName, run.rules);
             try {
                 Cli.Outcome outcome = new Cli(settings).executeRules(run);
                 results.add(new VerifyResult(v.rule, outcome.exit(), outcome.directory(), outcome.report(), null));
@@ -163,9 +167,11 @@ public final class DataRestorer {
     }
 
     /** Offline: every verify rule must exist, be valid and state at least one expectation (a check without one proves nothing). */
-    private void validateVerify(Rule rule, Path restoreFile) {
-        if (rule.verify == null) return;
-        for (Verify v : rule.verify) {
+    private void validateVerify(Rule rule, Path restoreFile) { validateVerifyRules(settings, rule.verify, restoreFile); }
+
+    static void validateVerifyRules(DatasourceSettings settings, List<Verify> verify, Path restoreFile) {
+        if (verify == null) return;
+        for (Verify v : verify) {
             if (v == null || v.rule == null || v.rule.isBlank()) throw new ToolException("Each verify entry needs rule: the XML file name");
             Path file = restoreFile.toAbsolutePath().getParent().resolve(v.rule);
             if (!Files.isRegularFile(file)) throw new ToolException("Verify rule not found: " + file);
@@ -287,7 +293,7 @@ public final class DataRestorer {
         return new StepResult(s.id, s.table, s.from, before, refRows, changed, missing, extra, removedExtra, after, backup, unmet);
     }
 
-    private static List<String> columns(Connection c, String qualified) throws Exception {
+    static List<String> columns(Connection c, String qualified) throws Exception {
         String[] parts = qualified.split("\\.");
         List<String> out = new ArrayList<>();
         try (PreparedStatement ps = c.prepareStatement(
@@ -299,11 +305,11 @@ public final class DataRestorer {
         return out;
     }
 
-    private static long count(Connection c, String sql) throws Exception {
+    static long count(Connection c, String sql) throws Exception {
         try (Statement st = c.createStatement(); ResultSet rs = st.executeQuery(sql)) { rs.next(); return rs.getLong(1); }
     }
 
-    private static String safe(String name) { return name.replaceAll("[^A-Za-z0-9_-]", "_"); }
+    static String safe(String name) { return name.replaceAll("[^A-Za-z0-9_-]", "_"); }
 
     private static void writeSummary(Path dir, Rule rule, List<StepResult> results, boolean applied, List<VerifyResult> verified) throws Exception {
         StringBuilder md = new StringBuilder("# Restore " + rule.name + "\n\n")

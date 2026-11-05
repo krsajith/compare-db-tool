@@ -2,6 +2,12 @@
 
 Improvements requested while using the tool. Newest first.
 
+## DONE 05-Nov-2026: `--load`: copy rows from any database into a table (see README, "Load", and HOW-TO-USE.md 6.9b)
+
+Requested while fixing Combined VAR (XOGA-713): the data was in legacy MySQL but never migrated, and every copy had to be done by hand in DBeaver or psql.
+Insert only, preview by default, backup per step, undo rule, `expect` counts, `verify` rules, duplicate-key and scope checks. **Not done:** upsert/update mode;
+loading from a comparison's only-source rows; a datasource flag that must be set before a datasource may be written (today the database account is the guard, as for `--restore`).
+
 ## DONE 04-Nov-2026: Findings for stream comparisons (see README, "Findings")
 
 Re-keyed rows, near-miss keys, snapshot timing, concentration by value (who/which/when), constant ratio/offset/sign flip, few rows driving a gap,

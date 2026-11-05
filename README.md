@@ -59,6 +59,14 @@ compare-db-tool: done in 2 min 36 s - exit 1 (differences, or an expectation was
 - **Not checked:** temp-table queries (they are checked when they run), `engine="db"` types, and the values that queries get from other queries (a placeholder stands in for them, so a query that uses another query's values can show a WARN when the database needs the type).
 - Exit code 2 if anything would fail, 0 otherwise. `CHECK.md` in the output folder has the same list, problems first. In the menu: "Switch to: check against the databases".
 
+## Load: copy rows from any database into a table (`--load`)
+
+`--load FILE.json` copies the rows of a SELECT (any configured datasource, for example legacy MySQL) into a table of one datasource, inside one transaction, **insert only**.
+It works like a restore: preview by default (reads the source, inserts, checks, rolls back, so the counts are real), `--apply` commits, a backup table is made per step,
+an undo rule (a restore rule) is written, the step `expect` counts must hold (otherwise `--apply` refuses) and the `verify` rules run afterwards. After the load the rows of the
+step's scope must have grown by exactly the rows inserted and no business key may exist twice. The rows read from the source are kept as `<step id>.csv`.
+Use it for data a migration never loaded; use `--restore` to put back rows from a backup table in the same database. The full format with an example is in `HOW-TO-USE.md`, section 6.9b.
+
 ## Restore advice: "there is a mismatch, should I restore, and with which rule?"
 
 A rule can say which restore rule fixes the mismatch it checks for. After the run the tool tells you, prints the exact command and, in the menu, offers the preview right there. **It never restores by itself.**

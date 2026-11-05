@@ -1,7 +1,7 @@
 # compare-db-tool: how to use it
 
 For AI coding agents (Claude Code, Codex, Cursor, Copilot, ...) and for people. Self-contained: you do not need the README to use the tool.
-Every complete example marked `xml rule` or `json restore` is validated by the test suite (`GuideTests`), so the examples work as written.
+Every complete example marked `xml rule`, `json restore` or `json load` is validated by the test suite (`GuideTests`), so the examples work as written.
 
 **What it is.** A read-only command-line tool for finding data issues. You describe the question in an XML *rule file* (SQL queries, how to compare them, what you expect).
 The tool runs it against MySQL / PostgreSQL, compares, explains the differences, says PASS or FAIL, and writes small result files you can read.
@@ -56,6 +56,7 @@ It can also restore rows from a backup table (always preview first) and move rep
 | Run a follow-up only if something is true; compute dates; stop a bad run early | expressions: `when`, `after`, `<check>`, `expr` | 6.7 |
 | Find mistakes in a rule before the long run | `--validate` (offline), `--check` (asks the databases) | 6.8 |
 | Fix wrong data from a backup table in the same database | `--restore` JSON rule, `verify`, `<suggest>` | 6.9 |
+| Copy rows from any database (MySQL, another PostgreSQL) into a table, insert only | `--load` JSON rule, `expect`, `verify` | 6.9b |
 | Move report templates between environments | `--template-export`, `--template-import` | 6.10 |
 | Browse, re-run and confirm risky runs interactively | menu (`.\compare.ps1` with no arguments) | 6.11 |
 | Bundle selected outputs for sending | `<compress>` | 5.8 |
@@ -104,7 +105,8 @@ Exit codes: `0` success / equal / all `<expect>` met · `1` differences or an `<
 | `--out DIR` | Output base folder (default `out`). |
 | `--allow-prod` | Allow datasources marked `prod=true` or with `prod` in the name. **Only when the user says so.** |
 | `--restore FILE` | Restore rows from a backup table using a JSON rule. **Preview by default.** |
-| `--apply` | Commit a restore or a template import. Without it everything is rolled back. |
+| `--load FILE` | Copy rows from a SELECT on any datasource into a table using a JSON rule (section 6.9b). Insert only. **Preview by default.** `--param` overrides a rule parameter. |
+| `--apply` | Commit a restore, a load or a template import. Without it everything is rolled back. |
 | `--template-export FILE`, `--template-import FILE` (`--template-upload`) | Report templates (section 6.10). Import is a preview unless `--apply`. |
 | `--datasources` | List configured datasource names and flags (no secrets). |
 | `--quiet` | No progress messages (warnings and errors still show). |
@@ -122,7 +124,7 @@ Logging: files in `logs/`; console shows progress messages, warnings and errors.
 - A datasource file in another place: `--spring.config.additional-location=file:D:/private/datasources.properties` (with `=`; it adds to or overrides the default file).
 - Queries are guarded: one `SELECT`/`WITH` only, read-only sessions, rolled back. Production names need `--allow-prod`.
 - `tempTables="true"` on a `<sql>` lets a non-production query call a function that creates temp tables; it is always rolled back and refused on production.
-- Anything that writes (`--restore --apply`, `--template-import --apply`) is separate, previews first, backs up what it changes and writes an undo rule.
+- Anything that writes (`--restore --apply`, `--load --apply`, `--template-import --apply`) is separate, previews first, backs up what it changes and writes an undo rule. The database account decides what may be written: give the datasource an account that can insert into the one table, and nothing else.
 - Everything the tool writes is in the output folder: the run's `RULES.xml` and `PARAMETERS.csv` too, so a run can be reproduced.
 
 ---
@@ -412,7 +414,7 @@ Reading results by id: `#query1.first.first_name`, `#query1.rows`, `#trades.only
 - Both print `advice:` lines about a rule that is valid but probably not what you want: a standalone query that keeps no rows, no `<expect>`, no `<compress>`, `SELECT *`. Advice never stops a run.
 
 ### 6.9 Restore from a backup table, verify, and be told when to
-A restore copies rows into a table from a **table in the same database** (a backup or migration copy). It cannot read from another database, so restoring PostgreSQL from MySQL is done by first proving with a comparison that the PostgreSQL copy equals MySQL, then restoring from that copy.
+A restore copies rows into a table from a **table in the same database** (a backup or migration copy). It cannot read from another database; to bring rows over from MySQL or another PostgreSQL use `--load` (6.9b).
 
 ```json restore
 {
@@ -454,6 +456,38 @@ A restore copies rows into a table from a **table in the same database** (a back
   <suggest restore="fix-prices.json" when="#cmp.different &gt; 0 or #cmp.onlySource &gt; 0 or #cmp.onlyTarget &gt; 0" reason="current differs from the 04-Oct copy"/>
 </rules>
 ```
+
+### 6.9b Load rows from any database into a table (`--load`)
+Use it when data exists in one database (legacy MySQL, another PostgreSQL) and is missing in another, for example rows a migration never loaded. The source is a SELECT, so it can be a different database from the target. **Insert only**: nothing that exists is changed.
+
+```json load
+{
+  "name": "copy-multipliers",
+  "db": "postgres-dev",
+  "backupSchema": "parity_work",
+  "description": "Copies the legacy multiplier rows of two value dates into the new table.",
+  "params": { "d1": { "type": "date", "value": "2026-11-03" }, "d2": { "type": "date", "value": "2026-11-05" } },
+  "steps": [
+    {
+      "id": "mult",
+      "table": "opera.helper_var_mult_factor_view",
+      "where": "created_by = 'mult-load'",
+      "key": ["invenio_product_code", "value_date"],
+      "source": { "db": "mysql-oprdb02", "sql": "SELECT invenio_product_code, value_date, curr_mult, lot_mult, mult_factor FROM dbsystemuat.helper_var_mult_factor_view WHERE value_date IN (:d1, :d2)" },
+      "constants": { "uuid": "$uuid", "tenant_id": "227cd5f5-4498-4dba-bda9-05b8edc41113", "created_by": "mult-load", "created_timestamp": "$now" },
+      "expect": { "targetBefore": "0", "source": ">=1", "inserted": ">=1" }
+    }
+  ],
+  "verify": [ { "rule": "verify-multipliers.xml" } ]
+}
+```
+- `db` is the datasource written to. `source.db` and `source.sql` say where the rows come from; the SQL is an ordinary rule query (one `SELECT`/`WITH`, bound `:name` parameters declared in `params`, read-only session). Every column the SELECT returns must be a column of `table` (alias columns in the SQL).
+- `where` is the **scope**: the rows that belong to this load. Every inserted row must fall inside it (the tool checks that the scope grew by exactly the rows inserted), so make the loaded rows identifiable, here through `created_by` in `constants`. `key` is the business key: after the load no key may exist twice in the scope (a duplicate in the source, or rows loaded before), and the key is needed for the undo rule.
+- `constants` fills columns the source does not supply: a text value, `$uuid` (a new random UUID per row) or `$now` (the time of the load). Values are converted to the type of the target column; an empty source value becomes NULL.
+- `expect` keys: `targetBefore` (rows in the scope before), `source` (rows read), `inserted`, `targetAfter`. Same syntax as in restore. An apply is refused when one is unmet.
+- Preview first: `.\compare.ps1 --load rules\copy-multipliers.json` reads the source, inserts inside a transaction and rolls it back; `LOAD.md` shows the real counts and the exact rows read are kept as `<step id>.csv`. `--param d1=2026-11-05` overrides a parameter. Then `--apply` commits, makes a backup table per step, writes the undo rule `undo-<name>.json` and runs the `verify` rules (read-only rules with `<expect>`, next to the JSON file).
+- Undo: `.\compare.ps1 --restore out\<run>\undo-copy-multipliers.json --apply` puts every scope back as it was (it removes exactly the inserted rows).
+- Production: a production datasource (source or target) needs `--allow-prod`, as everywhere. A partial source (row cap) is never loaded.
 
 ### 6.10 Report templates
 `--template-export rules\export.json` writes the template files, row metadata and an upload rule; `--template-import rules\upload.json` previews a replacement (SHA-256 guarded) and `--apply` commits it; production needs `--allow-prod`. See `rules/template-export.example.json`, `template-import.example.json`, `template-upload.example.json`.
