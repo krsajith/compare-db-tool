@@ -1,0 +1,15 @@
+<rules name="recon-position-mapping-verify-dev">
+  <!-- After the load: the new table must equal the legacy mapping for RBA and RBC. Read only. -->
+  <sql id="legacy" db="mysql-oprdb02"><![CDATA[
+    SELECT upper(trim(`group`)) AS business_unit, portfolio, subportfolio, trader_name, h_p
+    FROM dbsystemuat.pos_1211_port_trader_mapping_table WHERE upper(trim(`group`)) IN ('RBA', 'RBC')
+  ]]></sql>
+  <sql id="new" db="postgres-dev"><![CDATA[
+    SELECT business_unit, portfolio, subportfolio, trader_name, h_p
+    FROM opera.recon_position_classification_input WHERE business_unit IN ('RBA', 'RBC')
+  ]]></sql>
+  <compare id="cmp" source="legacy" target="new" export="full">
+    <key columns="business_unit,portfolio,subportfolio"/>
+  </compare>
+  <expect ref="cmp" different="0" only-source="0" only-target="0" reason="the new mapping table equals the legacy table"/>
+</rules>

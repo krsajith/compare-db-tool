@@ -1,0 +1,28 @@
+{
+  "name": "recon-position-mapping-load-dev",
+  "db": "postgres-dev",
+  "backupSchema": "parity_work",
+  "description": "Loads the legacy RBA/RBC Price/Hedge mapping (dbsystemuat.pos_1211_port_trader_mapping_table, 60 rows) into opera.recon_position_classification_input, which is empty. Insert only: the scope must be empty before, so a second run is refused. Preview first, then the apply flag; the verify rule runs after the apply.",
+  "steps": [
+    {
+      "id": "mapping",
+      "note": "group is the business unit and the trade group (the function appends -BU to trade_id). effective_from is a placeholder, confirm it. effective_to stays empty.",
+      "table": "opera.recon_position_classification_input",
+      "where": "created_by = 'pos1211-load'",
+      "key": ["tenant_id", "business_unit", "portfolio", "subportfolio", "trade_group", "effective_from"],
+      "source": {
+        "db": "mysql-oprdb02",
+        "sql": "SELECT upper(trim(`group`)) AS business_unit, upper(trim(`group`)) AS trade_group, portfolio, subportfolio, trader_name, h_p FROM dbsystemuat.pos_1211_port_trader_mapping_table WHERE upper(trim(`group`)) IN ('RBA', 'RBC')"
+      },
+      "constants": {
+        "uuid": "$uuid",
+        "tenant_id": "227cd5f5-4498-4dba-bda9-05b8edc41113",
+        "effective_from": "2000-01-01",
+        "created_by": "pos1211-load",
+        "created_timestamp": "$now"
+      },
+      "expect": { "targetBefore": "0", "source": "60", "inserted": "60", "targetAfter": "60" }
+    }
+  ],
+  "verify": [ { "rule": "recon-position-mapping-verify-dev.xml" } ]
+}
