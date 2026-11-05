@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- XOGA-713 Combined VAR, step 5: the three CSV files the load package needs, in one run (instead of three exports in DBeaver).
+     Output file names are the query ids, which are the names the load scripts in analysis/combined-var-load expect:
+       accounting_cfs_usg.csv   from postgres-uat, the CFS and USG rows operadb is missing (2034 rows when written)
+       mult_factor.csv          from legacy MySQL, helper_var_mult_factor_view for the two value dates (124 rows per day)
+       rmc_accounting.csv       from legacy MySQL, helper_var_accounting_report_rmc (5 rows when written)
+     Nulls are written as backslash N by this tool, and the load scripts read that. Read only. Parameters vd1 and vd2 are the multiplier dates:
+     the CFS snapshot is 2026-11-03 and legacy RMC is 2026-11-05. -->
+<rules name="combined-var-05-load-inputs">
+
+  <parameters>
+    <param name="vd1" type="date" value="2026-11-03"/>
+    <param name="vd2" type="date" value="2026-11-05"/>
+  </parameters>
+
+  <sql id="accounting_cfs_usg" db="postgres-uat" export="full"><![CDATA[
+    SELECT uuid, tenant_id, created_by, created_timestamp, updated_by, updated_timestamp, business_unit, value_date, settlement_date, subportfolio,
+           p1_name, contract_month, vol_id, p1_settleprice, invenio_product_code, future_expiry, option_expiry, future_continuation_series,
+           option_continuation_series, derivative_type, strike, delta, gamma, vega, theta, delta1, gamma1, vega1
+    FROM opera.helper_var_accounting_report
+    WHERE business_unit IN ('CFS', 'USG')
+    ORDER BY business_unit, uuid
+  ]]></sql>
+
+  <sql id="mult_factor" db="mysql-oprdb02" timeout="600" export="full"><![CDATA[
+    SELECT invenio_product_code, value_date, curr_mult, lot_mult, mult_factor
+    FROM dbsystemuat.helper_var_mult_factor_view
+    WHERE value_date IN (:vd1, :vd2)
+    ORDER BY value_date, invenio_product_code
+  ]]></sql>
+
+  <sql id="rmc_accounting" db="mysql-oprdb02" timeout="900" export="full"><![CDATA[
+    SELECT value_date, settlement_date, subportfolio, p1_name, contract_month, vol_id, p1_settleprice, invenio_product_code,
+           future_expiry, option_expiry, future_continuation_series, option_continuation_series, derivative_type, strike,
+           delta, gamma, vega, theta, delta1, gamma1, vega1
+    FROM dbsystemuat.helper_var_accounting_report_rmc
+  ]]></sql>
+
+  <expect ref="accounting_cfs_usg" rows="2034" reason="UAT holds 1817 CFS and 217 USG rows (the load script 02 checks the same numbers)"/>
+  <expect ref="mult_factor" rows=">=200" reason="legacy holds 124 multiplier rows per value date, two dates are requested"/>
+  <expect ref="rmc_accounting" rows="1..500" reason="legacy RMC accounting held 5 rows; the load script 02b stops above 500"/>
+
+  <compress id="bundle" file="combined-var-05-load-inputs.zip">
+    <include ref="accounting_cfs_usg"/><include ref="mult_factor"/><include ref="rmc_accounting"/>
+  </compress>
+
+</rules>
