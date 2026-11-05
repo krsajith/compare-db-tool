@@ -1,0 +1,116 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- XOGA-713 Combined VAR, step 6: prove the load into operadb worked, and show how the tables got their rows. Read only.
+     Datasource postgres-dev is expected to be operadb (dev RDS, port 10505); the first expectation FAILs if it is not.
+     After the load scripts in analysis/combined-var-load have run:
+       - the pod slices give rows (CFS joined rows = 1817 of 93 ACTIVE levels, every accounting product has a multiplier, RMC = 5 rows)
+       - the CFS and USG rows in operadb equal the rows on postgres-uat (compare by uuid)
+       - the multiplier rows in operadb equal the legacy view helper_var_mult_factor_view for the two dates (compare by product and date)
+     Before the load the same rule shows the gap and the evidence of who wrote what and when (write-stats, rows-by-writer). -->
+<rules name="combined-var-06-verify-operadb">
+
+  <parameters>
+    <param name="vd1" type="date" value="2026-11-03"/>
+    <param name="vd2" type="date" value="2026-11-05"/>
+  </parameters>
+
+  <!-- 1. Which database is postgres-dev. The pod reads operadb on port 10505. -->
+  <sql id="identity-dev" db="postgres-dev" export="full"><![CDATA[
+    SELECT current_database() AS db_name, inet_server_port() AS port, current_user AS db_user, now() AS db_time
+  ]]></sql>
+
+  <!-- 2. Rows per business unit and per writer, with first and last write time (evidence of how each business unit arrived). -->
+  <sql id="rows-by-writer" db="postgres-dev" export="full"><![CDATA[
+    SELECT business_unit, created_by, count(*) AS row_count, min(value_date) AS min_value_date, max(value_date) AS max_value_date,
+           min(created_timestamp) AS first_written, max(created_timestamp) AS last_written
+    FROM opera.helper_var_accounting_report
+    GROUP BY business_unit, created_by
+    ORDER BY business_unit, created_by
+  ]]></sql>
+
+  <!-- 3. Write statistics kept by the database itself (cannot be copied along with rows). -->
+  <sql id="write-stats" db="postgres-dev" export="full"><![CDATA[
+    SELECT relname AS table_name, n_live_tup AS live_rows, n_tup_ins AS inserts_since_stats_reset, n_tup_upd AS updates, n_tup_del AS deletes,
+           last_analyze, last_autoanalyze
+    FROM pg_stat_user_tables
+    WHERE schemaname = 'opera'
+      AND relname IN ('helper_var_accounting_report', 'helper_var_mult_factor_view', 'var_aggregation_level_table', 'cloned_product_master_table')
+    ORDER BY relname
+  ]]></sql>
+
+  <!-- 4. The pod's view of operadb after the load. One row. -->
+  <sql id="pod-slices" db="postgres-dev" export="full"><![CDATA[
+    WITH acct AS (
+      SELECT subportfolio, invenio_product_code, value_date FROM opera.helper_var_accounting_report WHERE LOWER(business_unit) = 'cfs'
+    ), agg AS (
+      SELECT aggregation_level, subportfolio FROM opera.var_aggregation_level_table WHERE LOWER(business_unit) = 'cfs' AND UPPER(status) = 'ACTIVE'
+    )
+    SELECT (SELECT count(DISTINCT aggregation_level) FROM agg) AS cfs_active_levels,
+           (SELECT count(*) FROM acct) AS cfs_rows,
+           (SELECT count(*) FROM acct WHERE subportfolio IN (SELECT subportfolio FROM agg)) AS cfs_rows_joined,
+           (SELECT count(*) FROM opera.helper_var_accounting_report WHERE UPPER(business_unit) = 'USG') AS usg_rows,
+           (SELECT count(*) FROM opera.helper_var_accounting_report WHERE UPPER(business_unit) = 'RMC') AS rmc_rows,
+           (SELECT count(*) FROM opera.helper_var_mult_factor_view) AS mult_rows,
+           (SELECT count(*) FROM (SELECT DISTINCT a.invenio_product_code, a.value_date FROM opera.helper_var_accounting_report a
+                                   WHERE NOT EXISTS (SELECT 1 FROM opera.helper_var_mult_factor_view m
+                                                      WHERE m.invenio_product_code = a.invenio_product_code AND m.value_date = a.value_date)) x) AS accounting_pairs_without_multiplier
+  ]]></sql>
+
+  <!-- 5. CFS and USG accounting rows: operadb (target) against postgres-uat (source), by uuid. -->
+  <sql id="acct-uat" db="postgres-uat" export="none"><![CDATA[
+    SELECT uuid, tenant_id, business_unit, value_date, settlement_date, subportfolio, p1_name, contract_month, vol_id, p1_settleprice,
+           invenio_product_code, future_expiry, option_expiry, future_continuation_series, option_continuation_series, derivative_type, strike,
+           delta, gamma, vega, theta, delta1, gamma1, vega1
+    FROM opera.helper_var_accounting_report WHERE business_unit IN ('CFS', 'USG')
+  ]]></sql>
+  <sql id="acct-dev" db="postgres-dev" export="none"><![CDATA[
+    SELECT uuid, tenant_id, business_unit, value_date, settlement_date, subportfolio, p1_name, contract_month, vol_id, p1_settleprice,
+           invenio_product_code, future_expiry, option_expiry, future_continuation_series, option_continuation_series, derivative_type, strike,
+           delta, gamma, vega, theta, delta1, gamma1, vega1
+    FROM opera.helper_var_accounting_report WHERE business_unit IN ('CFS', 'USG')
+  ]]></sql>
+  <compare id="acct-copy" source="acct-uat" target="acct-dev">
+    <key columns="uuid"/>
+    <column name="p1_settleprice" absTol="0.000000001"/>
+    <column name="delta" absTol="0.000000001"/>
+    <column name="gamma" absTol="0.000000001"/>
+    <column name="vega" absTol="0.000000001"/>
+    <column name="theta" absTol="0.000000001"/>
+    <column name="delta1" absTol="0.000000001"/>
+    <column name="gamma1" absTol="0.000000001"/>
+    <column name="vega1" absTol="0.000000001"/>
+    <breakdown columns="business_unit" top="5"/>
+  </compare>
+
+  <!-- 6. Multiplier rows: operadb (target) against the legacy live view (source), by product and date. -->
+  <sql id="mult-legacy" db="mysql-oprdb02" timeout="600" export="none"><![CDATA[
+    SELECT invenio_product_code, value_date, curr_mult, lot_mult, mult_factor
+    FROM dbsystemuat.helper_var_mult_factor_view WHERE value_date IN (:vd1, :vd2)
+  ]]></sql>
+  <sql id="mult-dev" db="postgres-dev" export="none"><![CDATA[
+    SELECT invenio_product_code, value_date, curr_mult, lot_mult, mult_factor
+    FROM opera.helper_var_mult_factor_view WHERE value_date IN (:vd1, :vd2)
+  ]]></sql>
+  <compare id="mult-copy" source="mult-legacy" target="mult-dev">
+    <key columns="invenio_product_code,value_date"/>
+    <column name="curr_mult" absTol="0.000000000001"/>
+    <column name="lot_mult" absTol="0.000000000001"/>
+    <column name="mult_factor" absTol="0.000000000001"/>
+  </compare>
+
+  <expect ref="identity-dev" column="db_name" equals="operadb" reason="postgres-dev must be the database the operadev pod reads. A FAIL means a different datasource name points to operadb: tell me which"/>
+  <expect ref="identity-dev" column="port" equals="10505" reason="operadb listens on 10505 (pod log)"/>
+  <expect ref="pod-slices" column="cfs_active_levels" equals="93" reason="93 ACTIVE CFS levels (pod log)"/>
+  <expect ref="pod-slices" column="cfs_rows_joined" equals="1817" reason="all 1817 CFS accounting rows join an ACTIVE level, otherwise the report is empty"/>
+  <expect ref="pod-slices" column="usg_rows" equals="217" reason="USG rows loaded"/>
+  <expect ref="pod-slices" column="rmc_rows" equals="5" reason="RMC rows loaded (needed by the rmc and rms_var procedures)"/>
+  <expect ref="pod-slices" column="mult_rows" equals="248" reason="124 legacy multiplier rows for each of the two value dates"/>
+  <expect ref="pod-slices" column="accounting_pairs_without_multiplier" equals="0" reason="a product/date without multiplier makes that row's delta and gamma zero silently"/>
+  <expect ref="acct-copy" different="0" only-source="0" only-target="0" reason="operadb holds exactly the CFS and USG rows of postgres-uat"/>
+  <expect ref="mult-copy" different="0" only-source="0" only-target="0" reason="operadb holds exactly the legacy multiplier rows for the two dates"/>
+
+  <compress id="bundle" file="combined-var-06-verify-operadb.zip">
+    <include ref="identity-dev"/><include ref="rows-by-writer"/><include ref="write-stats"/><include ref="pod-slices"/>
+    <include ref="acct-copy"/><include ref="mult-copy"/>
+  </compress>
+
+</rules>
