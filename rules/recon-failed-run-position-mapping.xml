@@ -13,6 +13,14 @@
     WHERE uuid = cast(:run_id AS uuid)
   ]]></sql>
 
+  <!-- 1b. latest runs on this database, to see if the failed run exists here and which BU and dates are used -->
+  <sql id="recent-runs" db="postgres-uat-2001" export="full"><![CDATA[
+    SELECT uuid, business_unit, view_type, resolved_value_date, status, row_count, left(error_message, 200) AS error_message, requested_at
+    FROM opera.recon_refresh_run
+    ORDER BY requested_at DESC NULLS LAST
+    LIMIT 30
+  ]]></sql>
+
   <!-- 2. mapping rows for that BU (chained from the run) -->
   <sql id="mapping-for-run-bu" db="postgres-uat-2001" uses="r=run" export="full"><![CDATA[
     SELECT business_unit, count(*) AS rows_n, min(effective_from) AS min_from, max(effective_to) AS max_to
@@ -52,6 +60,6 @@
   <expect ref="run" rows="1" reason="the run id must exist"/>
   <expect ref="unmapped" rows="0" reason="every deal key of the run BU needs a mapping on the run value date"/>
   <compress id="bundle" file="recon-failed-run.zip">
-    <include ref="run"/><include ref="mapping-for-run-bu"/><include ref="snapshot-rows"/><include ref="unmapped"/>
+    <include ref="run"/><include ref="recent-runs"/><include ref="mapping-for-run-bu"/><include ref="snapshot-rows"/><include ref="unmapped"/>
   </compress>
 </rules>
