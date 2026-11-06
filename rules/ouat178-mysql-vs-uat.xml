@@ -87,11 +87,11 @@
   </compare>
 
   <sql id="m-corr" db="mysql-oprdb02" export="full"><![CDATA[
-    SELECT * FROM dbsystemuat.scicom_cso_correl_table WHERE security_id LIKE 'CM WP%' ORDER BY settlement_date DESC LIMIT 12
+    SELECT * FROM dbsystemuat.scicom_cso_correl_table WHERE security_id LIKE 'CM WP%' AND settlement_date = :sd ORDER BY security_id
   ]]></sql>
   <sql id="u-corr" db="postgres-uat" export="full"><![CDATA[
     SELECT group_type, security_id, product_code, settlement_date, correl_12 FROM opera.recon_scicom_correlation_input
-    WHERE business_unit = 'CFS' ORDER BY settlement_date DESC, security_id LIMIT 12
+    WHERE business_unit = 'CFS' AND settlement_date = :sd ORDER BY security_id
   ]]></sql>
 
   <sql id="m-out" db="mysql-oprdb02" export="full"><![CDATA[
