@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- OUAT-178: the K27 spread prices wrong on UAT (price 9.51 vs legacy 5.54) while H27 matches. Read only discovery:
+     the security definitions and the vol, price and expiry inputs for both spreads, legacy MySQL next to UAT, so the differing input shows. -->
+<rules name="ouat178-k27-inputs">
+
+  <parameters>
+    <param name="sd" type="date" value="2026-11-02"/>
+  </parameters>
+
+  <sql id="uat-security" db="postgres-uat" export="full"><![CDATA[
+    SELECT security_id, derivative_type, product_code, underlying1_id, underlying2_id, vol1_id, vol2_id, strike, strike1, strike2, maturity_date,
+           settlement_type, quanto_type, currency, contract_month, status
+    FROM opera.security_info_table
+    WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND business_unit = 'CFS'
+      AND security_id IN ('CM WP H27.H27 CM WP H27.H27 P 106 CS', 'CM WP K27.K27 CM WP K27.K27 P 125 CS')
+  ]]></sql>
+
+  <sql id="legacy-security" db="mysql-oprdb02" export="full"><![CDATA[
+    SELECT * FROM dbsystemuat.security_info_table_cfs
+    WHERE security_id IN ('CM WP H27.H27 CM WP H27.H27 P 106 CS', 'CM WP K27.K27 CM WP K27.K27 P 125 CS')
+  ]]></sql>
+
+  <sql id="uat-pvv" db="postgres-uat" export="full"><![CDATA[
+    SELECT bbg_underlying_id, settlement_date, price, vol
+    FROM opera.var_price_vol_table
+    WHERE settlement_date = :sd AND bbg_underlying_id IN ('QWH7', 'SBH7', 'QWK7', 'SBK7')
+    ORDER BY bbg_underlying_id
+  ]]></sql>
+
+  <sql id="legacy-pvv" db="mysql-oprdb02" export="full"><![CDATA[
+    SELECT * FROM dbsystemuat.var_price_vol_table
+    WHERE settlement_date = :sd AND bbg_underlying_id IN ('QWH7', 'SBH7', 'QWK7', 'SBK7')
+    ORDER BY bbg_underlying_id
+  ]]></sql>
+
+  <sql id="uat-vol-ids" db="postgres-uat" export="full"><![CDATA[
+    SELECT vol_id, bbg_opt_ticker, expiry_date, underlying_id
+    FROM opera.vol_id_table
+    WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND vol_id IN ('CM QW H27.H27', 'CM SB H27.H27', 'CM QW K27.K27', 'CM SB K27.K27')
+    ORDER BY vol_id
+  ]]></sql>
+
+  <sql id="legacy-vol-ids" db="mysql-oprdb02" export="full"><![CDATA[
+    SELECT * FROM dbsystemuat.vol_id_table
+    WHERE vol_id IN ('CM QW H27.H27', 'CM SB H27.H27', 'CM QW K27.K27', 'CM SB K27.K27')
+    ORDER BY vol_id
+  ]]></sql>
+
+  <expect ref="uat-security" rows="2" reason="both spreads defined on UAT"/>
+  <expect ref="legacy-security" rows="2" reason="both spreads defined in legacy"/>
+  <compress id="bundle" file="ouat178-k27-inputs.zip"><include ref="uat-security"/><include ref="legacy-security"/><include ref="uat-pvv"/><include ref="legacy-pvv"/><include ref="uat-vol-ids"/><include ref="legacy-vol-ids"/></compress>
+</rules>
