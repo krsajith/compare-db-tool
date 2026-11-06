@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- XOGA-713 Combined VAR on UAT: prove the load worked. Read only. Datasource target (UAT RDS av-rds-uat-2001, schema opera).
      After combined-var-load-uat.json has been applied:
-       - the RMC rows on UAT equal the legacy count
+       - the RMC rows on the target equal the dev count
        - the multiplier rows on UAT equal the legacy view helper_var_mult_factor_view for the two dates (compare by product and date)
        - every CFS, USG and RMC accounting product and date has a multiplier -->
 <rules name="combined-var-verify">
@@ -33,8 +33,8 @@
                                                       WHERE m.invenio_product_code = a.invenio_product_code AND m.value_date = a.value_date)) x) AS accounting_pairs_without_multiplier
   ]]></sql>
 
-  <sql id="legacy-rmc-count" db="mysql-oprdb02" export="full"><![CDATA[
-    SELECT count(*) AS legacy_rmc_rows FROM dbsystemuat.helper_var_accounting_report_rmc
+  <sql id="dev-rmc-count" db="postgres-dev" export="full"><![CDATA[
+    SELECT count(*) AS dev_rmc_rows FROM opera.helper_var_accounting_report WHERE UPPER(business_unit) = 'RMC'
   ]]></sql>
 
   <sql id="legacy-mult" db="mysql-oprdb02" export="none"><![CDATA[
@@ -58,9 +58,9 @@
   <expect ref="pod-slices" column="rmc_rows" min="1" reason="RMC accounting rows loaded"/>
   <expect ref="pod-slices" column="mult_rows" min="200" reason="multiplier rows loaded"/>
   <expect ref="pod-slices" column="accounting_pairs_without_multiplier" equals="0" reason="every accounting product and date has a multiplier"/>
-  <expect expr="#q('pod-slices').first.rmc_rows == #q('legacy-rmc-count').first.legacy_rmc_rows" reason="RMC rows on UAT equal the legacy count"/>
+  <expect expr="#q('pod-slices').first.rmc_rows == #q('dev-rmc-count').first.dev_rmc_rows" reason="RMC rows on the target equal the dev count"/>
   <expect ref="mult" different="0" only-source="0" only-target="0" reason="the UAT multiplier rows equal the legacy view for the two dates"/>
   <compress id="bundle" file="combined-var-verify.zip">
-    <include ref="identity"/><include ref="rows-by-bu"/><include ref="pod-slices"/><include ref="legacy-rmc-count"/><include ref="mult"/>
+    <include ref="identity"/><include ref="rows-by-bu"/><include ref="pod-slices"/><include ref="dev-rmc-count"/><include ref="mult"/>
   </compress>
 </rules>

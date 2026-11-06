@@ -2,7 +2,7 @@
   "name": "combined-var-load-missing",
   "db": "target",
   "backupSchema": "parity_work",
-  "description": "XOGA-713 Combined VAR, target = datasource alias target. UAT already holds the CFS, USG and GRN accounting rows (2447); it lacks the RMC accounting rows (5) and all multiplier rows (helper_var_mult_factor_view is empty on UAT). Loads those from the legacy views on mysql-oprdb02. Insert only; each scope must be empty before (expect targetBefore 0), so a second run is refused. Preview first, then add the apply flag; the verify rule runs after the apply.",
+  "description": "XOGA-713 Combined VAR, target = datasource alias target. UAT already holds the CFS, USG and GRN accounting rows (2447); it lacks the RMC accounting rows (5) and all multiplier rows (helper_var_mult_factor_view is empty on UAT). Loads those the multiplier rows from the legacy view on mysql-oprdb02 and the RMC rows from the dev database. Insert only; each scope must be empty before (expect targetBefore 0), so a second run is refused. Preview first, then add the apply flag; the verify rule runs after the apply.",
   "params": {
     "vd1": {
       "type": "date",
@@ -16,22 +16,15 @@
   "steps": [
     {
       "id": "rmc",
-      "note": "Legacy RMC accounting rows (5): missing on UAT.",
+      "note": "The legacy RMC table is empty now (preview of 6 Nov read 0 rows), so the 5 RMC accounting rows are copied from the dev database, where they were loaded from legacy and verified earlier.",
       "table": "opera.helper_var_accounting_report",
       "where": "business_unit = 'RMC'",
       "key": [
         "uuid"
       ],
       "source": {
-        "db": "mysql-oprdb02",
-        "sql": "SELECT value_date, settlement_date, subportfolio, p1_name, contract_month, vol_id, p1_settleprice, invenio_product_code, future_expiry, option_expiry, future_continuation_series, option_continuation_series, derivative_type, strike, delta, gamma, vega, theta, delta1, gamma1, vega1 FROM dbsystemuat.helper_var_accounting_report_rmc"
-      },
-      "constants": {
-        "uuid": "$uuid",
-        "tenant_id": "227cd5f5-4498-4dba-bda9-05b8edc41113",
-        "created_by": "var-load",
-        "created_timestamp": "$now",
-        "business_unit": "RMC"
+        "db": "postgres-dev",
+        "sql": "SELECT uuid, tenant_id, created_by, created_timestamp, updated_by, updated_timestamp, business_unit, value_date, settlement_date, subportfolio, p1_name, contract_month, vol_id, p1_settleprice, invenio_product_code, future_expiry, option_expiry, future_continuation_series, option_continuation_series, derivative_type, strike, delta, gamma, vega, theta, delta1, gamma1, vega1 FROM opera.helper_var_accounting_report WHERE business_unit = 'RMC' ORDER BY uuid"
       },
       "expect": {
         "targetBefore": "0",
