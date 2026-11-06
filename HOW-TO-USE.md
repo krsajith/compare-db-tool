@@ -487,6 +487,7 @@ Use it when data exists in one database (legacy MySQL, another PostgreSQL) and i
 - `constants` fills columns the source does not supply: a text value, `$uuid` (a new random UUID per row) or `$now` (the time of the load). Values are converted to the type of the target column; an empty source value becomes NULL.
 - `expect` keys: `targetBefore` (rows in the scope before), `source` (rows read), `inserted`, `targetAfter`. Same syntax as in restore. An apply is refused when one is unmet.
 - Preview first: `.\compare.ps1 --load rules\copy-multipliers.json` reads the source, inserts inside a transaction and rolls it back; `LOAD.md` shows the real counts and the exact rows read are kept as `<step id>.csv`. `--param d1=2026-11-05` overrides a parameter. Then `--apply` commits, makes a backup table per step, writes the undo rule `undo-<name>.json` and runs the `verify` rules (read-only rules with `<expect>`, next to the JSON file).
+- Zip: every load and restore (preview and apply) also writes `<rule name>.zip` into its result folder (summary, the rows read, the undo rule) and the console prints its path. Send that file; no manual zipping.
 - Undo: `.\compare.ps1 --restore out\<run>\undo-copy-multipliers.json --apply` puts every scope back as it was (it removes exactly the inserted rows).
 - Production: a production datasource (source or target) needs `--allow-prod`, as everywhere. A partial source (row cap) is never loaded.
 
