@@ -1,0 +1,710 @@
+{
+  "name": "ouat178-wp-mapping-load-other-bus",
+  "db": "postgres-uat",
+  "backupSchema": "parity_work",
+  "description": "OUAT-178: opera.correl_product_mapping is empty for 26 UAT business units. Copies the 4 legacy rows (KP, KX, WP, WY) of dbsystemuat.correl_product_mapping_table into each of them. CFS is already loaded by ouat178-wp-mapping-load-uat. Insert only, preview first, no apply without the owner saying so.",
+  "steps": [
+    {
+      "id": "map-bkr",
+      "table": "opera.correl_product_mapping",
+      "where": "business_unit = 'BKR' AND created_by = 'ouat178-load'",
+      "key": [
+        "product_code"
+      ],
+      "source": {
+        "db": "mysql-oprdb02",
+        "sql": "SELECT TRIM(product_code) AS product_code, TRIM(primary_code) AS primary_code, TRIM(secondary_code) AS secondary_code, primary_multiplier, secondary_multiplier FROM dbsystemuat.correl_product_mapping_table"
+      },
+      "constants": {
+        "uuid": "$uuid",
+        "tenant_id": "227cd5f5-4498-4dba-bda9-05b8edc41113",
+        "business_unit": "BKR",
+        "created_by": "ouat178-load",
+        "updated_by": "ouat178-load",
+        "created_timestamp": "$now",
+        "updated_timestamp": "$now"
+      },
+      "expect": {
+        "targetBefore": "0",
+        "source": "4",
+        "inserted": "4",
+        "targetAfter": "4"
+      }
+    },
+    {
+      "id": "map-cto",
+      "table": "opera.correl_product_mapping",
+      "where": "business_unit = 'CTO' AND created_by = 'ouat178-load'",
+      "key": [
+        "product_code"
+      ],
+      "source": {
+        "db": "mysql-oprdb02",
+        "sql": "SELECT TRIM(product_code) AS product_code, TRIM(primary_code) AS primary_code, TRIM(secondary_code) AS secondary_code, primary_multiplier, secondary_multiplier FROM dbsystemuat.correl_product_mapping_table"
+      },
+      "constants": {
+        "uuid": "$uuid",
+        "tenant_id": "227cd5f5-4498-4dba-bda9-05b8edc41113",
+        "business_unit": "CTO",
+        "created_by": "ouat178-load",
+        "updated_by": "ouat178-load",
+        "created_timestamp": "$now",
+        "updated_timestamp": "$now"
+      },
+      "expect": {
+        "targetBefore": "0",
+        "source": "4",
+        "inserted": "4",
+        "targetAfter": "4"
+      }
+    },
+    {
+      "id": "map-ebo",
+      "table": "opera.correl_product_mapping",
+      "where": "business_unit = 'EBO' AND created_by = 'ouat178-load'",
+      "key": [
+        "product_code"
+      ],
+      "source": {
+        "db": "mysql-oprdb02",
+        "sql": "SELECT TRIM(product_code) AS product_code, TRIM(primary_code) AS primary_code, TRIM(secondary_code) AS secondary_code, primary_multiplier, secondary_multiplier FROM dbsystemuat.correl_product_mapping_table"
+      },
+      "constants": {
+        "uuid": "$uuid",
+        "tenant_id": "227cd5f5-4498-4dba-bda9-05b8edc41113",
+        "business_unit": "EBO",
+        "created_by": "ouat178-load",
+        "updated_by": "ouat178-load",
+        "created_timestamp": "$now",
+        "updated_timestamp": "$now"
+      },
+      "expect": {
+        "targetBefore": "0",
+        "source": "4",
+        "inserted": "4",
+        "targetAfter": "4"
+      }
+    },
+    {
+      "id": "map-gpc",
+      "table": "opera.correl_product_mapping",
+      "where": "business_unit = 'GPC' AND created_by = 'ouat178-load'",
+      "key": [
+        "product_code"
+      ],
+      "source": {
+        "db": "mysql-oprdb02",
+        "sql": "SELECT TRIM(product_code) AS product_code, TRIM(primary_code) AS primary_code, TRIM(secondary_code) AS secondary_code, primary_multiplier, secondary_multiplier FROM dbsystemuat.correl_product_mapping_table"
+      },
+      "constants": {
+        "uuid": "$uuid",
+        "tenant_id": "227cd5f5-4498-4dba-bda9-05b8edc41113",
+        "business_unit": "GPC",
+        "created_by": "ouat178-load",
+        "updated_by": "ouat178-load",
+        "created_timestamp": "$now",
+        "updated_timestamp": "$now"
+      },
+      "expect": {
+        "targetBefore": "0",
+        "source": "4",
+        "inserted": "4",
+        "targetAfter": "4"
+      }
+    },
+    {
+      "id": "map-grn",
+      "table": "opera.correl_product_mapping",
+      "where": "business_unit = 'GRN' AND created_by = 'ouat178-load'",
+      "key": [
+        "product_code"
+      ],
+      "source": {
+        "db": "mysql-oprdb02",
+        "sql": "SELECT TRIM(product_code) AS product_code, TRIM(primary_code) AS primary_code, TRIM(secondary_code) AS secondary_code, primary_multiplier, secondary_multiplier FROM dbsystemuat.correl_product_mapping_table"
+      },
+      "constants": {
+        "uuid": "$uuid",
+        "tenant_id": "227cd5f5-4498-4dba-bda9-05b8edc41113",
+        "business_unit": "GRN",
+        "created_by": "ouat178-load",
+        "updated_by": "ouat178-load",
+        "created_timestamp": "$now",
+        "updated_timestamp": "$now"
+      },
+      "expect": {
+        "targetBefore": "0",
+        "source": "4",
+        "inserted": "4",
+        "targetAfter": "4"
+      }
+    },
+    {
+      "id": "map-og2",
+      "table": "opera.correl_product_mapping",
+      "where": "business_unit = 'OG2' AND created_by = 'ouat178-load'",
+      "key": [
+        "product_code"
+      ],
+      "source": {
+        "db": "mysql-oprdb02",
+        "sql": "SELECT TRIM(product_code) AS product_code, TRIM(primary_code) AS primary_code, TRIM(secondary_code) AS secondary_code, primary_multiplier, secondary_multiplier FROM dbsystemuat.correl_product_mapping_table"
+      },
+      "constants": {
+        "uuid": "$uuid",
+        "tenant_id": "227cd5f5-4498-4dba-bda9-05b8edc41113",
+        "business_unit": "OG2",
+        "created_by": "ouat178-load",
+        "updated_by": "ouat178-load",
+        "created_timestamp": "$now",
+        "updated_timestamp": "$now"
+      },
+      "expect": {
+        "targetBefore": "0",
+        "source": "4",
+        "inserted": "4",
+        "targetAfter": "4"
+      }
+    },
+    {
+      "id": "map-ogp",
+      "table": "opera.correl_product_mapping",
+      "where": "business_unit = 'OGP' AND created_by = 'ouat178-load'",
+      "key": [
+        "product_code"
+      ],
+      "source": {
+        "db": "mysql-oprdb02",
+        "sql": "SELECT TRIM(product_code) AS product_code, TRIM(primary_code) AS primary_code, TRIM(secondary_code) AS secondary_code, primary_multiplier, secondary_multiplier FROM dbsystemuat.correl_product_mapping_table"
+      },
+      "constants": {
+        "uuid": "$uuid",
+        "tenant_id": "227cd5f5-4498-4dba-bda9-05b8edc41113",
+        "business_unit": "OGP",
+        "created_by": "ouat178-load",
+        "updated_by": "ouat178-load",
+        "created_timestamp": "$now",
+        "updated_timestamp": "$now"
+      },
+      "expect": {
+        "targetBefore": "0",
+        "source": "4",
+        "inserted": "4",
+        "targetAfter": "4"
+      }
+    },
+    {
+      "id": "map-orm",
+      "table": "opera.correl_product_mapping",
+      "where": "business_unit = 'ORM' AND created_by = 'ouat178-load'",
+      "key": [
+        "product_code"
+      ],
+      "source": {
+        "db": "mysql-oprdb02",
+        "sql": "SELECT TRIM(product_code) AS product_code, TRIM(primary_code) AS primary_code, TRIM(secondary_code) AS secondary_code, primary_multiplier, secondary_multiplier FROM dbsystemuat.correl_product_mapping_table"
+      },
+      "constants": {
+        "uuid": "$uuid",
+        "tenant_id": "227cd5f5-4498-4dba-bda9-05b8edc41113",
+        "business_unit": "ORM",
+        "created_by": "ouat178-load",
+        "updated_by": "ouat178-load",
+        "created_timestamp": "$now",
+        "updated_timestamp": "$now"
+      },
+      "expect": {
+        "targetBefore": "0",
+        "source": "4",
+        "inserted": "4",
+        "targetAfter": "4"
+      }
+    },
+    {
+      "id": "map-osg",
+      "table": "opera.correl_product_mapping",
+      "where": "business_unit = 'OSG' AND created_by = 'ouat178-load'",
+      "key": [
+        "product_code"
+      ],
+      "source": {
+        "db": "mysql-oprdb02",
+        "sql": "SELECT TRIM(product_code) AS product_code, TRIM(primary_code) AS primary_code, TRIM(secondary_code) AS secondary_code, primary_multiplier, secondary_multiplier FROM dbsystemuat.correl_product_mapping_table"
+      },
+      "constants": {
+        "uuid": "$uuid",
+        "tenant_id": "227cd5f5-4498-4dba-bda9-05b8edc41113",
+        "business_unit": "OSG",
+        "created_by": "ouat178-load",
+        "updated_by": "ouat178-load",
+        "created_timestamp": "$now",
+        "updated_timestamp": "$now"
+      },
+      "expect": {
+        "targetBefore": "0",
+        "source": "4",
+        "inserted": "4",
+        "targetAfter": "4"
+      }
+    },
+    {
+      "id": "map-pf6",
+      "table": "opera.correl_product_mapping",
+      "where": "business_unit = 'PF6' AND created_by = 'ouat178-load'",
+      "key": [
+        "product_code"
+      ],
+      "source": {
+        "db": "mysql-oprdb02",
+        "sql": "SELECT TRIM(product_code) AS product_code, TRIM(primary_code) AS primary_code, TRIM(secondary_code) AS secondary_code, primary_multiplier, secondary_multiplier FROM dbsystemuat.correl_product_mapping_table"
+      },
+      "constants": {
+        "uuid": "$uuid",
+        "tenant_id": "227cd5f5-4498-4dba-bda9-05b8edc41113",
+        "business_unit": "PF6",
+        "created_by": "ouat178-load",
+        "updated_by": "ouat178-load",
+        "created_timestamp": "$now",
+        "updated_timestamp": "$now"
+      },
+      "expect": {
+        "targetBefore": "0",
+        "source": "4",
+        "inserted": "4",
+        "targetAfter": "4"
+      }
+    },
+    {
+      "id": "map-pf9",
+      "table": "opera.correl_product_mapping",
+      "where": "business_unit = 'PF9' AND created_by = 'ouat178-load'",
+      "key": [
+        "product_code"
+      ],
+      "source": {
+        "db": "mysql-oprdb02",
+        "sql": "SELECT TRIM(product_code) AS product_code, TRIM(primary_code) AS primary_code, TRIM(secondary_code) AS secondary_code, primary_multiplier, secondary_multiplier FROM dbsystemuat.correl_product_mapping_table"
+      },
+      "constants": {
+        "uuid": "$uuid",
+        "tenant_id": "227cd5f5-4498-4dba-bda9-05b8edc41113",
+        "business_unit": "PF9",
+        "created_by": "ouat178-load",
+        "updated_by": "ouat178-load",
+        "created_timestamp": "$now",
+        "updated_timestamp": "$now"
+      },
+      "expect": {
+        "targetBefore": "0",
+        "source": "4",
+        "inserted": "4",
+        "targetAfter": "4"
+      }
+    },
+    {
+      "id": "map-pg7",
+      "table": "opera.correl_product_mapping",
+      "where": "business_unit = 'PG7' AND created_by = 'ouat178-load'",
+      "key": [
+        "product_code"
+      ],
+      "source": {
+        "db": "mysql-oprdb02",
+        "sql": "SELECT TRIM(product_code) AS product_code, TRIM(primary_code) AS primary_code, TRIM(secondary_code) AS secondary_code, primary_multiplier, secondary_multiplier FROM dbsystemuat.correl_product_mapping_table"
+      },
+      "constants": {
+        "uuid": "$uuid",
+        "tenant_id": "227cd5f5-4498-4dba-bda9-05b8edc41113",
+        "business_unit": "PG7",
+        "created_by": "ouat178-load",
+        "updated_by": "ouat178-load",
+        "created_timestamp": "$now",
+        "updated_timestamp": "$now"
+      },
+      "expect": {
+        "targetBefore": "0",
+        "source": "4",
+        "inserted": "4",
+        "targetAfter": "4"
+      }
+    },
+    {
+      "id": "map-pg8",
+      "table": "opera.correl_product_mapping",
+      "where": "business_unit = 'PG8' AND created_by = 'ouat178-load'",
+      "key": [
+        "product_code"
+      ],
+      "source": {
+        "db": "mysql-oprdb02",
+        "sql": "SELECT TRIM(product_code) AS product_code, TRIM(primary_code) AS primary_code, TRIM(secondary_code) AS secondary_code, primary_multiplier, secondary_multiplier FROM dbsystemuat.correl_product_mapping_table"
+      },
+      "constants": {
+        "uuid": "$uuid",
+        "tenant_id": "227cd5f5-4498-4dba-bda9-05b8edc41113",
+        "business_unit": "PG8",
+        "created_by": "ouat178-load",
+        "updated_by": "ouat178-load",
+        "created_timestamp": "$now",
+        "updated_timestamp": "$now"
+      },
+      "expect": {
+        "targetBefore": "0",
+        "source": "4",
+        "inserted": "4",
+        "targetAfter": "4"
+      }
+    },
+    {
+      "id": "map-qf1",
+      "table": "opera.correl_product_mapping",
+      "where": "business_unit = 'QF1' AND created_by = 'ouat178-load'",
+      "key": [
+        "product_code"
+      ],
+      "source": {
+        "db": "mysql-oprdb02",
+        "sql": "SELECT TRIM(product_code) AS product_code, TRIM(primary_code) AS primary_code, TRIM(secondary_code) AS secondary_code, primary_multiplier, secondary_multiplier FROM dbsystemuat.correl_product_mapping_table"
+      },
+      "constants": {
+        "uuid": "$uuid",
+        "tenant_id": "227cd5f5-4498-4dba-bda9-05b8edc41113",
+        "business_unit": "QF1",
+        "created_by": "ouat178-load",
+        "updated_by": "ouat178-load",
+        "created_timestamp": "$now",
+        "updated_timestamp": "$now"
+      },
+      "expect": {
+        "targetBefore": "0",
+        "source": "4",
+        "inserted": "4",
+        "targetAfter": "4"
+      }
+    },
+    {
+      "id": "map-qf2",
+      "table": "opera.correl_product_mapping",
+      "where": "business_unit = 'QF2' AND created_by = 'ouat178-load'",
+      "key": [
+        "product_code"
+      ],
+      "source": {
+        "db": "mysql-oprdb02",
+        "sql": "SELECT TRIM(product_code) AS product_code, TRIM(primary_code) AS primary_code, TRIM(secondary_code) AS secondary_code, primary_multiplier, secondary_multiplier FROM dbsystemuat.correl_product_mapping_table"
+      },
+      "constants": {
+        "uuid": "$uuid",
+        "tenant_id": "227cd5f5-4498-4dba-bda9-05b8edc41113",
+        "business_unit": "QF2",
+        "created_by": "ouat178-load",
+        "updated_by": "ouat178-load",
+        "created_timestamp": "$now",
+        "updated_timestamp": "$now"
+      },
+      "expect": {
+        "targetBefore": "0",
+        "source": "4",
+        "inserted": "4",
+        "targetAfter": "4"
+      }
+    },
+    {
+      "id": "map-qf3",
+      "table": "opera.correl_product_mapping",
+      "where": "business_unit = 'QF3' AND created_by = 'ouat178-load'",
+      "key": [
+        "product_code"
+      ],
+      "source": {
+        "db": "mysql-oprdb02",
+        "sql": "SELECT TRIM(product_code) AS product_code, TRIM(primary_code) AS primary_code, TRIM(secondary_code) AS secondary_code, primary_multiplier, secondary_multiplier FROM dbsystemuat.correl_product_mapping_table"
+      },
+      "constants": {
+        "uuid": "$uuid",
+        "tenant_id": "227cd5f5-4498-4dba-bda9-05b8edc41113",
+        "business_unit": "QF3",
+        "created_by": "ouat178-load",
+        "updated_by": "ouat178-load",
+        "created_timestamp": "$now",
+        "updated_timestamp": "$now"
+      },
+      "expect": {
+        "targetBefore": "0",
+        "source": "4",
+        "inserted": "4",
+        "targetAfter": "4"
+      }
+    },
+    {
+      "id": "map-qf4",
+      "table": "opera.correl_product_mapping",
+      "where": "business_unit = 'QF4' AND created_by = 'ouat178-load'",
+      "key": [
+        "product_code"
+      ],
+      "source": {
+        "db": "mysql-oprdb02",
+        "sql": "SELECT TRIM(product_code) AS product_code, TRIM(primary_code) AS primary_code, TRIM(secondary_code) AS secondary_code, primary_multiplier, secondary_multiplier FROM dbsystemuat.correl_product_mapping_table"
+      },
+      "constants": {
+        "uuid": "$uuid",
+        "tenant_id": "227cd5f5-4498-4dba-bda9-05b8edc41113",
+        "business_unit": "QF4",
+        "created_by": "ouat178-load",
+        "updated_by": "ouat178-load",
+        "created_timestamp": "$now",
+        "updated_timestamp": "$now"
+      },
+      "expect": {
+        "targetBefore": "0",
+        "source": "4",
+        "inserted": "4",
+        "targetAfter": "4"
+      }
+    },
+    {
+      "id": "map-qf5",
+      "table": "opera.correl_product_mapping",
+      "where": "business_unit = 'QF5' AND created_by = 'ouat178-load'",
+      "key": [
+        "product_code"
+      ],
+      "source": {
+        "db": "mysql-oprdb02",
+        "sql": "SELECT TRIM(product_code) AS product_code, TRIM(primary_code) AS primary_code, TRIM(secondary_code) AS secondary_code, primary_multiplier, secondary_multiplier FROM dbsystemuat.correl_product_mapping_table"
+      },
+      "constants": {
+        "uuid": "$uuid",
+        "tenant_id": "227cd5f5-4498-4dba-bda9-05b8edc41113",
+        "business_unit": "QF5",
+        "created_by": "ouat178-load",
+        "updated_by": "ouat178-load",
+        "created_timestamp": "$now",
+        "updated_timestamp": "$now"
+      },
+      "expect": {
+        "targetBefore": "0",
+        "source": "4",
+        "inserted": "4",
+        "targetAfter": "4"
+      }
+    },
+    {
+      "id": "map-rba",
+      "table": "opera.correl_product_mapping",
+      "where": "business_unit = 'RBA' AND created_by = 'ouat178-load'",
+      "key": [
+        "product_code"
+      ],
+      "source": {
+        "db": "mysql-oprdb02",
+        "sql": "SELECT TRIM(product_code) AS product_code, TRIM(primary_code) AS primary_code, TRIM(secondary_code) AS secondary_code, primary_multiplier, secondary_multiplier FROM dbsystemuat.correl_product_mapping_table"
+      },
+      "constants": {
+        "uuid": "$uuid",
+        "tenant_id": "227cd5f5-4498-4dba-bda9-05b8edc41113",
+        "business_unit": "RBA",
+        "created_by": "ouat178-load",
+        "updated_by": "ouat178-load",
+        "created_timestamp": "$now",
+        "updated_timestamp": "$now"
+      },
+      "expect": {
+        "targetBefore": "0",
+        "source": "4",
+        "inserted": "4",
+        "targetAfter": "4"
+      }
+    },
+    {
+      "id": "map-rbc",
+      "table": "opera.correl_product_mapping",
+      "where": "business_unit = 'RBC' AND created_by = 'ouat178-load'",
+      "key": [
+        "product_code"
+      ],
+      "source": {
+        "db": "mysql-oprdb02",
+        "sql": "SELECT TRIM(product_code) AS product_code, TRIM(primary_code) AS primary_code, TRIM(secondary_code) AS secondary_code, primary_multiplier, secondary_multiplier FROM dbsystemuat.correl_product_mapping_table"
+      },
+      "constants": {
+        "uuid": "$uuid",
+        "tenant_id": "227cd5f5-4498-4dba-bda9-05b8edc41113",
+        "business_unit": "RBC",
+        "created_by": "ouat178-load",
+        "updated_by": "ouat178-load",
+        "created_timestamp": "$now",
+        "updated_timestamp": "$now"
+      },
+      "expect": {
+        "targetBefore": "0",
+        "source": "4",
+        "inserted": "4",
+        "targetAfter": "4"
+      }
+    },
+    {
+      "id": "map-rbh",
+      "table": "opera.correl_product_mapping",
+      "where": "business_unit = 'RBH' AND created_by = 'ouat178-load'",
+      "key": [
+        "product_code"
+      ],
+      "source": {
+        "db": "mysql-oprdb02",
+        "sql": "SELECT TRIM(product_code) AS product_code, TRIM(primary_code) AS primary_code, TRIM(secondary_code) AS secondary_code, primary_multiplier, secondary_multiplier FROM dbsystemuat.correl_product_mapping_table"
+      },
+      "constants": {
+        "uuid": "$uuid",
+        "tenant_id": "227cd5f5-4498-4dba-bda9-05b8edc41113",
+        "business_unit": "RBH",
+        "created_by": "ouat178-load",
+        "updated_by": "ouat178-load",
+        "created_timestamp": "$now",
+        "updated_timestamp": "$now"
+      },
+      "expect": {
+        "targetBefore": "0",
+        "source": "4",
+        "inserted": "4",
+        "targetAfter": "4"
+      }
+    },
+    {
+      "id": "map-rmc",
+      "table": "opera.correl_product_mapping",
+      "where": "business_unit = 'RMC' AND created_by = 'ouat178-load'",
+      "key": [
+        "product_code"
+      ],
+      "source": {
+        "db": "mysql-oprdb02",
+        "sql": "SELECT TRIM(product_code) AS product_code, TRIM(primary_code) AS primary_code, TRIM(secondary_code) AS secondary_code, primary_multiplier, secondary_multiplier FROM dbsystemuat.correl_product_mapping_table"
+      },
+      "constants": {
+        "uuid": "$uuid",
+        "tenant_id": "227cd5f5-4498-4dba-bda9-05b8edc41113",
+        "business_unit": "RMC",
+        "created_by": "ouat178-load",
+        "updated_by": "ouat178-load",
+        "created_timestamp": "$now",
+        "updated_timestamp": "$now"
+      },
+      "expect": {
+        "targetBefore": "0",
+        "source": "4",
+        "inserted": "4",
+        "targetAfter": "4"
+      }
+    },
+    {
+      "id": "map-rov",
+      "table": "opera.correl_product_mapping",
+      "where": "business_unit = 'ROV' AND created_by = 'ouat178-load'",
+      "key": [
+        "product_code"
+      ],
+      "source": {
+        "db": "mysql-oprdb02",
+        "sql": "SELECT TRIM(product_code) AS product_code, TRIM(primary_code) AS primary_code, TRIM(secondary_code) AS secondary_code, primary_multiplier, secondary_multiplier FROM dbsystemuat.correl_product_mapping_table"
+      },
+      "constants": {
+        "uuid": "$uuid",
+        "tenant_id": "227cd5f5-4498-4dba-bda9-05b8edc41113",
+        "business_unit": "ROV",
+        "created_by": "ouat178-load",
+        "updated_by": "ouat178-load",
+        "created_timestamp": "$now",
+        "updated_timestamp": "$now"
+      },
+      "expect": {
+        "targetBefore": "0",
+        "source": "4",
+        "inserted": "4",
+        "targetAfter": "4"
+      }
+    },
+    {
+      "id": "map-stg",
+      "table": "opera.correl_product_mapping",
+      "where": "business_unit = 'STG' AND created_by = 'ouat178-load'",
+      "key": [
+        "product_code"
+      ],
+      "source": {
+        "db": "mysql-oprdb02",
+        "sql": "SELECT TRIM(product_code) AS product_code, TRIM(primary_code) AS primary_code, TRIM(secondary_code) AS secondary_code, primary_multiplier, secondary_multiplier FROM dbsystemuat.correl_product_mapping_table"
+      },
+      "constants": {
+        "uuid": "$uuid",
+        "tenant_id": "227cd5f5-4498-4dba-bda9-05b8edc41113",
+        "business_unit": "STG",
+        "created_by": "ouat178-load",
+        "updated_by": "ouat178-load",
+        "created_timestamp": "$now",
+        "updated_timestamp": "$now"
+      },
+      "expect": {
+        "targetBefore": "0",
+        "source": "4",
+        "inserted": "4",
+        "targetAfter": "4"
+      }
+    },
+    {
+      "id": "map-tsy",
+      "table": "opera.correl_product_mapping",
+      "where": "business_unit = 'TSY' AND created_by = 'ouat178-load'",
+      "key": [
+        "product_code"
+      ],
+      "source": {
+        "db": "mysql-oprdb02",
+        "sql": "SELECT TRIM(product_code) AS product_code, TRIM(primary_code) AS primary_code, TRIM(secondary_code) AS secondary_code, primary_multiplier, secondary_multiplier FROM dbsystemuat.correl_product_mapping_table"
+      },
+      "constants": {
+        "uuid": "$uuid",
+        "tenant_id": "227cd5f5-4498-4dba-bda9-05b8edc41113",
+        "business_unit": "TSY",
+        "created_by": "ouat178-load",
+        "updated_by": "ouat178-load",
+        "created_timestamp": "$now",
+        "updated_timestamp": "$now"
+      },
+      "expect": {
+        "targetBefore": "0",
+        "source": "4",
+        "inserted": "4",
+        "targetAfter": "4"
+      }
+    },
+    {
+      "id": "map-usg",
+      "table": "opera.correl_product_mapping",
+      "where": "business_unit = 'USG' AND created_by = 'ouat178-load'",
+      "key": [
+        "product_code"
+      ],
+      "source": {
+        "db": "mysql-oprdb02",
+        "sql": "SELECT TRIM(product_code) AS product_code, TRIM(primary_code) AS primary_code, TRIM(secondary_code) AS secondary_code, primary_multiplier, secondary_multiplier FROM dbsystemuat.correl_product_mapping_table"
+      },
+      "constants": {
+        "uuid": "$uuid",
+        "tenant_id": "227cd5f5-4498-4dba-bda9-05b8edc41113",
+        "business_unit": "USG",
+        "created_by": "ouat178-load",
+        "updated_by": "ouat178-load",
+        "created_timestamp": "$now",
+        "updated_timestamp": "$now"
+      },
+      "expect": {
+        "targetBefore": "0",
+        "source": "4",
+        "inserted": "4",
+        "targetAfter": "4"
+      }
+    }
+  ]
+}
