@@ -1,0 +1,123 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- OUAT-178 funnel prod vs UAT for the two live WP spreads, CFS, value date 3 Nov, settlement date 2 Nov. Read only.
+     Needs the allow-prod flag for the prod side (the owner runs it). Order is the data flow: definition, vol ids, prices and vols, rate curve,
+     mapping, ratio rows, correlation, then the output. The first stage that differs explains an output difference.
+     Tenant ids may differ between prod and UAT, so no tenant filter; CFS tables are small. -->
+<rules name="ouat178-prod-vs-uat">
+
+  <parameters>
+    <param name="vd" type="date" value="2026-11-03"/>
+    <param name="sd" type="date" value="2026-11-02"/>
+  </parameters>
+
+  <sql id="p-sec" db="postgres-prod" export="full"><![CDATA[
+    SELECT security_id, derivative_type, underlying1_id, underlying2_id, vol1_id, vol2_id, strike, maturity_date, settlement_type, currency, contract_month, status
+    FROM opera.security_info_table WHERE business_unit = 'CFS' AND security_id LIKE 'CM WP%'
+  ]]></sql>
+  <sql id="u-sec" db="postgres-uat" export="full"><![CDATA[
+    SELECT security_id, derivative_type, underlying1_id, underlying2_id, vol1_id, vol2_id, strike, maturity_date, settlement_type, currency, contract_month, status
+    FROM opera.security_info_table WHERE business_unit = 'CFS' AND security_id LIKE 'CM WP%'
+  ]]></sql>
+  <compare id="s1-security" source="p-sec" target="u-sec" export="full">
+    <key columns="security_id"/>
+    <column name="strike" numeric="true" absTol="0.000001"/>
+  </compare>
+
+  <sql id="p-vol" db="postgres-prod" export="full"><![CDATA[
+    SELECT vol_id, bbg_opt_ticker, expiry_date FROM opera.vol_id_table WHERE vol_id LIKE 'CM QW%' OR vol_id LIKE 'CM SB%'
+  ]]></sql>
+  <sql id="u-vol" db="postgres-uat" export="full"><![CDATA[
+    SELECT vol_id, bbg_opt_ticker, expiry_date FROM opera.vol_id_table WHERE vol_id LIKE 'CM QW%' OR vol_id LIKE 'CM SB%'
+  ]]></sql>
+  <compare id="s2-vol-ids" source="p-vol" target="u-vol" export="full"><key columns="vol_id"/></compare>
+
+  <sql id="p-pvv" db="postgres-prod" export="full"><![CDATA[
+    SELECT bbg_underlying_id, settlement_date, price, vol FROM opera.var_price_vol_table
+    WHERE settlement_date = :sd AND (bbg_underlying_id LIKE 'QW%' OR bbg_underlying_id LIKE 'SB%')
+  ]]></sql>
+  <sql id="u-pvv" db="postgres-uat" export="full"><![CDATA[
+    SELECT bbg_underlying_id, settlement_date, price, vol FROM opera.var_price_vol_table
+    WHERE settlement_date = :sd AND (bbg_underlying_id LIKE 'QW%' OR bbg_underlying_id LIKE 'SB%')
+  ]]></sql>
+  <compare id="s3-price-vol" source="p-pvv" target="u-pvv" export="full">
+    <key columns="bbg_underlying_id,settlement_date"/>
+    <column name="price" numeric="true" absTol="0.000001"/>
+    <column name="vol" numeric="true" absTol="0.000001"/>
+  </compare>
+
+  <sql id="p-curve" db="postgres-prod" export="full"><![CDATA[
+    SELECT dat_code, zero_rate FROM opera.cso_zero_rate_curve_table WHERE business_unit = 'CFS' AND settle_date = :sd AND currency = 'USD'
+  ]]></sql>
+  <sql id="u-curve" db="postgres-uat" export="full"><![CDATA[
+    SELECT dat_code, zero_rate FROM opera.cso_zero_rate_curve_table WHERE business_unit = 'CFS' AND settle_date = :sd AND currency = 'USD'
+  ]]></sql>
+  <compare id="s4-zero-curve" source="p-curve" target="u-curve" export="full">
+    <key columns="dat_code"/>
+    <column name="zero_rate" numeric="true" absTol="0.000001"/>
+  </compare>
+
+  <sql id="p-map" db="postgres-prod" export="full"><![CDATA[
+    SELECT product_code, primary_code, secondary_code, primary_multiplier, secondary_multiplier FROM opera.correl_product_mapping WHERE business_unit = 'CFS'
+  ]]></sql>
+  <sql id="u-map" db="postgres-uat" export="full"><![CDATA[
+    SELECT product_code, primary_code, secondary_code, primary_multiplier, secondary_multiplier FROM opera.correl_product_mapping WHERE business_unit = 'CFS'
+  ]]></sql>
+  <compare id="s5-mapping" source="p-map" target="u-map" export="full">
+    <key columns="product_code"/>
+    <column name="primary_multiplier" numeric="true" absTol="0.000001"/>
+    <column name="secondary_multiplier" numeric="true" absTol="0.000001"/>
+  </compare>
+
+  <sql id="p-ratio" db="postgres-prod" export="full"><![CDATA[
+    SELECT CASE WHEN underlying_id LIKE '%QW%' THEN 'QW' WHEN underlying_id LIKE '%SB%' THEN 'SB' ELSE 'other' END AS leg,
+           count(*) AS row_count, count(ratio_return) AS ratio_not_null, round(sum(ratio_return)::numeric, 8) AS ratio_sum, min(value_date) AS min_date, max(value_date) AS max_date
+    FROM opera.settlement_price_table_wp WHERE business_unit = 'CFS' GROUP BY 1
+  ]]></sql>
+  <sql id="u-ratio" db="postgres-uat" export="full"><![CDATA[
+    SELECT CASE WHEN underlying_id LIKE '%QW%' THEN 'QW' WHEN underlying_id LIKE '%SB%' THEN 'SB' ELSE 'other' END AS leg,
+           count(*) AS row_count, count(ratio_return) AS ratio_not_null, round(sum(ratio_return)::numeric, 8) AS ratio_sum, min(value_date) AS min_date, max(value_date) AS max_date
+    FROM opera.settlement_price_table_wp WHERE business_unit = 'CFS' GROUP BY 1
+  ]]></sql>
+  <compare id="s6-ratio-rows" source="p-ratio" target="u-ratio" export="full">
+    <key columns="leg"/>
+    <column name="ratio_sum" numeric="true" absTol="0.000001"/>
+  </compare>
+
+  <sql id="p-corr" db="postgres-prod" export="full"><![CDATA[
+    SELECT security_id, settlement_date, correl_12 FROM opera.recon_scicom_correlation_input WHERE business_unit = 'CFS'
+  ]]></sql>
+  <sql id="u-corr" db="postgres-uat" export="full"><![CDATA[
+    SELECT security_id, settlement_date, correl_12 FROM opera.recon_scicom_correlation_input WHERE business_unit = 'CFS'
+  ]]></sql>
+  <compare id="s7-correlation" source="p-corr" target="u-corr" export="full">
+    <key columns="security_id,settlement_date"/>
+    <column name="correl_12" numeric="true" absTol="0.000001"/>
+  </compare>
+
+  <sql id="p-out" db="postgres-prod" export="full"><![CDATA[
+    SELECT security_id, settle_price, settle_delta_1, settle_delta_2, settle_gamma_11, settle_gamma_12, settle_gamma_21, settle_vega_1, settle_vega_2, settle_theta
+    FROM opera.security_settlement_value_table WHERE business_unit = 'CFS' AND value_date = :vd AND security_id LIKE 'CM WP%'
+  ]]></sql>
+  <sql id="u-out" db="postgres-uat" export="full"><![CDATA[
+    SELECT security_id, settle_price, settle_delta_1, settle_delta_2, settle_gamma_11, settle_gamma_12, settle_gamma_21, settle_vega_1, settle_vega_2, settle_theta
+    FROM opera.security_settlement_value_table WHERE business_unit = 'CFS' AND value_date = :vd AND security_id LIKE 'CM WP%'
+  ]]></sql>
+  <compare id="s8-output" source="p-out" target="u-out" export="full">
+    <key columns="security_id"/>
+    <column name="settle_price" numeric="true" absTol="0.0001"/>
+    <column name="settle_delta_1" numeric="true" absTol="0.0001"/>
+    <column name="settle_delta_2" numeric="true" absTol="0.0001"/>
+    <column name="settle_gamma_11" numeric="true" absTol="0.00001"/>
+    <column name="settle_gamma_12" numeric="true" absTol="0.00001"/>
+    <column name="settle_gamma_21" numeric="true" absTol="0.00001"/>
+    <column name="settle_vega_1" numeric="true" absTol="0.0001"/>
+    <column name="settle_vega_2" numeric="true" absTol="0.0001"/>
+    <column name="settle_theta" numeric="true" absTol="0.0001"/>
+  </compare>
+
+  <expect ref="p-out" rows=">=2" reason="prod holds the WP output for the value date"/>
+  <compress id="bundle" file="ouat178-prod-vs-uat.zip">
+    <include ref="s1-security"/><include ref="s2-vol-ids"/><include ref="s3-price-vol"/><include ref="s4-zero-curve"/>
+    <include ref="s5-mapping"/><include ref="s6-ratio-rows"/><include ref="s7-correlation"/><include ref="s8-output"/>
+  </compress>
+</rules>
