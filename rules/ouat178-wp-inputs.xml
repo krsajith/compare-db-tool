@@ -1,0 +1,109 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- OUAT-178 WP zero Greeks on UAT. Read only. Datasource postgres-uat, schema opera.
+     Looks at every input the WP pricing path needs: the mapping row, the stored procedure output tables, the vol and price rows
+     for QW and SB, the vol ids and the correlation input rows. Read the expectations first, then the query rows. -->
+<rules name="ouat178-wp-inputs">
+
+  <parameters>
+    <param name="bu" type="string" value="CFS"/>
+    <param name="vd" type="date" value="2026-11-03"/>
+    <param name="vd_from" type="date" value="2026-10-01"/>
+  </parameters>
+
+  <sql id="identity" db="postgres-uat" export="full"><![CDATA[
+    SELECT current_database() AS db_name, inet_server_port() AS port, current_user AS db_user, now() AS db_time
+  ]]></sql>
+
+  <sql id="valuation" db="postgres-uat" export="full"><![CDATA[
+    SELECT tenant_id, business_unit, value_date, settlement_date
+    FROM opera.valuation_date_table WHERE business_unit = :bu
+  ]]></sql>
+
+  <sql id="mapping" db="postgres-uat" export="full"><![CDATA[
+    SELECT tenant_id, business_unit, product_code, primary_code, secondary_code, primary_multiplier, secondary_multiplier, updated_by, updated_timestamp
+    FROM opera.correl_product_mapping
+    WHERE business_unit = :bu AND (product_code = 'WP' OR primary_code IN ('QW','SB') OR secondary_code IN ('QW','SB'))
+  ]]></sql>
+
+  <sql id="mapping-all-count" db="postgres-uat" export="full"><![CDATA[
+    SELECT business_unit, count(*) AS mapping_rows,
+           count(*) FILTER (WHERE primary_multiplier IS NULL OR secondary_multiplier IS NULL OR primary_multiplier = 0 OR secondary_multiplier = 0) AS bad_multiplier_rows
+    FROM opera.correl_product_mapping GROUP BY business_unit ORDER BY business_unit
+  ]]></sql>
+
+  <sql id="price-wp" db="postgres-uat" export="full"><![CDATA[
+    SELECT tenant_id, business_unit, base_product, count(*) AS row_count,
+           count(*) FILTER (WHERE settle_value IS NULL OR settle_value = 0) AS null_or_zero_price,
+           min(value_date) AS min_value_date, max(value_date) AS max_value_date,
+           min(settlement_date) AS min_settlement_date, max(settlement_date) AS max_settlement_date,
+           max(created_timestamp) AS last_built
+    FROM opera.underlying_price_table_wp GROUP BY tenant_id, business_unit, base_product ORDER BY 1, 2, 3
+  ]]></sql>
+
+  <sql id="price-wp-live" db="postgres-uat" export="full"><![CDATA[
+    SELECT business_unit, security_id, underlying_id, underlying_1, settle_value_1, underlying_2, settle_value_2, settle_value, value_date, settlement_date
+    FROM opera.underlying_price_table_wp
+    WHERE business_unit = :bu AND security_id LIKE '%CM WP%' ORDER BY security_id LIMIT 60
+  ]]></sql>
+
+  <sql id="ratio-wp" db="postgres-uat" export="full"><![CDATA[
+    SELECT tenant_id, business_unit,
+           CASE WHEN underlying_id LIKE '%QW%' THEN 'QW' WHEN underlying_id LIKE '%SB%' THEN 'SB' ELSE 'other' END AS leg,
+           count(*) AS row_count, count(ratio_return) AS ratio_not_null,
+           count(DISTINCT value_date) AS distinct_dates, min(value_date) AS min_value_date, max(value_date) AS max_value_date,
+           max(created_timestamp) AS last_built
+    FROM opera.settlement_price_table_wp GROUP BY 1, 2, 3 ORDER BY 1, 2, 3
+  ]]></sql>
+
+  <sql id="pvv" db="postgres-uat" export="full"><![CDATA[
+    SELECT bbg_underlying_id, settlement_date, price, vol, tenant_id, updated_timestamp
+    FROM opera.var_price_vol_table
+    WHERE bbg_underlying_id IN ('QWH7','SBH7','QWK7','SBK7','QWZ6','SBZ6') AND settlement_date >= :vd_from
+    ORDER BY bbg_underlying_id, settlement_date DESC LIMIT 80
+  ]]></sql>
+
+  <sql id="pvv-on-date" db="postgres-uat" export="full"><![CDATA[
+    SELECT bbg_underlying_id, count(*) AS row_count, min(price) AS min_price, min(vol) AS min_vol
+    FROM opera.var_price_vol_table
+    WHERE settlement_date = :vd AND bbg_underlying_id IN ('QWH7','SBH7','QWK7','SBK7','QWZ6','SBZ6')
+    GROUP BY bbg_underlying_id ORDER BY 1
+  ]]></sql>
+
+  <sql id="vol-ids" db="postgres-uat" export="full"><![CDATA[
+    SELECT tenant_id, vol_id, product_code, bbg_opt_ticker, expiry_date, underlying_id
+    FROM opera.vol_id_table
+    WHERE vol_id LIKE 'CM QW%' OR vol_id LIKE 'CM SB%'
+    ORDER BY expiry_date DESC LIMIT 60
+  ]]></sql>
+
+  <sql id="underlying-settle" db="postgres-uat" export="full"><![CDATA[
+    SELECT underlying_id, count(*) AS row_count, min(value_date) AS min_value_date, max(value_date) AS max_value_date
+    FROM opera.underlying_settle_value_table
+    WHERE value_date >= :vd_from AND (underlying_id LIKE 'CM W %' OR underlying_id LIKE 'CM QW%' OR underlying_id LIKE 'CM SB%')
+    GROUP BY underlying_id ORDER BY underlying_id LIMIT 80
+  ]]></sql>
+
+  <sql id="securities" db="postgres-uat" export="full"><![CDATA[
+    SELECT security_id, derivative_type, status, contract_month, business_unit
+    FROM opera.security_info_table
+    WHERE business_unit = :bu AND security_id LIKE '%CM WP%' AND status = 'Active'
+    ORDER BY security_id LIMIT 60
+  ]]></sql>
+
+  <sql id="correl-input" db="postgres-uat" export="full"><![CDATA[
+    SELECT business_unit, group_type, security_id, product_code, settlement_date, correl_12, created_by, created_timestamp, updated_timestamp
+    FROM opera.recon_scicom_correlation_input WHERE business_unit = :bu ORDER BY settlement_date DESC, security_id LIMIT 60
+  ]]></sql>
+
+  <expect ref="identity" rows="1" reason="connected to the target"/>
+  <expect ref="mapping" rows=">=1" reason="correl_product_mapping needs a WP row for the BU or the SP builds nothing"/>
+  <expect ref="price-wp" rows=">=1" reason="underlying_price_table_wp must hold WP rows (SP output)"/>
+  <expect ref="ratio-wp" rows=">=2" reason="settlement_price_table_wp needs QW and SB ratio rows"/>
+  <expect ref="pvv-on-date" rows=">=4" reason="price and vol rows for QW and SB near and far legs on the value date"/>
+
+  <compress id="bundle" file="ouat178-wp-inputs.zip">
+    <include ref="identity"/><include ref="valuation"/><include ref="mapping"/><include ref="mapping-all-count"/><include ref="price-wp"/>
+    <include ref="price-wp-live"/><include ref="ratio-wp"/><include ref="pvv"/><include ref="pvv-on-date"/><include ref="vol-ids"/>
+    <include ref="underlying-settle"/><include ref="securities"/><include ref="correl-input"/>
+  </compress>
+</rules>
