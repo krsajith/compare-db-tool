@@ -738,6 +738,20 @@ public final class Cli {
         Files.writeString(directory.resolve("MANUAL_ACTIONS.md"), SecretRedactor.clean(report.toString()));
     }
 
+    /** Zip every file of a load or restore result folder (summary, row files, undo rule) into baseName.zip inside that folder. */
+    static Path zipOutput(Path directory, String baseName) throws IOException {
+        Path target = directory.resolve(baseName + ".zip");
+        Set<Path> files = new TreeSet<>();
+        try (Stream<Path> walk = Files.walk(directory)) {
+            walk.filter(Files::isRegularFile)
+                .filter(p -> !p.getFileName().toString().endsWith(".zip") && !p.getFileName().toString().endsWith(".partial"))
+                .forEach(files::add);
+        }
+        Files.deleteIfExists(target);
+        zip(directory, target, files);
+        return target;
+    }
+
     private static void zip(Path directory, Path target, Set<Path> included) throws IOException {
         Path temporary = target.resolveSibling(target.getFileName() + ".partial");
         try {

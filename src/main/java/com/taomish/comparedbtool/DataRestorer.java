@@ -132,6 +132,13 @@ public final class DataRestorer {
         if (options.apply) writeUndo(dir, rule, results);
         LOG.info("Summary: {}", dir.resolve("RESTORE.md"));
         Progress.get().line("  summary: " + dir.resolve("RESTORE.md"));
+        try {
+            var zipped = Cli.zipOutput(dir, safe(rule.name));
+            Progress.get().line("  zip: " + zipped + " (" + Progress.size(Files.size(zipped)) + ")");
+        } catch (java.io.IOException e) {
+            LOG.warn("ZIP of the restore result failed; the files in {} remain: {}", dir, e.getMessage());
+            Progress.get().line("  zip failed (" + e.getMessage() + "); the files remain in " + dir);
+        }
         if (verified.stream().anyMatch(v -> v.error() != null)) return 2;
         boolean unmet = results.stream().anyMatch(r -> !r.unmet().isEmpty());
         return unmet || verified.stream().anyMatch(v -> !v.passed()) ? 1 : 0;
