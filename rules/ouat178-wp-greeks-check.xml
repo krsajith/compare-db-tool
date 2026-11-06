@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- OUAT-178 after the mapping load and the CFS pricing run: do the WP securities now have price and Greeks, and do they match the legacy benchmark?
+     Read only, datasource postgres-uat. Benchmark values come from the ticket sheet (OPERA block, value date 3 Nov). The expired Z26 H27 P77 spread must stay 0. -->
+<rules name="ouat178-wp-greeks-check">
+
+  <parameters>
+    <param name="vd" type="date" value="2026-11-03"/>
+  </parameters>
+
+  <sql id="identity" db="postgres-uat" export="full"><![CDATA[
+    SELECT current_database() AS db_name, current_user AS db_user, now() AS db_time
+  ]]></sql>
+
+  <sql id="wp-greeks" db="postgres-uat" export="full"><![CDATA[
+    SELECT security_id, value_date, settle_price, settle_delta_1, settle_delta_2, settle_gamma_11, settle_gamma_12, settle_gamma_21, settle_gamma_22,
+           settle_vega_1, settle_vega_2, settle_theta, settle_chi, settle_curr_exp
+    FROM opera.security_settlement_value_table_cfs
+    WHERE value_date = :vd AND security_id LIKE 'CM WP%'
+    ORDER BY security_id
+  ]]></sql>
+
+  <sql id="wp-live" db="postgres-uat" export="full"><![CDATA[
+    SELECT security_id, settle_price, settle_delta_1, settle_vega_1, settle_theta
+    FROM opera.security_settlement_value_table_cfs
+    WHERE value_date = :vd AND security_id IN ('CM WP H27.H27 CM WP H27.H27 P 106 CS', 'CM WP K27.K27 CM WP K27.K27 P 125 CS')
+  ]]></sql>
+
+  <sql id="benchmark" db="postgres-uat" export="full"><![CDATA[
+    SELECT security_id, settle_price, settle_delta_1, settle_vega_1, settle_theta FROM (VALUES
+      ('CM WP H27.H27 CM WP H27.H27 P 106 CS', 6.68816207019928, -0.488944769443197, 0.526707512320769, -0.0356898186490068),
+      ('CM WP K27.K27 CM WP K27.K27 P 125 CS', 5.54098992103138, -0.543127561469289, 0.434723605117901, -0.0541461679080663)
+    ) AS t(security_id, settle_price, settle_delta_1, settle_vega_1, settle_theta)
+  ]]></sql>
+
+  <sql id="inputs-now" db="postgres-uat" export="full"><![CDATA[
+    SELECT (SELECT count(*) FROM opera.correl_product_mapping WHERE business_unit = 'CFS') AS mapping_rows,
+           (SELECT count(*) FROM opera.underlying_price_table_wp WHERE business_unit = 'CFS') AS price_wp_rows,
+           (SELECT count(*) FROM opera.settlement_price_table_wp WHERE business_unit = 'CFS') AS ratio_wp_rows,
+           (SELECT count(*) FROM opera.recon_scicom_correlation_input WHERE business_unit = 'CFS' AND correl_12 IS NOT NULL) AS correl_not_null_rows,
+           (SELECT max(correl_12) FROM opera.recon_scicom_correlation_input WHERE business_unit = 'CFS') AS correl_12
+  ]]></sql>
+
+  <compare id="vs-benchmark" source="wp-live" target="benchmark" export="full">
+    <key columns="security_id"/>
+    <column name="settle_price" numeric="true" absTol="0.01"/>
+    <column name="settle_delta_1" numeric="true" absTol="0.001"/>
+    <column name="settle_vega_1" numeric="true" absTol="0.001"/>
+    <column name="settle_theta" numeric="true" absTol="0.001"/>
+  </compare>
+
+  <expect ref="wp-greeks" rows="3" reason="three WP securities in the settlement table"/>
+  <expect ref="wp-live" rows="2" reason="the two live spreads exist"/>
+  <expect ref="wp-live" column="settle_price" min="0.01" each="true" reason="live spreads must have a non-zero price"/>
+  <expect ref="inputs-now" column="mapping_rows" equals="4" reason="mapping loaded"/>
+  <expect ref="vs-benchmark" different="0" reason="UAT matches the legacy benchmark within tolerance"/>
+
+  <compress id="bundle" file="ouat178-wp-greeks-check.zip"><include ref="identity"/><include ref="wp-greeks"/><include ref="inputs-now"/><include ref="vs-benchmark"/></compress>
+</rules>
