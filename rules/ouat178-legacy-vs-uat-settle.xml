@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- OUAT-178: compare the two WP spreads between the legacy MySQL settlement table and UAT for the value date, all price and Greek columns.
+     This replaces the typed benchmark from the ticket sheet with the legacy system's own stored numbers. Read only. -->
+<rules name="ouat178-legacy-vs-uat-settle">
+
+  <parameters>
+    <param name="vd" type="date" value="2026-11-03"/>
+  </parameters>
+
+  <sql id="legacy" db="mysql-oprdb02" export="full"><![CDATA[
+    SELECT security_id, settle_price, settle_delta_1, settle_delta_2, settle_gamma_11, settle_gamma_12, settle_gamma_21, settle_gamma_22,
+           settle_vega_1, settle_vega_2, settle_theta, settle_chi, settle_curr_exp
+    FROM dbsystemuat.security_settlement_value_table_cfs
+    WHERE value_date = :vd AND security_id LIKE 'CM WP%'
+  ]]></sql>
+
+  <sql id="uat" db="postgres-uat" export="full"><![CDATA[
+    SELECT security_id, settle_price, settle_delta_1, settle_delta_2, settle_gamma_11, settle_gamma_12, settle_gamma_21, settle_gamma_22,
+           settle_vega_1, settle_vega_2, settle_theta, settle_chi, settle_curr_exp
+    FROM opera.security_settlement_value_table
+    WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND business_unit = 'CFS' AND value_date = :vd AND security_id LIKE 'CM WP%'
+  ]]></sql>
+
+  <compare id="cmp" source="legacy" target="uat" export="full">
+    <key columns="security_id"/>
+    <column name="settle_price" numeric="true" absTol="0.01"/>
+    <column name="settle_delta_1" numeric="true" absTol="0.001"/>
+    <column name="settle_delta_2" numeric="true" absTol="0.001"/>
+    <column name="settle_gamma_11" numeric="true" absTol="0.0001"/>
+    <column name="settle_gamma_12" numeric="true" absTol="0.0001"/>
+    <column name="settle_gamma_21" numeric="true" absTol="0.0001"/>
+    <column name="settle_gamma_22" numeric="true" absTol="0.0001"/>
+    <column name="settle_vega_1" numeric="true" absTol="0.001"/>
+    <column name="settle_vega_2" numeric="true" absTol="0.001"/>
+    <column name="settle_theta" numeric="true" absTol="0.001"/>
+    <column name="settle_chi" numeric="true" absTol="0.001"/>
+    <column name="settle_curr_exp" numeric="true" absTol="0.001"/>
+  </compare>
+
+  <expect ref="legacy" rows=">=1" reason="legacy holds WP settlement rows for the date"/>
+  <expect ref="cmp" different="0" reason="UAT equals legacy for every WP security"/>
+  <compress id="bundle" file="ouat178-legacy-vs-uat-settle.zip"><include ref="legacy"/><include ref="uat"/><include ref="cmp"/></compress>
+</rules>
