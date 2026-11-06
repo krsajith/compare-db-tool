@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- OUAT-178: when was UAT loaded from MySQL, and how far does each side run? Read only, no prod.
+     UAT: deal ticket created timestamps by day show the load night, and the newest settle values show the data cutoff.
+     MySQL: newest dates in the tables we use, so rows newer than the cutoff mean MySQL moved on after the migration. -->
+<rules name="ouat178-migration-cutoff">
+
+  <parameters>
+    <param name="from_ts" type="date" value="2026-10-30"/>
+  </parameters>
+
+  <sql id="u-deal-created" db="postgres-uat" export="full"><![CDATA[
+    SELECT created_timestamp::date AS created_day, count(*) AS deals, min(created_timestamp) AS first_created, max(created_timestamp) AS last_created, max(created_by) AS created_by
+    FROM opera.deal_ticket_table WHERE business_unit = 'CFS' AND created_timestamp >= :from_ts
+    GROUP BY 1 ORDER BY 1
+  ]]></sql>
+
+  <sql id="u-dates" db="postgres-uat" export="full"><![CDATA[
+    SELECT 'underlying_settle_value_table' AS tbl, max(value_date)::text AS newest_date, max(created_timestamp) AS newest_created FROM opera.underlying_settle_value_table
+    UNION ALL SELECT 'var_price_vol_table', max(settlement_date)::text, max(created_timestamp) FROM opera.var_price_vol_table
+    UNION ALL SELECT 'security_settlement_value_table CFS', max(value_date)::text, max(created_timestamp) FROM opera.security_settlement_value_table WHERE business_unit = 'CFS'
+    UNION ALL SELECT 'valuation_date_table CFS', max(value_date)::text, max(created_timestamp) FROM opera.valuation_date_table WHERE business_unit = 'CFS'
+  ]]></sql>
+
+  <sql id="m-dates" db="mysql-oprdb02" export="full"><![CDATA[
+    SELECT 'underlying_settle_value_table' AS tbl, CAST(MAX(value_date) AS CHAR) AS newest_date FROM dbsystemuat.underlying_settle_value_table
+    UNION ALL SELECT 'var_price_vol_table', CAST(MAX(settlement_date) AS CHAR) FROM dbsystemuat.var_price_vol_table
+    UNION ALL SELECT 'security_settlement_value_table_cfs', CAST(MAX(value_date) AS CHAR) FROM dbsystemuat.security_settlement_value_table_cfs
+  ]]></sql>
+
+  <sql id="m-settle-dates" db="mysql-oprdb02" export="full"><![CDATA[
+    SELECT value_date, COUNT(*) AS rows_all, SUM(security_id LIKE 'CM WP%') AS wp_rows
+    FROM dbsystemuat.security_settlement_value_table_cfs GROUP BY value_date ORDER BY value_date DESC LIMIT 8
+  ]]></sql>
+
+  <expect ref="u-deal-created" rows=">=1" reason="UAT has CFS deals created after the start date"/>
+  <compress id="bundle" file="ouat178-migration-cutoff.zip"><include ref="u-deal-created"/><include ref="u-dates"/><include ref="m-dates"/><include ref="m-settle-dates"/></compress>
+</rules>
