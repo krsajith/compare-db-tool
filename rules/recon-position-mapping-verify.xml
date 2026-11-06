@@ -11,5 +11,6 @@
   <compare id="cmp" source="legacy" target="new" export="full">
     <key columns="business_unit,portfolio,subportfolio"/>
   </compare>
-  <expect ref="cmp" different="0" only-source="0" only-target="0" reason="the new mapping table equals the legacy table"/>
+  <expect ref="cmp" different="0" only-source="0" only-target="0" duplicates="0" reason="the new mapping table equals the legacy table and no key appears twice"/>
+  <expect ref="cmp" matched="60" reason="all 60 legacy rows are matched; zero matched means the keys were duplicated and skipped"/>
 </rules>
