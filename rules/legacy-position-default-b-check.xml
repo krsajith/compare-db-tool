@@ -1,0 +1,71 @@
+<rules name="legacy-position-default-b-check">
+  <!-- Does legacy really leave h_p = 'B' for RBA and RBC position rows that have no row in pos_1211_port_trader_mapping_table?
+       The legacy procedure sp_actual_netted_lots_consolidated_sec_ex_pf_rbrchn_rba and its settle twin set h_p from the mapping table
+       (portfolio, subportfolio, last dash part of trade_id = group) and the cache table column h_p defaults to 'B'.
+       This rule reads the four legacy cache tables (settle and actual, RBA and RBC) and joins them to the mapping table the same way.
+       Read only. The cache tables hold the rows of the last legacy refresh only, so an empty or old table limits the proof.
+       Expected: rows without a mapping exist (otherwise the check proves nothing) and all of them carry h_p = B. -->
+
+  <!-- 1. Per cache table, portfolio and subportfolio: the h_p in the cache and the h_p the mapping table would give -->
+  <sql id="by-pair" db="mysql-oprdb02" export="full"><![CDATA[
+    SELECT 'settle_rba' AS cache_table, a.portfolio, a.subportfolio, SUBSTRING_INDEX(a.trade_id, '-', -1) AS trade_group,
+           a.h_p AS cache_h_p, b.h_p AS mapped_h_p, COUNT(*) AS row_count
+    FROM dbsystemuat.helper_settle_p_and_g_position_cache_table_rba a
+    LEFT JOIN dbsystemuat.pos_1211_port_trader_mapping_table b
+      ON a.portfolio = b.portfolio AND a.subportfolio = b.subportfolio AND SUBSTRING_INDEX(a.trade_id, '-', -1) = b.`group`
+    GROUP BY a.portfolio, a.subportfolio, SUBSTRING_INDEX(a.trade_id, '-', -1), a.h_p, b.h_p
+    UNION ALL
+    SELECT 'settle_rbc', a.portfolio, a.subportfolio, SUBSTRING_INDEX(a.trade_id, '-', -1), a.h_p, b.h_p, COUNT(*)
+    FROM dbsystemuat.helper_settle_p_and_g_position_cache_table_rbc a
+    LEFT JOIN dbsystemuat.pos_1211_port_trader_mapping_table b
+      ON a.portfolio = b.portfolio AND a.subportfolio = b.subportfolio AND SUBSTRING_INDEX(a.trade_id, '-', -1) = b.`group`
+    GROUP BY a.portfolio, a.subportfolio, SUBSTRING_INDEX(a.trade_id, '-', -1), a.h_p, b.h_p
+    UNION ALL
+    SELECT 'actual_rba', a.portfolio, a.subportfolio, SUBSTRING_INDEX(a.trade_id, '-', -1), a.h_p, b.h_p, COUNT(*)
+    FROM dbsystemuat.helper_settle_p_and_g_actual_position_cache_table_rba a
+    LEFT JOIN dbsystemuat.pos_1211_port_trader_mapping_table b
+      ON a.portfolio = b.portfolio AND a.subportfolio = b.subportfolio AND SUBSTRING_INDEX(a.trade_id, '-', -1) = b.`group`
+    GROUP BY a.portfolio, a.subportfolio, SUBSTRING_INDEX(a.trade_id, '-', -1), a.h_p, b.h_p
+    UNION ALL
+    SELECT 'actual_rbc', a.portfolio, a.subportfolio, SUBSTRING_INDEX(a.trade_id, '-', -1), a.h_p, b.h_p, COUNT(*)
+    FROM dbsystemuat.helper_settle_p_and_g_actual_position_cache_table_rbc a
+    LEFT JOIN dbsystemuat.pos_1211_port_trader_mapping_table b
+      ON a.portfolio = b.portfolio AND a.subportfolio = b.subportfolio AND SUBSTRING_INDEX(a.trade_id, '-', -1) = b.`group`
+    GROUP BY a.portfolio, a.subportfolio, SUBSTRING_INDEX(a.trade_id, '-', -1), a.h_p, b.h_p
+  ]]></sql>
+
+  <!-- 2. The verdict in one row: rows without a mapping, and how many of them do NOT carry B -->
+  <sql id="verdict" db="mysql-oprdb02" export="full"><![CDATA[
+    SELECT COALESCE(SUM(x.total_rows), 0) AS cache_rows,
+           COALESCE(SUM(x.unmapped_rows), 0) AS unmapped_rows,
+           COALESCE(SUM(x.unmapped_not_b), 0) AS unmapped_not_b
+    FROM (
+      SELECT COUNT(*) AS total_rows, SUM(b.h_p IS NULL) AS unmapped_rows,
+             SUM(b.h_p IS NULL AND (a.h_p IS NULL OR a.h_p <> 'B')) AS unmapped_not_b
+      FROM dbsystemuat.helper_settle_p_and_g_position_cache_table_rba a
+      LEFT JOIN dbsystemuat.pos_1211_port_trader_mapping_table b
+        ON a.portfolio = b.portfolio AND a.subportfolio = b.subportfolio AND SUBSTRING_INDEX(a.trade_id, '-', -1) = b.`group`
+      UNION ALL
+      SELECT COUNT(*), SUM(b.h_p IS NULL), SUM(b.h_p IS NULL AND (a.h_p IS NULL OR a.h_p <> 'B'))
+      FROM dbsystemuat.helper_settle_p_and_g_position_cache_table_rbc a
+      LEFT JOIN dbsystemuat.pos_1211_port_trader_mapping_table b
+        ON a.portfolio = b.portfolio AND a.subportfolio = b.subportfolio AND SUBSTRING_INDEX(a.trade_id, '-', -1) = b.`group`
+      UNION ALL
+      SELECT COUNT(*), SUM(b.h_p IS NULL), SUM(b.h_p IS NULL AND (a.h_p IS NULL OR a.h_p <> 'B'))
+      FROM dbsystemuat.helper_settle_p_and_g_actual_position_cache_table_rba a
+      LEFT JOIN dbsystemuat.pos_1211_port_trader_mapping_table b
+        ON a.portfolio = b.portfolio AND a.subportfolio = b.subportfolio AND SUBSTRING_INDEX(a.trade_id, '-', -1) = b.`group`
+      UNION ALL
+      SELECT COUNT(*), SUM(b.h_p IS NULL), SUM(b.h_p IS NULL AND (a.h_p IS NULL OR a.h_p <> 'B'))
+      FROM dbsystemuat.helper_settle_p_and_g_actual_position_cache_table_rbc a
+      LEFT JOIN dbsystemuat.pos_1211_port_trader_mapping_table b
+        ON a.portfolio = b.portfolio AND a.subportfolio = b.subportfolio AND SUBSTRING_INDEX(a.trade_id, '-', -1) = b.`group`
+    ) x
+  ]]></sql>
+
+  <expect ref="verdict" rows="1" reason="one summary row"/>
+  <expect ref="verdict" column="cache_rows" min="1" reason="the legacy cache tables must hold rows, otherwise nothing can be proved"/>
+  <expect ref="verdict" column="unmapped_rows" min="1" reason="some legacy rows have no mapping, otherwise the default B is not exercised"/>
+  <expect ref="verdict" column="unmapped_not_b" equals="0" reason="legacy leaves h_p = B on every row without a mapping, so the new default B matches"/>
+  <compress id="bundle" file="legacy-position-default-b.zip"><include ref="by-pair"/><include ref="verdict"/></compress>
+</rules>
