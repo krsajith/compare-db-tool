@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- OUAT-178: K27 differs, H27 matches. Look at the USD zero rate curve the WP pricer discounts with. Read only.
+     Step 1 finds the legacy table name, step 2 shows the UAT curve for the settlement date. -->
+<rules name="ouat178-zero-curve">
+
+  <parameters>
+    <param name="sd" type="date" value="2026-11-02"/>
+  </parameters>
+
+  <sql id="legacy-tables" db="mysql-oprdb02" export="full"><![CDATA[
+    SELECT table_schema, table_name, table_rows FROM information_schema.tables
+    WHERE table_name LIKE '%zero%' OR table_name LIKE '%rate_curve%' ORDER BY table_schema, table_name
+  ]]></sql>
+
+  <sql id="uat-curve" db="postgres-uat" export="full"><![CDATA[
+    SELECT business_unit, currency, dat_code, zero_rate, settle_date, updated_timestamp
+    FROM opera.cso_zero_rate_curve_table
+    WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND business_unit = 'CFS' AND settle_date = :sd AND currency = 'USD'
+    ORDER BY dat_code
+  ]]></sql>
+
+  <expect ref="uat-curve" rows=">=5" reason="UAT has a USD zero curve for the settlement date"/>
+  <compress id="bundle" file="ouat178-zero-curve.zip"><include ref="legacy-tables"/><include ref="uat-curve"/></compress>
+</rules>
