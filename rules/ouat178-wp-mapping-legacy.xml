@@ -9,7 +9,7 @@
   <sql id="legacy-tables" db="mysql-oprdb02" export="full"><![CDATA[
     SELECT table_schema, table_name, table_rows
     FROM information_schema.tables
-    WHERE table_name LIKE 'correl\_product\_mapping%' OR table_name LIKE 'settlement\_price\_table\_wp%'
+    WHERE table_name LIKE 'correl_product_mapping%' OR table_name LIKE 'settlement_price_table_wp%'
     ORDER BY table_schema, table_name
   ]]></sql>
 
