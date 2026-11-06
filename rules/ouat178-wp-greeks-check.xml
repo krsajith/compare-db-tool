@@ -14,15 +14,15 @@
   <sql id="wp-greeks" db="postgres-uat" export="full"><![CDATA[
     SELECT security_id, value_date, settle_price, settle_delta_1, settle_delta_2, settle_gamma_11, settle_gamma_12, settle_gamma_21, settle_gamma_22,
            settle_vega_1, settle_vega_2, settle_theta, settle_chi, settle_curr_exp
-    FROM opera.security_settlement_value_table_cfs
-    WHERE value_date = :vd AND security_id LIKE 'CM WP%'
+    FROM opera.security_settlement_value_table
+    WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND business_unit = 'CFS' AND value_date = :vd AND security_id LIKE 'CM WP%'
     ORDER BY security_id
   ]]></sql>
 
   <sql id="wp-live" db="postgres-uat" export="full"><![CDATA[
     SELECT security_id, settle_price, settle_delta_1, settle_vega_1, settle_theta
-    FROM opera.security_settlement_value_table_cfs
-    WHERE value_date = :vd AND security_id IN ('CM WP H27.H27 CM WP H27.H27 P 106 CS', 'CM WP K27.K27 CM WP K27.K27 P 125 CS')
+    FROM opera.security_settlement_value_table
+    WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND business_unit = 'CFS' AND value_date = :vd AND security_id IN ('CM WP H27.H27 CM WP H27.H27 P 106 CS', 'CM WP K27.K27 CM WP K27.K27 P 125 CS')
   ]]></sql>
 
   <sql id="benchmark" db="postgres-uat" export="full"><![CDATA[
