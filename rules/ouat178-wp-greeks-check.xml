@@ -13,7 +13,8 @@
 
   <sql id="wp-greeks" db="postgres-uat" export="full"><![CDATA[
     SELECT security_id, value_date, settle_price, settle_delta_1, settle_delta_2, settle_gamma_11, settle_gamma_12, settle_gamma_21, settle_gamma_22,
-           settle_vega_1, settle_vega_2, settle_theta, settle_chi, settle_curr_exp
+           settle_vega_1, settle_vega_2, settle_theta, settle_chi, settle_curr_exp,
+           created_timestamp AS written_utc
     FROM opera.security_settlement_value_table
     WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND business_unit = 'CFS' AND value_date = :vd AND security_id LIKE 'CM WP%'
     ORDER BY security_id
@@ -40,6 +41,14 @@
            (SELECT max(correl_12) FROM opera.recon_scicom_correlation_input WHERE business_unit = 'CFS') AS correl_12
   ]]></sql>
 
+  <sql id="k27-inputs-now" db="postgres-uat" export="full"><![CDATA[
+    SELECT 'clone' AS src, c.vol1_id, c.vol2_id, c.maturity_date, c.updated_timestamp AS changed_local,
+           (SELECT min(v.expiry_date) FROM opera.vol_id_table v WHERE v.tenant_id = c.tenant_id
+             AND v.vol_id IN (replace(c.vol1_id, 'WP', 'QW'), replace(c.vol2_id, 'WP', 'SB'))) AS vol_expiry_used
+    FROM opera.cloned_security_info_table c
+    WHERE c.tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND c.business_unit = 'CFS' AND c.security_id = 'CM WP K27.K27 CM WP K27.K27 P 125 CS'
+  ]]></sql>
+
   <compare id="vs-benchmark" source="wp-live" target="benchmark" export="full">
     <key columns="security_id"/>
     <column name="settle_price" numeric="true" absTol="0.01"/>
@@ -54,5 +63,5 @@
   <expect ref="inputs-now" column="mapping_rows" equals="4" reason="mapping loaded"/>
   <expect ref="vs-benchmark" different="0" reason="UAT matches the legacy benchmark within tolerance"/>
 
-  <compress id="bundle" file="ouat178-wp-greeks-check.zip"><include ref="identity"/><include ref="wp-greeks"/><include ref="inputs-now"/><include ref="vs-benchmark"/></compress>
+  <compress id="bundle" file="ouat178-wp-greeks-check.zip"><include ref="identity"/><include ref="wp-greeks"/><include ref="inputs-now"/><include ref="k27-inputs-now"/><include ref="vs-benchmark"/></compress>
 </rules>
