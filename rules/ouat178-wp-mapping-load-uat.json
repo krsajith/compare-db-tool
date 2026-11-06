@@ -1,0 +1,17 @@
+{
+  "name": "ouat178-wp-mapping-load-uat",
+  "db": "postgres-uat",
+  "backupSchema": "parity_work",
+  "description": "OUAT-178: opera.correl_product_mapping is empty on UAT, so sp_create_price_ratio_wp builds nothing and WP price and Greeks are zero. Loads the 4 legacy CFS rows (KP, KX, WP, WY) from dbsystemuat.correl_product_mapping_cfs. Insert only. Preview first, no apply without the owner saying so.",
+  "steps": [
+    {
+      "id": "mapping",
+      "table": "opera.correl_product_mapping",
+      "where": "business_unit = 'CFS' AND created_by = 'ouat178-load'",
+      "key": ["product_code"],
+      "source": { "db": "mysql-oprdb02", "sql": "SELECT TRIM(product_code) AS product_code, TRIM(primary_code) AS primary_code, TRIM(secondary_code) AS secondary_code, primary_multiplier, secondary_multiplier FROM dbsystemuat.correl_product_mapping_cfs" },
+      "constants": { "uuid": "$uuid", "tenant_id": "227cd5f5-4498-4dba-bda9-05b8edc41113", "business_unit": "CFS", "created_by": "ouat178-load", "updated_by": "ouat178-load", "created_timestamp": "$now", "updated_timestamp": "$now" },
+      "expect": { "targetBefore": "0", "source": "4", "inserted": "4", "targetAfter": "4" }
+    }
+  ]
+}
