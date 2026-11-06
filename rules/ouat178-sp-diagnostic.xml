@@ -1,0 +1,100 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- OUAT-178: why does sp_create_price_ratio_wp build nothing, and what exactly must exist for it to work? Read only, datasource postgres-uat.
+     Part A, can the engine even call it: the procedure exists once and in the schema the unqualified CALL resolves to, the engine role can run it,
+     how often it was called (needs track_functions), and which Liquibase changeset created it.
+     Part B, what it loops over: the mapping rows.
+     Part C, what it would build for the WP spreads, replayed from its own joins, so the expected row count is known before the call.
+     Run before the fix (mapping empty: part B fails) and after (all pass, and the expected rows equal what the call builds). -->
+<rules name="ouat178-sp-diagnostic">
+
+  <parameters>
+    <param name="bu" type="string" value="CFS"/>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+  </parameters>
+
+  <sql id="a1-procedure" db="postgres-uat" export="full"><![CDATA[
+    SELECT n.nspname AS schema_name, p.proname AS procedure_name, pg_get_function_identity_arguments(p.oid) AS args, pg_get_userbyid(p.proowner) AS owner, p.prosecdef AS security_definer
+    FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+    WHERE p.proname = 'sp_create_price_ratio_wp' ORDER BY n.nspname
+  ]]></sql>
+
+  <sql id="a2-search-path" db="postgres-uat" export="full"><![CDATA[
+    SELECT current_user AS db_user, current_setting('search_path') AS session_search_path, current_setting('track_functions') AS track_functions
+  ]]></sql>
+
+  <sql id="a3-role-search-path" db="postgres-uat" export="full"><![CDATA[
+    SELECT r.rolname, r.rolcanlogin, r.rolconfig::text AS role_settings
+    FROM pg_roles r WHERE r.rolcanlogin AND left(r.rolname, 3) <> 'pg_' ORDER BY r.rolname
+  ]]></sql>
+
+  <sql id="a4-who-can-execute" db="postgres-uat" export="full"><![CDATA[
+    SELECT r.rolname, n.nspname AS schema_name, has_function_privilege(r.oid, p.oid, 'EXECUTE') AS can_execute, has_schema_privilege(r.oid, n.oid, 'USAGE') AS schema_usage
+    FROM pg_roles r CROSS JOIN pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+    WHERE r.rolcanlogin AND left(r.rolname, 3) <> 'pg_' AND p.proname = 'sp_create_price_ratio_wp' ORDER BY r.rolname, n.nspname
+  ]]></sql>
+
+  <sql id="a5-call-count" db="postgres-uat" export="full"><![CDATA[
+    SELECT schemaname, funcname, calls, round(total_time::numeric, 1) AS total_ms
+    FROM pg_stat_user_functions WHERE funcname = 'sp_create_price_ratio_wp'
+  ]]></sql>
+
+  <sql id="a6-liquibase" db="postgres-uat" export="full"><![CDATA[
+    SELECT id, author, dateexecuted, exectype
+    FROM opera.databasechangelog WHERE id LIKE '%price-ratio%' OR id LIKE '%correl-product-mapping%' ORDER BY dateexecuted
+  ]]></sql>
+
+  <sql id="b1-mapping" db="postgres-uat" export="full"><![CDATA[
+    SELECT product_code, primary_code, secondary_code, primary_multiplier, secondary_multiplier
+    FROM opera.correl_product_mapping WHERE tenant_id = :tenant AND business_unit = :bu ORDER BY product_code
+  ]]></sql>
+
+  <sql id="b2-mapping-all-spellings" db="postgres-uat" export="full"><![CDATA[
+    SELECT tenant_id, business_unit, count(*) AS mapping_rows FROM opera.correl_product_mapping GROUP BY tenant_id, business_unit ORDER BY 1, 2
+  ]]></sql>
+
+  <sql id="c1-funnel" db="postgres-uat" export="full"><![CDATA[
+    SELECT
+      (SELECT count(*) FROM opera.underlying_settle_value_table WHERE tenant_id = :tenant AND (underlying_id LIKE 'CM QW %' OR underlying_id LIKE 'CM SB %')) AS s1_leg_settle_rows,
+      (SELECT count(*) FROM opera.valuation_date_table WHERE tenant_id = :tenant AND business_unit = :bu) AS s2_valuation_date_rows,
+      (SELECT count(*) FROM opera.security_info_table WHERE tenant_id = :tenant AND business_unit = :bu AND status = 'Active' AND derivative_type LIKE '%cs_spread%' AND security_id LIKE '%CM WP%') AS s3_active_wp_spread_securities,
+      (SELECT count(*) FROM opera.security_info_table WHERE tenant_id = :tenant AND business_unit = :bu AND status = 'Active' AND derivative_type = 'future' AND security_id LIKE '%CM WP%') AS s4_active_wp_future_securities
+  ]]></sql>
+
+  <sql id="c2-expected-ratio-rows" db="postgres-uat" export="full"><![CDATA[
+    WITH legs AS (
+      SELECT a.underlying_id, a.value_date
+      FROM opera.underlying_settle_value_table a
+      JOIN opera.security_info_table c ON c.tenant_id = :tenant AND c.business_unit = :bu AND c.status = 'Active'
+           AND c.derivative_type LIKE '%cs_spread%' AND c.security_id LIKE '%CM WP%'
+           AND CONCAT('CM ', 'QW', ' ', LEFT(c.contract_month, 3)) = a.underlying_id
+      WHERE a.tenant_id = :tenant AND a.value_date <= (SELECT v.value_date FROM opera.valuation_date_table v WHERE v.tenant_id = :tenant AND v.business_unit = :bu)
+      UNION
+      SELECT a.underlying_id, a.value_date
+      FROM opera.underlying_settle_value_table a
+      JOIN opera.security_info_table c ON c.tenant_id = :tenant AND c.business_unit = :bu AND c.status = 'Active'
+           AND c.derivative_type LIKE '%cs_spread%' AND c.security_id LIKE '%CM WP%'
+           AND CONCAT('CM ', 'SB', ' ', RIGHT(c.contract_month, 3)) = a.underlying_id
+      WHERE a.tenant_id = :tenant AND a.value_date <= (SELECT v.value_date FROM opera.valuation_date_table v WHERE v.tenant_id = :tenant AND v.business_unit = :bu)
+    ), per_leg AS (SELECT underlying_id, count(*) AS dates FROM legs GROUP BY underlying_id)
+    SELECT count(*) AS distinct_legs, COALESCE(sum(dates), 0) AS leg_dates,
+           COALESCE(sum(GREATEST(LEAST(dates, 31) - 1, 0)), 0) AS expected_ratio_rows_per_mapping_row
+    FROM per_leg
+  ]]></sql>
+
+  <sql id="c3-actual" db="postgres-uat" export="full"><![CDATA[
+    SELECT (SELECT count(*) FROM opera.settlement_price_table_wp WHERE tenant_id = :tenant AND business_unit = :bu) AS actual_ratio_rows,
+           (SELECT count(*) FROM opera.underlying_price_table_wp WHERE tenant_id = :tenant AND business_unit = :bu) AS actual_price_rows,
+           (SELECT count(*) FROM opera.recon_scicom_correlation_input WHERE tenant_id = :tenant AND business_unit = :bu AND correl_12 IS NOT NULL) AS correl_not_null
+  ]]></sql>
+
+  <expect ref="a1-procedure" rows="1" reason="the procedure exists exactly once; two copies make the unqualified CALL depend on the search path"/>
+  <expect ref="b1-mapping" rows=">=1" reason="no mapping rows means the procedure loop does nothing and raises no error"/>
+  <expect ref="c1-funnel" column="s3_active_wp_spread_securities" min="1" reason="the ratio path needs Active cs_spread WP securities"/>
+  <expect ref="c2-expected-ratio-rows" column="leg_dates" min="1" reason="the legs must have settle values up to the valuation date"/>
+  <expect expr="#q('c3-actual').first.actual_ratio_rows == #q('c2-expected-ratio-rows').first.expected_ratio_rows_per_mapping_row" reason="the procedure built exactly the rows its own joins predict"/>
+
+  <compress id="bundle" file="ouat178-sp-diagnostic.zip">
+    <include ref="a1-procedure"/><include ref="a2-search-path"/><include ref="a3-role-search-path"/><include ref="a4-who-can-execute"/><include ref="a5-call-count"/><include ref="a6-liquibase"/>
+    <include ref="b1-mapping"/><include ref="b2-mapping-all-spellings"/><include ref="c1-funnel"/><include ref="c2-expected-ratio-rows"/><include ref="c3-actual"/>
+  </compress>
+</rules>
