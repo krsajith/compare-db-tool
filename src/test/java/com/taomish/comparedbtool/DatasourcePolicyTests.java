@@ -29,6 +29,26 @@ class DatasourcePolicyTests {
             }
         }
     }
+    @Test void targetAliasPointsAtTheChosenDatasourceAndKeepsProductionGuard() throws Exception {
+        var s = settings("postgres-uat");
+        s.aliasTarget("postgres-uat");
+        assertSame(s.getDatasources().get("postgres-uat"), s.getDatasources().get("target"));
+        try (var runner = new QueryRunner(s, false)) {
+            assertEquals(1, runner.run(rules("target").queries.getFirst(), Map.of(), 0, Files.createDirectory(temp.resolve("target"))).rows());
+        }
+        var prod = settings("postgres-PROD");
+        prod.aliasTarget("postgres-PROD");
+        assertTrue(prod.getDatasources().get("target").isProd());
+        assertTrue(QueryRunner.production("target", prod.getDatasources().get("target")));
+        var error = assertThrows(ToolException.class, () -> prod.aliasTarget("missing"));
+        assertTrue(error.getMessage().contains("missing"));
+    }
+    @Test void unknownTargetGivesAHintAndTheFlagParses() {
+        assertTrue(DatasourceSettings.unknownDatasourceMessage("target").contains("--target-env"));
+        assertEquals("Unknown datasource: other", DatasourceSettings.unknownDatasourceMessage("other"));
+        assertEquals("postgres-uat", Cli.parse(new String[]{"--rules", "a.xml", "--target-env", "postgres-uat"}).targetEnv);
+        assertEquals("postgres-dev", Cli.parse(new String[]{"--rules", "a.xml", "--target-env=postgres-dev"}).targetEnv);
+    }
     @Test void productionAlwaysOffEvenWithExplicitEnableAndAllowProd() throws Exception {
         for (String name : List.of("postgres-PROD", "flagged")) {
             var s = settings(name); var d = s.getDatasources().get(name); d.setProd(name.equals("flagged"));

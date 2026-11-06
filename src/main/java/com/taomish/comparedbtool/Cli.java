@@ -31,6 +31,7 @@ public final class Cli {
         --sample-rows N       Maximum records per comparison sample CSV (default: 200)
         --parallel N          Query workers (default: distinct datasource count; one active per datasource)
         --max-partition-mb N  Estimated comparison map/group budget (default: 256 MB)
+        --target-env NAME     Datasource that db="target" in a rule refers to for this run (or set the environment variable TARGET_ENV)
         --allow-prod          Permit datasources marked prod=true or named with 'prod'
         --template-import FILE  Import one or more templates using a JSON rule (preview by default)
         --template-export FILE  Export requested template files, row metadata and an upload rule
@@ -57,6 +58,7 @@ public final class Cli {
         public Path templateExport;
         public Path restore;
         public Path load;
+        public String targetEnv;
         public boolean apply;
         public Path out = Path.of("out");
         public Map<String, String> parameters = new LinkedHashMap<>();
@@ -84,7 +86,7 @@ public final class Cli {
             }
             int equal = argument.indexOf('=');
             String name = equal > 0 ? argument.substring(0, equal) : argument;
-            if (Set.of("--template-export", "--template-import", "--template-upload", "--restore", "--load", "--rules", "--out", "--param", "--limit", "--partitions", "--export", "--sample-rows", "--parallel", "--max-partition-mb").contains(name)) {
+            if (Set.of("--template-export", "--template-import", "--template-upload", "--restore", "--load", "--rules", "--out", "--param", "--limit", "--partitions", "--export", "--sample-rows", "--parallel", "--max-partition-mb", "--target-env").contains(name)) {
                 String value;
                 if (equal > 0) value = argument.substring(equal + 1);
                 else {
@@ -108,6 +110,10 @@ public final class Cli {
                         case "--load" -> {
                             if (options.load != null) throw new ToolException("Supply only one load rule file");
                             options.load = Path.of(value);
+                        }
+                        case "--target-env" -> {
+                            if (value.isBlank()) throw new IllegalArgumentException();
+                            options.targetEnv = value.trim();
                         }
                         case "--rules" -> options.rules = Path.of(value);
                         case "--out" -> options.out = Path.of(value);
@@ -704,7 +710,7 @@ public final class Cli {
         TempTablePolicy.validate(query, settings);
         QueryRunner.validateParameters(query, parameters);
         var definition = settings.getDatasources().get(query.db);
-        if (definition == null) throw new ToolException("Unknown datasource: " + query.db);
+        if (definition == null) throw new ToolException(DatasourceSettings.unknownDatasourceMessage(query.db));
         if (!query.tempTables && !definition.isReadOnly()) throw new ToolException("Datasource " + query.db + " must have read-only=true.");
         if (QueryRunner.production(query.db, definition) && !allowProd)
             throw new ToolException("Datasource " + query.db + " requires --allow-prod if production access is intended.");

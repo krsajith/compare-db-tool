@@ -228,7 +228,7 @@ public final class DataLoader {
 
     private void requireDatasource(String name, Cli.Options options) {
         var definition = settings.getDatasources().get(name);
-        if (definition == null) throw new ToolException("Unknown datasource " + name);
+        if (definition == null) throw new ToolException(DatasourceSettings.unknownDatasourceMessage(name));
         if (QueryRunner.production(name, definition) && !options.allowProd) throw new ToolException("Datasource " + name + " requires --allow-prod");
     }
 

@@ -37,6 +37,12 @@ public class CompareDbToolApplication {
                 DatasourceSettings settings = context.getBean(DatasourceSettings.class);
                 settings.getDatasources().values().forEach(d -> SecretRedactor.register(d.getPassword()));
                 DatasourceDiagnostics.capture(context.getEnvironment(), settings);
+                String targetEnv = options.targetEnv != null ? options.targetEnv : System.getenv("TARGET_ENV");
+                if (targetEnv != null && !targetEnv.isBlank()) {
+                    settings.aliasTarget(targetEnv.trim());
+                    LOG.info("Datasource alias target -> {}", targetEnv.trim());
+                    System.out.println("compare-db-tool: db=\"target\" in rules means datasource " + targetEnv.trim());
+                }
                 settings.diagnostics().forEach(line -> LOG.info("{}", line));
                 LOG.info("Runtime Java={} vendor={} Spring Boot={} workingDirectory={}",
                     System.getProperty("java.version"), System.getProperty("java.vendor"),

@@ -18,6 +18,22 @@ public class DatasourceSettings {
             + java.nio.file.Path.of("config/datasources.properties").toAbsolutePath().normalize()
             : String.join(", ", datasourceFiles);
     }
+    /** The name rules use for "the database chosen for this run": db="target" resolves to the datasource named here. */
+    public static final String TARGET_ALIAS = "target";
+    public void aliasTarget(String datasourceName) {
+        var definition = datasources.get(datasourceName);
+        if (definition == null) throw new ToolException("Unknown datasource for the target alias: " + datasourceName
+            + ". Configured: " + datasources.keySet());
+        // The alias must not hide production: keep the guard even if only the real name said "prod".
+        if (QueryRunner.production(datasourceName, definition)) definition.setProd(true);
+        datasources.put(TARGET_ALIAS, definition);
+    }
+    public static String unknownDatasourceMessage(String name) {
+        return TARGET_ALIAS.equals(name)
+            ? "Unknown datasource: target. Choose the database for this run with --target-env NAME (for example --target-env postgres-uat) "
+                + "or the environment variable TARGET_ENV; NAME must be a datasource from config/datasources.properties."
+            : "Unknown datasource: " + name;
+    }
     public boolean allowsTempTables(String name) {
         var definition = datasources.get(name);
         return definition != null && !QueryRunner.production(name, definition) && definition.isAllowTempTables();

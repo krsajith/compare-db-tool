@@ -103,6 +103,7 @@ Exit codes: `0` success / equal / all `<expect>` met · `1` differences or an `<
 | `--parallel N` | Query workers (default: number of distinct datasources; one active query per datasource). |
 | `--partitions N`, `--max-partition-mb N` | Comparison memory tuning (defaults 64, 256). Raise `--partitions` if a memory-budget error appears. |
 | `--out DIR` | Output base folder (default `out`). |
+| `--target-env NAME` | The datasource that `db="target"` in a rule refers to for this run, so one rule file serves dev and UAT (`--target-env postgres-uat`). The environment variable `TARGET_ENV` does the same; the flag wins. NAME must be a configured datasource, and the console prints which one `target` means. A production datasource stays production (needs `--allow-prod`). Without it, a rule that uses `db="target"` stops with a message. |
 | `--allow-prod` | Allow datasources marked `prod=true` or with `prod` in the name. **Only when the user says so.** |
 | `--restore FILE` | Restore rows from a backup table using a JSON rule. **Preview by default.** |
 | `--load FILE` | Copy rows from a SELECT on any datasource into a table using a JSON rule (section 6.9b). Insert only. **Preview by default.** `--param` overrides a rule parameter. |
