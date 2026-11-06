@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- OUAT-178: which business units on UAT lack correl_product_mapping, and which of them have spread securities that need it. Read only.
+     Also reads the legacy mapping tables so the load rule can copy them to every business unit. -->
+<rules name="ouat178-bu-mapping-gap">
+
+  <sql id="uat-bus" db="postgres-uat" export="full"><![CDATA[
+    SELECT v.tenant_id, v.business_unit, v.value_date, v.settlement_date,
+           (SELECT count(*) FROM opera.correl_product_mapping m WHERE m.tenant_id = v.tenant_id AND m.business_unit = v.business_unit) AS mapping_rows,
+           (SELECT count(*) FROM opera.security_info_table s WHERE s.tenant_id = v.tenant_id AND s.business_unit = v.business_unit AND s.derivative_type LIKE 'cs_spread%') AS spread_securities,
+           (SELECT count(*) FROM opera.security_info_table s WHERE s.tenant_id = v.tenant_id AND s.business_unit = v.business_unit AND s.security_id LIKE 'CM WP%') AS wp_securities
+    FROM opera.valuation_date_table v ORDER BY v.business_unit
+  ]]></sql>
+
+  <sql id="uat-wp-like" db="postgres-uat" export="full"><![CDATA[
+    SELECT business_unit, product_code, derivative_type, status, count(*) AS securities, min(maturity_date) AS min_maturity, max(maturity_date) AS max_maturity
+    FROM opera.security_info_table
+    WHERE derivative_type LIKE 'cs_spread%' AND product_code IN ('CM WP', 'CM KP', 'CM KX', 'CM WY')
+    GROUP BY 1, 2, 3, 4 ORDER BY 1, 2, 3, 4
+  ]]></sql>
+
+  <sql id="legacy-generic" db="mysql-oprdb02" export="full"><![CDATA[
+    SELECT TRIM(product_code) AS product_code, TRIM(primary_code) AS primary_code, TRIM(secondary_code) AS secondary_code, primary_multiplier, secondary_multiplier
+    FROM dbsystemuat.correl_product_mapping_table ORDER BY product_code
+  ]]></sql>
+
+  <expect ref="uat-bus" rows=">=1" reason="UAT business units listed"/>
+  <compress id="bundle" file="ouat178-bu-mapping-gap.zip"><include ref="uat-bus"/><include ref="uat-wp-like"/><include ref="legacy-generic"/></compress>
+</rules>
