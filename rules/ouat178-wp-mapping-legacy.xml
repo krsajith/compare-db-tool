@@ -14,7 +14,11 @@
   ]]></sql>
 
   <sql id="legacy-mapping" db="mysql-oprdb02" export="full"><![CDATA[
-    SELECT * FROM dbsystemuat.correl_product_mapping
+    SELECT * FROM dbsystemuat.correl_product_mapping_cfs
+  ]]></sql>
+
+  <sql id="legacy-mapping-table" db="mysql-oprdb02" export="full"><![CDATA[
+    SELECT * FROM dbsystemuat.correl_product_mapping_table
   ]]></sql>
 
   <sql id="uat-pvv-sd" db="postgres-uat" export="full"><![CDATA[
@@ -25,5 +29,5 @@
   ]]></sql>
 
   <expect ref="legacy-mapping" rows=">=1" reason="legacy mapping rows to be loaded into PG"/>
-  <compress id="bundle" file="ouat178-wp-mapping-legacy.zip"><include ref="legacy-tables"/><include ref="legacy-mapping"/><include ref="uat-pvv-sd"/></compress>
+  <compress id="bundle" file="ouat178-wp-mapping-legacy.zip"><include ref="legacy-tables"/><include ref="legacy-mapping"/><include ref="legacy-mapping-table"/><include ref="uat-pvv-sd"/></compress>
 </rules>
