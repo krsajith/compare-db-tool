@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- OUAT-178: what the legacy correl_product_mapping holds (the 3 rows the new PG table lost), and the QW SB vol rows UAT may miss. Read only. -->
+<rules name="ouat178-wp-mapping-legacy">
+
+  <parameters>
+    <param name="sd" type="date" value="2026-11-02"/>
+  </parameters>
+
+  <sql id="legacy-tables" db="mysql-oprdb02" export="full"><![CDATA[
+    SELECT table_schema, table_name, table_rows
+    FROM information_schema.tables
+    WHERE table_name LIKE 'correl\_product\_mapping%' OR table_name LIKE 'settlement\_price\_table\_wp%'
+    ORDER BY table_schema, table_name
+  ]]></sql>
+
+  <sql id="legacy-mapping" db="mysql-oprdb02" export="full"><![CDATA[
+    SELECT * FROM dbsystemuat.correl_product_mapping
+  ]]></sql>
+
+  <sql id="uat-pvv-sd" db="postgres-uat" export="full"><![CDATA[
+    SELECT bbg_underlying_id, settlement_date, price, vol
+    FROM opera.var_price_vol_table
+    WHERE settlement_date = :sd AND (bbg_underlying_id LIKE 'QW%' OR bbg_underlying_id LIKE 'SB%')
+    ORDER BY bbg_underlying_id
+  ]]></sql>
+
+  <expect ref="legacy-mapping" rows=">=1" reason="legacy mapping rows to be loaded into PG"/>
+  <compress id="bundle" file="ouat178-wp-mapping-legacy.zip"><include ref="legacy-tables"/><include ref="legacy-mapping"/><include ref="uat-pvv-sd"/></compress>
+</rules>
