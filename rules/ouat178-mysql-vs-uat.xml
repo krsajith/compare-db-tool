@@ -1,0 +1,114 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- OUAT-178 funnel legacy MySQL (daily mirror of prod) vs UAT for the WP spreads, CFS, settlement date 2 Nov. Read only, no prod access.
+     Order is the data flow: definition, vol ids, prices and vols, rate curve, mapping, ratio rows, correlation, then the output.
+     The first stage that differs explains an output difference. Legacy column names are the ones already seen in earlier runs. -->
+<rules name="ouat178-mysql-vs-uat">
+
+  <parameters>
+    <param name="sd" type="date" value="2026-11-02"/>
+  </parameters>
+
+  <sql id="m-sec" db="mysql-oprdb02" export="full"><![CDATA[
+    SELECT security_id, derivative_type, underlying1_id, underlying2_id, vol1_id, vol2_id, strike, maturity_date, settlement_type, currency, contract_month
+    FROM dbsystemuat.security_info_table_cfs WHERE security_id LIKE 'CM WP%'
+  ]]></sql>
+  <sql id="u-sec" db="postgres-uat" export="full"><![CDATA[
+    SELECT security_id, derivative_type, underlying1_id, underlying2_id, vol1_id, vol2_id, strike, maturity_date, settlement_type, currency, contract_month
+    FROM opera.security_info_table WHERE business_unit = 'CFS' AND security_id LIKE 'CM WP%' AND status = 'Active'
+  ]]></sql>
+  <compare id="s1-security" source="m-sec" target="u-sec" export="full">
+    <key columns="security_id"/>
+    <column name="strike" numeric="true" absTol="0.000001"/>
+  </compare>
+
+  <sql id="m-vol" db="mysql-oprdb02" export="full"><![CDATA[
+    SELECT vol_id, bbg_opt_ticker, expiry_date FROM dbsystemuat.vol_id_table WHERE vol_id LIKE 'CM QW%' OR vol_id LIKE 'CM SB%'
+  ]]></sql>
+  <sql id="u-vol" db="postgres-uat" export="full"><![CDATA[
+    SELECT vol_id, bbg_opt_ticker, expiry_date FROM opera.vol_id_table WHERE vol_id LIKE 'CM QW%' OR vol_id LIKE 'CM SB%'
+  ]]></sql>
+  <compare id="s2-vol-ids" source="m-vol" target="u-vol" export="full"><key columns="vol_id"/></compare>
+
+  <sql id="m-pvv" db="mysql-oprdb02" export="full"><![CDATA[
+    SELECT bbg_underlying_id, settlement_date, price, vol FROM dbsystemuat.var_price_vol_table
+    WHERE settlement_date = :sd AND (bbg_underlying_id LIKE 'QW%' OR bbg_underlying_id LIKE 'SB%')
+  ]]></sql>
+  <sql id="u-pvv" db="postgres-uat" export="full"><![CDATA[
+    SELECT bbg_underlying_id, settlement_date, price, vol FROM opera.var_price_vol_table
+    WHERE settlement_date = :sd AND (bbg_underlying_id LIKE 'QW%' OR bbg_underlying_id LIKE 'SB%')
+  ]]></sql>
+  <compare id="s3-price-vol" source="m-pvv" target="u-pvv" export="full">
+    <key columns="bbg_underlying_id,settlement_date"/>
+    <column name="price" numeric="true" absTol="0.000001"/>
+    <column name="vol" numeric="true" absTol="0.000001"/>
+  </compare>
+
+  <sql id="m-curve" db="mysql-oprdb02" export="full"><![CDATA[
+    SELECT dat_code, MAX(zero_rate) AS zero_rate FROM dbsystemuat.cso_zero_rate_curve_table
+    WHERE settle_date = :sd AND currency = 'USD' GROUP BY dat_code
+  ]]></sql>
+  <sql id="u-curve" db="postgres-uat" export="full"><![CDATA[
+    SELECT dat_code, MAX(zero_rate) AS zero_rate FROM opera.cso_zero_rate_curve_table
+    WHERE business_unit = 'CFS' AND settle_date = :sd AND currency = 'USD' GROUP BY dat_code
+  ]]></sql>
+  <compare id="s4-zero-curve" source="m-curve" target="u-curve" export="full">
+    <key columns="dat_code"/>
+    <column name="dat_code" trim="true"/>
+    <column name="zero_rate" numeric="true" absTol="0.000001"/>
+  </compare>
+
+  <sql id="m-map" db="mysql-oprdb02" export="full"><![CDATA[
+    SELECT TRIM(product_code) AS product_code, TRIM(primary_code) AS primary_code, TRIM(secondary_code) AS secondary_code, primary_multiplier, secondary_multiplier
+    FROM dbsystemuat.correl_product_mapping_cfs
+  ]]></sql>
+  <sql id="u-map" db="postgres-uat" export="full"><![CDATA[
+    SELECT TRIM(product_code) AS product_code, TRIM(primary_code) AS primary_code, TRIM(secondary_code) AS secondary_code, primary_multiplier, secondary_multiplier
+    FROM opera.correl_product_mapping WHERE business_unit = 'CFS'
+  ]]></sql>
+  <compare id="s5-mapping" source="m-map" target="u-map" export="full">
+    <key columns="product_code"/>
+    <column name="primary_multiplier" numeric="true" absTol="0.000001"/>
+    <column name="secondary_multiplier" numeric="true" absTol="0.000001"/>
+  </compare>
+
+  <sql id="m-ratio" db="mysql-oprdb02" export="full"><![CDATA[
+    SELECT CASE WHEN underlying_id LIKE '%QW%' THEN 'QW' WHEN underlying_id LIKE '%SB%' THEN 'SB' ELSE 'other' END AS leg,
+           COUNT(*) AS row_count, COUNT(ratio_return) AS ratio_not_null, ROUND(SUM(ratio_return), 8) AS ratio_sum
+    FROM dbsystemuat.settlement_price_table_wp_cfs GROUP BY 1
+  ]]></sql>
+  <sql id="u-ratio" db="postgres-uat" export="full"><![CDATA[
+    SELECT CASE WHEN underlying_id LIKE '%QW%' THEN 'QW' WHEN underlying_id LIKE '%SB%' THEN 'SB' ELSE 'other' END AS leg,
+           count(*) AS row_count, count(ratio_return) AS ratio_not_null, round(sum(ratio_return)::numeric, 8) AS ratio_sum
+    FROM opera.settlement_price_table_wp WHERE business_unit = 'CFS' GROUP BY 1
+  ]]></sql>
+  <compare id="s6-ratio-rows" source="m-ratio" target="u-ratio" export="full">
+    <key columns="leg"/>
+    <column name="ratio_sum" numeric="true" absTol="0.00001"/>
+  </compare>
+
+  <sql id="m-corr" db="mysql-oprdb02" export="full"><![CDATA[
+    SELECT * FROM dbsystemuat.scicom_cso_correl_table WHERE security_id LIKE 'CM WP%' ORDER BY settlement_date DESC LIMIT 12
+  ]]></sql>
+  <sql id="u-corr" db="postgres-uat" export="full"><![CDATA[
+    SELECT group_type, security_id, product_code, settlement_date, correl_12 FROM opera.recon_scicom_correlation_input
+    WHERE business_unit = 'CFS' ORDER BY settlement_date DESC, security_id LIMIT 12
+  ]]></sql>
+
+  <sql id="m-out" db="mysql-oprdb02" export="full"><![CDATA[
+    SELECT value_date, security_id, settle_price, settle_delta_1, settle_delta_2, settle_vega_1, settle_theta
+    FROM dbsystemuat.security_settlement_value_table_cfs WHERE security_id LIKE 'CM WP%' ORDER BY value_date DESC, security_id LIMIT 12
+  ]]></sql>
+  <sql id="u-out" db="postgres-uat" export="full"><![CDATA[
+    SELECT value_date, security_id, settle_price, settle_delta_1, settle_delta_2, settle_vega_1, settle_theta
+    FROM opera.security_settlement_value_table WHERE business_unit = 'CFS' AND security_id LIKE 'CM WP%' ORDER BY value_date DESC, security_id LIMIT 12
+  ]]></sql>
+
+  <expect ref="s1-security" different="0" reason="WP security definitions equal"/>
+  <expect ref="s3-price-vol" different="0" reason="QW and SB prices and vols equal"/>
+  <expect ref="s4-zero-curve" different="0" reason="USD zero curve equal"/>
+  <expect ref="s5-mapping" different="0" reason="mapping equal"/>
+  <compress id="bundle" file="ouat178-mysql-vs-uat.zip">
+    <include ref="s1-security"/><include ref="s2-vol-ids"/><include ref="s3-price-vol"/><include ref="s4-zero-curve"/><include ref="s5-mapping"/>
+    <include ref="s6-ratio-rows"/><include ref="m-corr"/><include ref="u-corr"/><include ref="m-out"/><include ref="u-out"/>
+  </compress>
+</rules>
