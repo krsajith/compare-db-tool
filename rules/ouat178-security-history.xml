@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- OUAT-178: did the K27 WP security maturity change before the 3 Nov migration? Read only, legacy MySQL.
+     There is no audit table for security definitions, so look at (1) the last change time of each table and
+     (2) snapshot style tables that may hold an older copy of the row: the clone table and the data warehouse helper table. -->
+<rules name="ouat178-security-history">
+
+  <sql id="table-times" db="mysql-oprdb02" export="full"><![CDATA[
+    SELECT table_name, create_time, update_time, table_rows
+    FROM information_schema.tables
+    WHERE table_schema = 'dbsystemuat'
+      AND table_name IN ('security_info_table_cfs', 'cloned_security_info_table_cfs', 'helper_dbtodw_deal_ticket_security_info_table_cfs',
+                         'deal_ticket_table_cfs', 'var_price_vol_table', 'vol_id_table')
+    ORDER BY table_name
+  ]]></sql>
+
+  <sql id="clone-wp" db="mysql-oprdb02" export="full"><![CDATA[
+    SELECT * FROM dbsystemuat.cloned_security_info_table_cfs WHERE security_id LIKE 'CM WP%' ORDER BY security_id
+  ]]></sql>
+
+  <sql id="dw-wp" db="mysql-oprdb02" export="full"><![CDATA[
+    SELECT * FROM dbsystemuat.helper_dbtodw_deal_ticket_security_info_table_cfs WHERE security_id LIKE 'CM WP%' LIMIT 30
+  ]]></sql>
+
+  <expect ref="table-times" rows=">=1" reason="legacy table timestamps readable"/>
+  <compress id="bundle" file="ouat178-security-history.zip"><include ref="table-times"/><include ref="clone-wp"/><include ref="dw-wp"/></compress>
+</rules>
