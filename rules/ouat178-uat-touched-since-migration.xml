@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- OUAT-178: was any WP relevant data on UAT created or changed by someone after the 3 Nov night migration load? Read only.
+     Per table: who created and updated rows, the time range, and how many rows were created or updated on or after the cutoff day.
+     Rows touched after the cutoff are not plain migrated data, so they explain any difference from the legacy mirror. -->
+<rules name="ouat178-uat-touched-since-migration">
+
+  <parameters>
+    <param name="cutoff" type="date" value="2026-11-04"/>
+    <param name="sd" type="date" value="2026-11-02"/>
+    <param name="from_day" type="date" value="2026-10-30"/>
+  </parameters>
+
+  <sql id="by-table" db="postgres-uat" export="full"><![CDATA[
+    SELECT 'security_info_table WP CFS' AS tbl, count(*) AS row_count, min(created_by) AS created_by_min, max(created_by) AS created_by_max, max(updated_by) AS updated_by_max,
+           min(created_timestamp) AS created_min, max(created_timestamp) AS created_max, max(updated_timestamp) AS updated_max,
+           count(*) FILTER (WHERE created_timestamp >= :cutoff) AS created_after, count(*) FILTER (WHERE updated_timestamp >= :cutoff) AS updated_after
+    FROM opera.security_info_table WHERE business_unit = 'CFS' AND security_id LIKE 'CM WP%'
+    UNION ALL
+    SELECT 'vol_id_table QW SB', count(*), min(created_by), max(created_by), max(updated_by), min(created_timestamp), max(created_timestamp), max(updated_timestamp),
+           count(*) FILTER (WHERE created_timestamp >= :cutoff), count(*) FILTER (WHERE updated_timestamp >= :cutoff)
+    FROM opera.vol_id_table WHERE vol_id LIKE 'CM QW%' OR vol_id LIKE 'CM SB%'
+    UNION ALL
+    SELECT 'var_price_vol_table QW SB settlement date', count(*), min(created_by), max(created_by), max(updated_by), min(created_timestamp), max(created_timestamp), max(updated_timestamp),
+           count(*) FILTER (WHERE created_timestamp >= :cutoff), count(*) FILTER (WHERE updated_timestamp >= :cutoff)
+    FROM opera.var_price_vol_table WHERE settlement_date = :sd AND (bbg_underlying_id LIKE 'QW%' OR bbg_underlying_id LIKE 'SB%')
+    UNION ALL
+    SELECT 'underlying_settle_value_table W QW SB settlement date', count(*), min(created_by), max(created_by), max(updated_by), min(created_timestamp), max(created_timestamp), max(updated_timestamp),
+           count(*) FILTER (WHERE created_timestamp >= :cutoff), count(*) FILTER (WHERE updated_timestamp >= :cutoff)
+    FROM opera.underlying_settle_value_table WHERE value_date <= :sd AND (underlying_id LIKE 'CM W %' OR underlying_id LIKE 'CM QW%' OR underlying_id LIKE 'CM SB%')
+    UNION ALL
+    SELECT 'cso_zero_rate_curve_table CFS USD', count(*), min(created_by), max(created_by), max(updated_by), min(created_timestamp), max(created_timestamp), max(updated_timestamp),
+           count(*) FILTER (WHERE created_timestamp >= :cutoff), count(*) FILTER (WHERE updated_timestamp >= :cutoff)
+    FROM opera.cso_zero_rate_curve_table WHERE business_unit = 'CFS' AND currency = 'USD' AND settle_date = :sd
+    UNION ALL
+    SELECT 'correl_product_mapping CFS', count(*), min(created_by), max(created_by), max(updated_by), min(created_timestamp), max(created_timestamp), max(updated_timestamp),
+           count(*) FILTER (WHERE created_timestamp >= :cutoff), count(*) FILTER (WHERE updated_timestamp >= :cutoff)
+    FROM opera.correl_product_mapping WHERE business_unit = 'CFS'
+    UNION ALL
+    SELECT 'valuation_date_table CFS', count(*), min(created_by), max(created_by), max(updated_by), min(created_timestamp), max(created_timestamp), max(updated_timestamp),
+           count(*) FILTER (WHERE created_timestamp >= :cutoff), count(*) FILTER (WHERE updated_timestamp >= :cutoff)
+    FROM opera.valuation_date_table WHERE business_unit = 'CFS'
+  ]]></sql>
+
+  <sql id="wp-securities" db="postgres-uat" export="full"><![CDATA[
+    SELECT security_id, maturity_date, strike, status, created_by, created_timestamp, updated_by, updated_timestamp
+    FROM opera.security_info_table WHERE business_unit = 'CFS' AND security_id LIKE 'CM WP%' ORDER BY security_id
+  ]]></sql>
+
+  <sql id="load-days" db="postgres-uat" export="full"><![CDATA[
+    SELECT created_timestamp::date AS created_day, created_by, count(*) AS security_rows
+    FROM opera.security_info_table WHERE business_unit = 'CFS' AND created_timestamp >= :from_day
+    GROUP BY 1, 2 ORDER BY 1, 2
+  ]]></sql>
+
+  <expect ref="by-table" rows="7" reason="one row per relevant table"/>
+  <expect ref="wp-securities" rows=">=1" reason="WP securities exist on UAT"/>
+  <compress id="bundle" file="ouat178-uat-touched-since-migration.zip"><include ref="by-table"/><include ref="wp-securities"/><include ref="load-days"/></compress>
+</rules>
