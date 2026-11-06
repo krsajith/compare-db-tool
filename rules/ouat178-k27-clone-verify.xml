@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- OUAT-178: the K27 spread row the engine prices from (cloned_security_info_table) equals the base row (security_info_table). Read only. -->
+<rules name="ouat178-k27-clone-verify">
+  <sql id="base" db="postgres-uat" export="full"><![CDATA[
+    SELECT security_id, vol1_id, vol2_id, maturity_date, strike FROM opera.security_info_table
+    WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND business_unit = 'CFS' AND security_id = 'CM WP K27.K27 CM WP K27.K27 P 125 CS'
+  ]]></sql>
+  <sql id="clone" db="postgres-uat" export="full"><![CDATA[
+    SELECT security_id, vol1_id, vol2_id, maturity_date, strike FROM opera.cloned_security_info_table
+    WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND business_unit = 'CFS' AND security_id = 'CM WP K27.K27 CM WP K27.K27 P 125 CS'
+  ]]></sql>
+  <compare id="cmp" source="base" target="clone" export="full">
+    <key columns="security_id"/>
+    <column name="strike" numeric="true" absTol="0.000001"/>
+  </compare>
+  <expect ref="clone" rows="1" reason="one clone row for the K27 spread"/>
+  <expect ref="cmp" different="0" only-source="0" only-target="0" reason="the clone equals the base row"/>
+</rules>
