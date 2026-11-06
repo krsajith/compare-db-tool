@@ -1,0 +1,12 @@
+<rules name="target-identity">
+  <!-- Which database does the datasource alias target point at? Run this first for each environment and note the server address.
+       Compare it with select inet_server_addr() in the DBeaver connection of the environment you meant. Read only. -->
+  <sql id="identity" db="target" export="full"><![CDATA[
+    SELECT current_database() AS db_name, inet_server_addr()::text AS server_addr, inet_server_port() AS port, current_user AS db_user,
+           (SELECT count(*) FROM opera.recon_refresh_run) AS recon_runs,
+           (SELECT count(*) FROM opera.recon_position_classification_input) AS position_mapping_rows,
+           (SELECT count(*) FROM opera.helper_var_mult_factor_view) AS var_mult_rows
+  ]]></sql>
+  <expect ref="identity" rows="1" reason="the target alias must resolve to one database"/>
+  <compress id="bundle" file="target-identity.zip"><include ref="identity"/></compress>
+</rules>

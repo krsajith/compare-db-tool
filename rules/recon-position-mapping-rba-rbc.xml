@@ -7,7 +7,7 @@
   </parameters>
 
   <!-- 1. the mapping rows the function joins to -->
-  <sql id="mapping" db="postgres-uat-2001" export="full"><![CDATA[
+  <sql id="mapping" db="target" export="full"><![CDATA[
     SELECT business_unit, portfolio, subportfolio, trade_group, h_p, effective_from, effective_to, created_by, created_timestamp
     FROM opera.recon_position_classification_input
     WHERE upper(trim(business_unit)) = upper(trim(:bu))
@@ -15,7 +15,7 @@
   ]]></sql>
 
   <!-- 2. mapping rows per BU, to see if the table is empty or has other BUs only -->
-  <sql id="mapping-by-bu" db="postgres-uat-2001" export="full"><![CDATA[
+  <sql id="mapping-by-bu" db="target" export="full"><![CDATA[
     SELECT business_unit, count(*) AS rows_n, min(effective_from) AS min_from, max(effective_to) AS max_to
     FROM opera.recon_position_classification_input
     GROUP BY business_unit ORDER BY business_unit
@@ -23,7 +23,7 @@
 
   <!-- 3. the keys the function builds from the deals: the function first appends -BU to trade_id,
        so trade_group = text after the last dash of that value, which is the BU itself unless trade_id is null -->
-  <sql id="deal-keys" db="postgres-uat-2001" export="full"><![CDATA[
+  <sql id="deal-keys" db="target" export="full"><![CDATA[
     SELECT portfolio, subportfolio,
            regexp_replace(trade_id, '^.*-', '') AS raw_suffix,
            regexp_replace(CASE WHEN trade_id LIKE '%-' || upper(trim(:bu)) THEN trade_id ELSE trade_id || '-' || upper(trim(:bu)) END, '^.*-', '') AS function_trade_group,
@@ -35,7 +35,7 @@
   ]]></sql>
 
   <!-- 4. deal keys with no mapping on the run date: these are the unmapped rows -->
-  <sql id="unmapped" db="postgres-uat-2001" export="full"><![CDATA[
+  <sql id="unmapped" db="target" export="full"><![CDATA[
     SELECT d.portfolio, d.subportfolio, d.function_trade_group, d.deal_rows
     FROM (
       SELECT portfolio, subportfolio,

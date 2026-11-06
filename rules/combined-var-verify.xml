@@ -1,28 +1,28 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- XOGA-713 Combined VAR on UAT: prove the load worked. Read only. Datasource postgres-uat (UAT RDS av-rds-uat-2001, schema opera).
+<!-- XOGA-713 Combined VAR on UAT: prove the load worked. Read only. Datasource target (UAT RDS av-rds-uat-2001, schema opera).
      After combined-var-load-uat.json has been applied:
        - the RMC rows on UAT equal the legacy count
        - the multiplier rows on UAT equal the legacy view helper_var_mult_factor_view for the two dates (compare by product and date)
        - every CFS, USG and RMC accounting product and date has a multiplier -->
-<rules name="combined-var-verify-uat">
+<rules name="combined-var-verify">
 
   <parameters>
     <param name="vd1" type="date" value="2026-11-03"/>
     <param name="vd2" type="date" value="2026-11-05"/>
   </parameters>
 
-  <sql id="identity-uat" db="postgres-uat" export="full"><![CDATA[
+  <sql id="identity" db="target" export="full"><![CDATA[
     SELECT current_database() AS db_name, inet_server_port() AS port, current_user AS db_user, now() AS db_time
   ]]></sql>
 
-  <sql id="rows-by-bu" db="postgres-uat" export="full"><![CDATA[
+  <sql id="rows-by-bu" db="target" export="full"><![CDATA[
     SELECT business_unit, created_by, count(*) AS row_count, min(value_date) AS min_value_date, max(value_date) AS max_value_date
     FROM opera.helper_var_accounting_report
     GROUP BY business_unit, created_by
     ORDER BY business_unit, created_by
   ]]></sql>
 
-  <sql id="pod-slices" db="postgres-uat" export="full"><![CDATA[
+  <sql id="pod-slices" db="target" export="full"><![CDATA[
     SELECT (SELECT count(*) FROM opera.helper_var_accounting_report WHERE UPPER(business_unit) = 'CFS') AS cfs_rows,
            (SELECT count(*) FROM opera.helper_var_accounting_report WHERE UPPER(business_unit) = 'USG') AS usg_rows,
            (SELECT count(*) FROM opera.helper_var_accounting_report WHERE UPPER(business_unit) = 'RMC') AS rmc_rows,
@@ -42,25 +42,25 @@
     FROM dbsystemuat.helper_var_mult_factor_view WHERE value_date IN (:vd1, :vd2)
   ]]></sql>
 
-  <sql id="uat-mult" db="postgres-uat" export="none"><![CDATA[
+  <sql id="target-mult" db="target" export="none"><![CDATA[
     SELECT invenio_product_code, value_date, curr_mult, lot_mult, mult_factor
     FROM opera.helper_var_mult_factor_view WHERE value_date IN (:vd1, :vd2)
   ]]></sql>
 
-  <compare id="mult" source="legacy-mult" target="uat-mult" export="full">
+  <compare id="mult" source="legacy-mult" target="target-mult" export="full">
     <key columns="invenio_product_code,value_date"/>
     <column name="curr_mult" absTol="0.0000001"/>
     <column name="lot_mult" absTol="0.0000001"/>
     <column name="mult_factor" absTol="0.0000001"/>
   </compare>
 
-  <expect ref="identity-uat" rows="1" reason="connected to UAT"/>
+  <expect ref="identity" rows="1" reason="connected to UAT"/>
   <expect ref="pod-slices" column="rmc_rows" min="1" reason="RMC accounting rows loaded"/>
   <expect ref="pod-slices" column="mult_rows" min="200" reason="multiplier rows loaded"/>
   <expect ref="pod-slices" column="accounting_pairs_without_multiplier" equals="0" reason="every accounting product and date has a multiplier"/>
   <expect expr="#q('pod-slices').first.rmc_rows == #q('legacy-rmc-count').first.legacy_rmc_rows" reason="RMC rows on UAT equal the legacy count"/>
   <expect ref="mult" different="0" only-source="0" only-target="0" reason="the UAT multiplier rows equal the legacy view for the two dates"/>
-  <compress id="bundle" file="combined-var-verify-uat.zip">
-    <include ref="identity-uat"/><include ref="rows-by-bu"/><include ref="pod-slices"/><include ref="legacy-rmc-count"/><include ref="mult"/>
+  <compress id="bundle" file="combined-var-verify.zip">
+    <include ref="identity"/><include ref="rows-by-bu"/><include ref="pod-slices"/><include ref="legacy-rmc-count"/><include ref="mult"/>
   </compress>
 </rules>

@@ -6,7 +6,7 @@
   </parameters>
 
   <!-- 1. the run itself: BU, view type, value date, status, error, processors -->
-  <sql id="run" db="postgres-uat-2001" export="full"><![CDATA[
+  <sql id="run" db="target" export="full"><![CDATA[
     SELECT uuid, business_unit, view_type, resolved_settlement_date, resolved_value_date, status, row_count,
            profile_key, processor_plan, error_message, requested_by, requested_at, started_at, completed_at
     FROM opera.recon_refresh_run
@@ -14,7 +14,7 @@
   ]]></sql>
 
   <!-- 1b. latest runs on this database, to see if the failed run exists here and which BU and dates are used -->
-  <sql id="recent-runs" db="postgres-uat-2001" export="full"><![CDATA[
+  <sql id="recent-runs" db="target" export="full"><![CDATA[
     SELECT uuid, business_unit, view_type, resolved_value_date, status, row_count, left(error_message, 200) AS error_message, requested_at
     FROM opera.recon_refresh_run
     ORDER BY requested_at DESC NULLS LAST
@@ -22,7 +22,7 @@
   ]]></sql>
 
   <!-- 2. mapping rows for that BU (chained from the run) -->
-  <sql id="mapping-for-run-bu" db="postgres-uat-2001" uses="r=run" export="full"><![CDATA[
+  <sql id="mapping-for-run-bu" db="target" uses="r=run" export="full"><![CDATA[
     SELECT business_unit, count(*) AS rows_n, min(effective_from) AS min_from, max(effective_to) AS max_to
     FROM opera.recon_position_classification_input
     WHERE upper(trim(business_unit)) = upper(trim(:r.business_unit))
@@ -30,7 +30,7 @@
   ]]></sql>
 
   <!-- 3. snapshot rows the failed run left (they exist only if the run was not rolled back) -->
-  <sql id="snapshot-rows" db="postgres-uat-2001" uses="r=run" export="full"><![CDATA[
+  <sql id="snapshot-rows" db="target" uses="r=run" export="full"><![CDATA[
     SELECT :r.view_type AS view_type, count(*) AS rows_n,
            count(*) FILTER (WHERE h_p IS NULL) AS rows_without_h_p
     FROM opera.recon_settle_snapshot
@@ -38,7 +38,7 @@
   ]]></sql>
 
   <!-- 4. deal keys of the run BU that have no mapping on the run value date -->
-  <sql id="unmapped" db="postgres-uat-2001" uses="r=run" export="full"><![CDATA[
+  <sql id="unmapped" db="target" uses="r=run" export="full"><![CDATA[
     SELECT d.portfolio, d.subportfolio, d.trade_group, d.deal_rows
     FROM (
       SELECT portfolio, subportfolio, upper(trim(:r.business_unit)) AS trade_group, count(*) AS deal_rows

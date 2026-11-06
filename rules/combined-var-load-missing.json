@@ -1,8 +1,8 @@
 {
-  "name": "combined-var-load-uat",
-  "db": "postgres-uat",
+  "name": "combined-var-load-missing",
+  "db": "target",
   "backupSchema": "parity_work",
-  "description": "XOGA-713 Combined VAR on UAT. UAT already holds the CFS, USG and GRN accounting rows (2447); it lacks the RMC accounting rows (5) and all multiplier rows (helper_var_mult_factor_view is empty on UAT). Loads those from the legacy views on mysql-oprdb02. Insert only; each scope must be empty before (expect targetBefore 0), so a second run is refused. Preview first, then add the apply flag; the verify rule runs after the apply.",
+  "description": "XOGA-713 Combined VAR, target = datasource alias target. UAT already holds the CFS, USG and GRN accounting rows (2447); it lacks the RMC accounting rows (5) and all multiplier rows (helper_var_mult_factor_view is empty on UAT). Loads those from the legacy views on mysql-oprdb02. Insert only; each scope must be empty before (expect targetBefore 0), so a second run is refused. Preview first, then add the apply flag; the verify rule runs after the apply.",
   "params": {
     "vd1": {
       "type": "date",
@@ -67,7 +67,7 @@
   ],
   "verify": [
     {
-      "rule": "combined-var-verify-uat.xml"
+      "rule": "combined-var-verify.xml"
     }
   ]
 }

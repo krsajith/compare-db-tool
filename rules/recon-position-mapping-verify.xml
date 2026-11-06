@@ -1,10 +1,10 @@
-<rules name="recon-position-mapping-verify-uat">
+<rules name="recon-position-mapping-verify">
   <!-- After the load: the new table must equal the legacy mapping for RBA and RBC. Read only. -->
   <sql id="legacy" db="mysql-oprdb02"><![CDATA[
     SELECT upper(trim(`group`)) AS business_unit, portfolio, subportfolio, trader_name, h_p
     FROM dbsystemuat.pos_1211_port_trader_mapping_table WHERE upper(trim(`group`)) IN ('RBA', 'RBC')
   ]]></sql>
-  <sql id="new" db="postgres-uat"><![CDATA[
+  <sql id="new" db="target"><![CDATA[
     SELECT business_unit, portfolio, subportfolio, trader_name, h_p
     FROM opera.recon_position_classification_input WHERE business_unit IN ('RBA', 'RBC')
   ]]></sql>

@@ -1,4 +1,4 @@
-<rules name="legacy-vs-pg-objects-uat">
+<rules name="legacy-vs-pg-objects">
   <!-- Inventory for the legacy-to-new object gap check. Legacy MySQL kept one table or view per business unit (name_cfs, name_rba, ...);
        the new PostgreSQL schema consolidates them into one object with a business_unit column, and part of the legacy view logic
        now lives in functions (fn_*_source) and in Java or Node code. So a legacy name has to be matched after dropping the BU suffix,
@@ -19,7 +19,7 @@
   ]]></sql>
 
   <!-- 2. PG tables, views and materialised views of schema opera (est_rows from the planner statistics, -1 or 0 means never analysed; exact_rows is a real count for tables with an estimate under 100000, empty for bigger tables and for views) -->
-  <sql id="pg-relations" db="postgres-uat" export="full"><![CDATA[
+  <sql id="pg-relations" db="target" export="full"><![CDATA[
     SELECT c.relname AS pg_name,
            CASE c.relkind WHEN 'r' THEN 'table' WHEN 'p' THEN 'table' WHEN 'v' THEN 'view' WHEN 'm' THEN 'matview' END AS pg_kind,
            CASE WHEN c.relname ~ '_(alm|bkr|cfs|coc|cof|cto|ebo|gpc|grn|oad|odr|og2|ogp|orm|osg|pf6|pf9|pg7|pg8|qf1|qf2|qf3|qf4|qf5|rba|rbc|rbh|rmc|rov|spc|stg|tsy|usg)$' THEN left(c.relname, length(c.relname) - 4) ELSE c.relname END AS base_name,
@@ -33,7 +33,7 @@
   ]]></sql>
 
   <!-- 3. PG functions of schema opera: many legacy views became parameterised functions (fn_*_source, recon_*, sp_*) -->
-  <sql id="pg-functions" db="postgres-uat" export="full"><![CDATA[
+  <sql id="pg-functions" db="target" export="full"><![CDATA[
     SELECT p.proname AS function_name, count(*) AS overloads
     FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
     WHERE n.nspname = 'opera'
@@ -44,7 +44,7 @@
   <expect ref="legacy-objects" rows="&gt;=1" reason="the legacy schema must hold tables and views"/>
   <expect ref="pg-relations" rows="&gt;=1" reason="schema opera must hold relations"/>
   <expect ref="pg-functions" rows="&gt;=1" reason="schema opera must hold functions"/>
-  <compress id="bundle" file="legacy-vs-pg-objects-uat.zip">
+  <compress id="bundle" file="legacy-vs-pg-objects.zip">
     <include ref="legacy-objects"/><include ref="pg-relations"/><include ref="pg-functions"/>
   </compress>
 </rules>

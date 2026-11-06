@@ -1,4 +1,4 @@
-<rules name="legacy-views-vs-pg-tables-dev">
+<rules name="legacy-views-vs-pg-tables">
   <!-- Which legacy MySQL views are plain TABLES in PostgreSQL, and are those tables empty or written to?
        Background: helper_var_accounting_report and helper_var_mult_factor_view were live views in MySQL and became plain tables
        that nothing fills (XOGA-713). Row counts of two empty sides look like a match, so views are checked on their own.
@@ -16,7 +16,7 @@
 
   <!-- 2. relations in schema opera whose normalised name equals a legacy view name (chained from query 1).
           exact_rows is a real count for tables; inserts shows whether anything wrote to it since the statistics reset -->
-  <sql id="pg-same-name" db="postgres-dev" uses="v=legacy-views" export="full"><![CDATA[
+  <sql id="pg-same-name" db="target" uses="v=legacy-views" export="full"><![CDATA[
     SELECT c.relname AS pg_name,
            CASE c.relkind WHEN 'r' THEN 'TABLE' WHEN 'p' THEN 'TABLE' WHEN 'v' THEN 'view' WHEN 'm' THEN 'matview' END AS pg_kind,
            CASE WHEN c.relkind IN ('r', 'p')
@@ -35,5 +35,5 @@
 
   <expect ref="legacy-views" rows="&gt;=1" reason="the legacy schema must hold views"/>
   <expect ref="pg-same-name" rows="&gt;=0" reason="PG objects that share a name with a legacy view; read them, the tool cannot judge them"/>
-  <compress id="bundle" file="legacy-views-vs-pg-tables-dev.zip"><include ref="legacy-views"/><include ref="pg-same-name"/></compress>
+  <compress id="bundle" file="legacy-views-vs-pg-tables.zip"><include ref="legacy-views"/><include ref="pg-same-name"/></compress>
 </rules>

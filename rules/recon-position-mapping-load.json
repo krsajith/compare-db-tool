@@ -1,8 +1,8 @@
 {
-  "name": "recon-position-mapping-load-dev",
-  "db": "postgres-dev",
+  "name": "recon-position-mapping-load",
+  "db": "target",
   "backupSchema": "parity_work",
-  "description": "Loads the legacy RBA/RBC Price/Hedge mapping (dbsystemuat.pos_1211_port_trader_mapping_table, 60 rows) into opera.recon_position_classification_input, which is empty. Insert only: the scope must be empty before, so a second run is refused. Preview first, then the apply flag; the verify rule runs after the apply.",
+  "description": "Loads the legacy RBA/RBC Price/Hedge mapping (dbsystemuat.pos_1211_port_trader_mapping_table, 60 rows) into opera.recon_position_classification_input, which is empty. Target database = datasource alias target (command line option TARGET_ENV). Insert only: the scope must be empty before, so a second run is refused. Preview first, then the apply flag; the verify rule runs after the apply.",
   "steps": [
     {
       "id": "mapping",
@@ -24,5 +24,5 @@
       "expect": { "targetBefore": "0", "source": "60", "inserted": "60", "targetAfter": "60" }
     }
   ],
-  "verify": [ { "rule": "recon-position-mapping-verify-dev.xml" } ]
+  "verify": [ { "rule": "recon-position-mapping-verify.xml" } ]
 }

@@ -8,7 +8,7 @@
   </parameters>
 
   <!-- 1. the keys the new function builds for the BU: portfolio, subportfolio and group (the BU, as the function appends -BU to trade_id) -->
-  <sql id="pg-keys" db="postgres-uat-2001" export="full"><![CDATA[
+  <sql id="pg-keys" db="target" export="full"><![CDATA[
     SELECT portfolio, subportfolio, upper(trim(:bu)) AS trade_group, count(*) AS deal_rows
     FROM opera.cloned_deal_ticket_table
     WHERE upper(trim(business_unit)) = upper(trim(:bu)) AND is_latest_version = 1
