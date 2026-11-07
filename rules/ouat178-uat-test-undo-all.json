@@ -10,27 +10,51 @@
       "from": "parity_work.ouat178_k27_security_backup",
       "where": "tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND business_unit = 'CFS' AND security_id = 'CM WP K27.K27 CM WP K27.K27 P 125 CS'",
       "referenceWhere": "tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND business_unit = 'CFS' AND security_id = 'CM WP K27.K27 CM WP K27.K27 P 125 CS'",
-      "key": ["tenant_id", "business_unit", "security_id"],
+      "key": [
+        "tenant_id",
+        "business_unit",
+        "security_id"
+      ],
       "deleteExtra": false,
-      "expect": { "reference": "1", "targetAfter": "1" }
+      "expect": {
+        "targetBefore": "1",
+        "reference": "1",
+        "targetAfter": "1"
+      }
     },
     {
       "id": "2-k27-clone",
       "table": "opera.cloned_security_info_table",
       "from": "parity_work.restore_ouat178_k27_clone_from_base_uat_k27_clone_20261106190444",
       "where": "tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND business_unit = 'CFS' AND security_id = 'CM WP K27.K27 CM WP K27.K27 P 125 CS'",
-      "key": ["tenant_id", "business_unit", "security_id"],
+      "key": [
+        "tenant_id",
+        "business_unit",
+        "security_id"
+      ],
       "deleteExtra": true,
-      "expect": { "reference": "1", "targetAfter": "1" }
+      "expect": {
+        "targetBefore": "1",
+        "reference": "1",
+        "replaced": "1",
+        "targetAfter": "1"
+      }
     },
     {
       "id": "3-test-vol-ids",
       "table": "opera.vol_id_table",
       "from": "parity_work.load_ouat178_k27_test_vol_ids_uat_vol_ids_20261106184156",
       "where": "tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND created_by = 'ouat178-test' AND vol_id IN ('CM QW K27.Z26', 'CM SB K27.Z26')",
-      "key": ["vol_id"],
+      "key": [
+        "vol_id"
+      ],
       "deleteExtra": true,
-      "expect": { "reference": "0", "targetAfter": "0" }
+      "expect": {
+        "targetBefore": "2",
+        "reference": "0",
+        "removed": "2",
+        "targetAfter": "0"
+      }
     }
   ]
 }
