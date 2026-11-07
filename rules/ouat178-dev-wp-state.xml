@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- OUAT-178: how does dev price WP? Read only, datasource postgres-dev. Mapping rows, WP securities, the procedure output tables,
+     the correlation input and the WP pricing output for the latest value date, per business unit. -->
+<rules name="ouat178-dev-wp-state">
+
+  <sql id="mapping" db="postgres-dev" export="full"><![CDATA[
+    SELECT tenant_id, business_unit, product_code, primary_code, secondary_code, primary_multiplier, secondary_multiplier, created_by, created_timestamp
+    FROM opera.correl_product_mapping ORDER BY business_unit, product_code
+  ]]></sql>
+
+  <sql id="wp-securities" db="postgres-dev" export="full"><![CDATA[
+    SELECT business_unit, derivative_type, status, count(*) AS securities, min(maturity_date) AS min_maturity, max(maturity_date) AS max_maturity
+    FROM opera.cloned_security_info_table WHERE security_id LIKE 'CM WP%' GROUP BY 1, 2, 3 ORDER BY 1, 2, 3
+  ]]></sql>
+
+  <sql id="sp-tables" db="postgres-dev" export="full"><![CDATA[
+    SELECT 'settlement_price_table_wp' AS tbl, business_unit, count(*) AS row_count, max(created_timestamp) AS last_built FROM opera.settlement_price_table_wp GROUP BY business_unit
+    UNION ALL
+    SELECT 'underlying_price_table_wp', business_unit, count(*), max(created_timestamp) FROM opera.underlying_price_table_wp GROUP BY business_unit
+    UNION ALL
+    SELECT 'recon_scicom_correlation_input', business_unit, count(*), max(created_timestamp) FROM opera.recon_scicom_correlation_input GROUP BY business_unit
+  ]]></sql>
+
+  <sql id="wp-output" db="postgres-dev" export="full"><![CDATA[
+    SELECT business_unit, value_date, security_id, settle_price, settle_delta_1, settle_delta_2, settle_vega_1, created_timestamp AS written_utc
+    FROM opera.security_settlement_value_table s
+    WHERE security_id LIKE 'CM WP%'
+      AND value_date = (SELECT max(value_date) FROM opera.security_settlement_value_table x WHERE x.business_unit = s.business_unit AND x.security_id LIKE 'CM WP%')
+    ORDER BY business_unit, security_id LIMIT 40
+  ]]></sql>
+
+  <expect ref="wp-securities" rows=">=0" reason="listing only"/>
+  <compress id="bundle" file="ouat178-dev-wp-state.zip"><include ref="mapping"/><include ref="wp-securities"/><include ref="sp-tables"/><include ref="wp-output"/></compress>
+</rules>
