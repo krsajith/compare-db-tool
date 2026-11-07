@@ -18,10 +18,10 @@ final class RuleCatalog {
     private RuleCatalog() {}
 
     enum Kind {
-        COMPARE("compare"), RESTORE("restore"), TEMPLATE_IMPORT("template import"), TEMPLATE_EXPORT("template export");
+        COMPARE("compare"), RESTORE("restore"), CHANGE("change"), TEMPLATE_IMPORT("template import"), TEMPLATE_EXPORT("template export");
         final String label;
         Kind(String label) { this.label = label; }
-        boolean writes() { return this == RESTORE || this == TEMPLATE_IMPORT; }
+        boolean writes() { return this == RESTORE || this == CHANGE || this == TEMPLATE_IMPORT; }
     }
 
     record Entry(Path path, String name, Kind kind, String description) {
@@ -58,7 +58,8 @@ final class RuleCatalog {
                 JsonNode node = JSON.readTree(Files.readString(file));
                 if (node == null || !node.isObject()) return null;
                 String description = node.has("description") ? node.get("description").asString() : "";
-                if (node.has("steps")) return new Entry(file, base(fileName), Kind.RESTORE, tidy(description));
+                if (node.has("steps"))
+                    return new Entry(file, base(fileName), node.get("steps").path(0).has("action") ? Kind.CHANGE : Kind.RESTORE, tidy(description));
                 if (node.has("mode") || node.has("file")) return new Entry(file, base(fileName), Kind.TEMPLATE_IMPORT, tidy(description));
                 if (node.has("templates")) return new Entry(file, base(fileName), Kind.TEMPLATE_EXPORT, tidy(description));
             }

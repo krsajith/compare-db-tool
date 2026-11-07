@@ -57,6 +57,8 @@ It can also restore rows from a backup table (always preview first) and move rep
 | Find mistakes in a rule before the long run | `--validate` (offline), `--check` (asks the databases) | 6.8 |
 | Fix wrong data from a backup table in the same database | `--restore` JSON rule, `verify`, `<suggest>` | 6.9 |
 | Copy rows from any database (MySQL, another PostgreSQL) into a table, insert only | `--load` JSON rule, `expect`, `verify` | 6.9b |
+| Update or delete rows (or run one free statement) with a backup, expected counts, a typed confirmation and a record in the database | `--change` JSON rule | 6.9c |
+| See what was applied in a database, by whom, with which backup | `--changelog --db NAME` | 6.9c |
 | Move report templates between environments | `--template-export`, `--template-import` | 6.10 |
 | Browse, re-run and confirm risky runs interactively | menu (`.\compare.ps1` with no arguments) | 6.11 |
 | Bundle selected outputs for sending | `<compress>` | 5.8 |
@@ -107,7 +109,11 @@ Exit codes: `0` success / equal / all `<expect>` met · `1` differences or an `<
 | `--allow-prod` | Allow datasources marked `prod=true` or with `prod` in the name. **Only when the user says so.** |
 | `--restore FILE` | Restore rows from a backup table using a JSON rule. **Preview by default.** |
 | `--load FILE` | Copy rows from a SELECT on any datasource into a table using a JSON rule (section 6.9b). Insert only. **Preview by default.** `--param` overrides a rule parameter. |
-| `--apply` | Commit a restore, a load or a template import. Without it everything is rolled back. |
+| `--change FILE` | Run UPDATE / DELETE / free SQL steps from a JSON rule (section 6.9c). **Preview by default.** |
+| `--confirm TEXT`, `--yes`, `--rerun` | With `--change --apply`: `--confirm` gives the typed phrase for a scripted run (it must equal the phrase asked for), `--yes` skips the typed `APPLY` of a normal change (never for a risky change or a production database), `--rerun` applies a rule again although the same content was already applied in that database. |
+| `--changelog` | Print the changelog of a database, newest first, with each backup table (section 6.9c). Needs `--db`. |
+| `--db NAME`, `--schema NAME`, `--rule NAME`, `--ticket TEXT`, `--last N` | With `--changelog`: the datasource, the schema that holds the changelog (default `parity_work`), filters by rule name and ticket, and the number of rows (default 30). |
+| `--apply` | Commit a restore, a load, a change or a template import. Without it everything is rolled back. |
 | `--template-export FILE`, `--template-import FILE` (`--template-upload`) | Report templates (section 6.10). Import is a preview unless `--apply`. |
 | `--datasources` | List configured datasource names and flags (no secrets). |
 | `--quiet` | No progress messages (warnings and errors still show). |
@@ -121,7 +127,7 @@ Logging: files in `logs/`; console shows progress messages, warnings and errors.
 ## 4. Datasources and safety
 
 - Datasources live in `config/datasources.properties` (not in git, holds credentials, **do not open or edit it**). Names are arbitrary; each `<sql db="NAME">` uses one. Typical names here: `mysql-oprdb02`, `postgres-dev`, `postgres-uat`, `postgres-prod`.
-  Properties per name: `url`, `username`, `password` (may be `${ENV_VAR}`), `driver-class-name`, `read-only` (must be `true` for normal queries), `prod`, `allow-temp-tables`, `allowed-functions`.
+  Properties per name: `url`, `username`, `password` (may be `${ENV_VAR}`), `driver-class-name`, `read-only` (must be `true` for normal queries), `prod`, `allow-write` (default `true`; `false` makes every `--apply` on that datasource refuse, previews still work), `allow-temp-tables`, `allowed-functions`.
 - A datasource file in another place: `--spring.config.additional-location=file:D:/private/datasources.properties` (with `=`; it adds to or overrides the default file).
 - Queries are guarded: one `SELECT`/`WITH` only, read-only sessions, rolled back. Production names need `--allow-prod`.
 - `tempTables="true"` on a `<sql>` lets a non-production query call a function that creates temp tables; it is always rolled back and refused on production.
@@ -490,6 +496,55 @@ Use it when data exists in one database (legacy MySQL, another PostgreSQL) and i
 - Zip: every load and restore (preview and apply) also writes `<rule name>.zip` into its result folder (summary, the rows read, the undo rule) and the console prints its path. Send that file; no manual zipping.
 - Undo: `.\compare.ps1 --restore out\<run>\undo-copy-multipliers.json --apply` puts every scope back as it was (it removes exactly the inserted rows).
 - Production: a production datasource (source or target) needs `--allow-prod`, as everywhere. A partial source (row cap) is never loaded.
+
+### 6.9c Change rows with `--change`, and the changelog
+Use it for a data fix that is an UPDATE, a DELETE or one free statement. It does what you would do by hand (back up, change, check, keep an undo) in one rule, and writes down what ran.
+
+```json change
+{
+  "name": "fix-b-price",
+  "db": "postgres-dev",
+  "backupSchema": "parity_work",
+  "ticket": "OUAT-178",
+  "description": "Sets the CFS price of security B and removes the test security D.",
+  "steps": [
+    {
+      "id": "price-b",
+      "action": "update",
+      "table": "opera.security_settlement_value_table",
+      "where": "business_unit = 'CFS' AND security_id = 'B' AND value_date = DATE '2026-10-02'",
+      "key": ["business_unit", "security_id", "value_date"],
+      "set": { "settle_price": "2.5", "updated_by": "'ouat178'" },
+      "preconditions": [
+        { "sql": "SELECT count(*) FROM opera.security_settlement_value_table WHERE {{where}} AND settle_price = 9.9", "expect": "1", "reason": "the row still has the wrong price" }
+      ],
+      "expect": { "targetBefore": "1", "affected": "1", "targetAfter": "1" }
+    },
+    {
+      "id": "drop-d",
+      "action": "delete",
+      "table": "opera.security_settlement_value_table",
+      "where": "business_unit = 'CFS' AND security_id = 'D' AND value_date = DATE '2026-10-02'",
+      "key": ["business_unit", "security_id", "value_date"],
+      "expect": { "targetBefore": "1", "affected": "1", "targetAfter": "0" }
+    }
+  ],
+  "verify": [ { "rule": "verify-prices.xml" } ]
+}
+```
+- `action` is `update` (needs `set`: column to SQL expression), `delete`, or `sql` (one free statement in `sql`; `table`, `where` and `key` are then optional and name the scope to back up). `where` is required for update and delete. `{{where}}` in a precondition is replaced by the step's `where`.
+- `preconditions` are read-only `SELECT`s that must return the `expect` value. They run inside the transaction, in step order, after the earlier steps ran, and before their own step. A failed precondition rolls everything back and the summary names it.
+- `expect` keys: `targetBefore`, `affected`, `targetAfter` (a `sql` step without scope only has `affected`). `--apply` needs `expect` on every step; the preview prints the real counts to copy.
+- Preview first: `.\compare.ps1 --change rules\fix-b-price.json` runs everything in a transaction and rolls it back (`CHANGE.md`, zip). Then `--apply`: it runs the steps again, shows the step table, and asks you to type the confirmation before it commits.
+- **Confirmation.** A normal change needs `APPLY` typed. A **risky** change needs a longer generated phrase such as `APPLY 2 DELETE postgres-uat opera.vol_id_table`, after the tool lists why and prints the statements. Risky means: a `;`, `--` or `/*` in a statement, a DDL word (drop, alter, create, truncate ...) in `where`, `set` or `sql`, an always-true `where`, a `sql` step that is not a plain UPDATE/DELETE/INSERT or has no scope (no backup, no automatic undo), or a production datasource (always). A rule can set `"confirm": "TEXT"` (rule level, or per step) and then that text must be typed instead. Scripts pass `--confirm "<the phrase>"`; `--yes` only works for a normal change.
+- Nothing is blocked by a word list; the confirmation is the guard. Everything still needs the scope, the backup and the counts.
+- Backup and undo: per scoped step `CREATE TABLE <backupSchema>.change_<rule>_<step>_<stamp> AS SELECT ...`. Undo is `.\compare.ps1 --restore out\<run>\undo-fix-b-price.json --apply`: it finds the backed-up rows by `key` (even if the change moved them out of the `where`) and puts them back. Only the content columns are compared; audit columns (`updated_by` ...) are not, so a change that touches only audit columns has nothing to undo.
+- The same rule that was already applied in a database (same name and content) is refused unless `--rerun`.
+
+**Changelog.** The first write in a database creates `<backupSchema>.cdt_changelog` (and a lock table). Every applied restore, load and change writes one row per step in the same transaction as the change, so a rollback leaves no row; failures and cancellations get a `FAILED` / `ROLLED_BACK` row afterwards. A row has the run id, rule name, file and checksum, ticket, mode (`CHANGE`, `RESTORE`, `LOAD`, `UNDO`), step, action, table, scope, the statement, rows before / affected / after, the preconditions, the risk, **the backup table**, the undo rule, status (`APPLIED`, `UNDONE`, `FAILED`, `ROLLED_BACK`), who (database user, OS user, host), the tool version and the output folder. An undo run writes its own `UNDO` rows and marks the original rows `UNDONE`. Two applies at the same time cannot happen: the second stops on the lock (PostgreSQL).
+- `.\compare.ps1 --changelog --db postgres-uat [--rule NAME] [--ticket T] [--last N]` prints it, newest first, with each backup table and whether it still exists (`(dropped)` when somebody removed it). The menu has `/changelog`.
+- Backup tables made by older versions (`restore_*`, `load_*`, `change_*` with no row) are added automatically as `backfilled` rows, so every machine shows the same history. The tool never drops a backup table; the changelog tells you which ones are old.
+- The local `out/.history.json` (the menu's recent runs) is separate and stays per machine.
 
 ### 6.10 Report templates
 `--template-export rules\export.json` writes the template files, row metadata and an upload rule; `--template-import rules\upload.json` previews a replacement (SHA-256 guarded) and `--apply` commits it; production needs `--allow-prod`. See `rules/template-export.example.json`, `template-import.example.json`, `template-upload.example.json`.

@@ -38,10 +38,16 @@ public class DatasourceSettings {
         var definition = datasources.get(name);
         return definition != null && !QueryRunner.production(name, definition) && definition.isAllowTempTables();
     }
+    /** Writes (apply of restore, load, change) are allowed unless the datasource says allow-write=false. Previews are always fine. */
+    public void requireWritable(String name) {
+        var definition = datasources.get(name);
+        if (definition != null && !definition.isAllowWrite())
+            throw new ToolException("Datasource " + name + " has allow-write=false: an apply is refused (a preview still works).");
+    }
     public List<String> diagnostics() {
         var lines = new java.util.ArrayList<String>();
         lines.add("Datasource files loaded: " + configurationDescription());
-        datasources.forEach((name, d) -> lines.add(name + " [read-only=" + d.isReadOnly()
+        datasources.forEach((name, d) -> lines.add(name + " [read-only=" + d.isReadOnly() + ", allow-write=" + d.isAllowWrite()
             + ", prod=" + QueryRunner.production(name, d) + ", allow-temp-tables=" + allowsTempTables(name)
             + ", allowed-functions=" + d.getAllowedFunctions() + "]"));
         return lines;
@@ -54,6 +60,7 @@ public class DatasourceSettings {
         private String driverClassName;
         private boolean readOnly = true;
         private boolean prod;
+        private boolean allowWrite = true;
         private Boolean allowTempTables;
         private String allowedFunctions = "*";
         public String getUrl() { return url; }
@@ -68,6 +75,8 @@ public class DatasourceSettings {
         public void setReadOnly(boolean value) { readOnly = value; }
         public boolean isProd() { return prod; }
         public void setProd(boolean value) { prod = value; }
+        public boolean isAllowWrite() { return allowWrite; }
+        public void setAllowWrite(boolean value) { allowWrite = value; }
         public boolean isAllowTempTables() { return !prod && !Boolean.FALSE.equals(allowTempTables); }
         public void setAllowTempTables(boolean value) { allowTempTables = value; }
         public String getAllowedFunctions() { return allowedFunctions; }

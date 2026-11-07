@@ -80,7 +80,7 @@ public final class DataLoader {
     }
 
     public static class Rule {
-        public String name, db, backupSchema = "parity_work", description;
+        public String name, db, backupSchema = "parity_work", description, ticket;
         public Map<String, Param> params;
         public List<Step> steps;
         public List<DataRestorer.Verify> verify;
@@ -98,7 +98,7 @@ public final class DataLoader {
     /** Reads and validates a load rule file without connecting (also used to check the examples of the guide). */
     static Rule load(Path file) {
         try {
-            Rule rule = JSON.readValue(Files.readString(file), Rule.class);
+            Rule rule = JSON.readValue(DataRestorer.readText(file), Rule.class);
             validate(rule);
             return rule;
         } catch (ToolException e) { throw new ToolException("Load rule " + file.getFileName() + ": " + e.getMessage(), e); }
@@ -153,7 +153,7 @@ public final class DataLoader {
     // ------------------------------------------------------------------ run
 
     public int execute(Cli.Options options) throws Exception {
-        Rule rule = JSON.readValue(Files.readString(options.load), Rule.class);
+        Rule rule = JSON.readValue(DataRestorer.readText(options.load), Rule.class);
         validate(rule);
         DataRestorer.validateVerifyRules(settings, rule.verify, options.load);
         Map<String, Object> parameters = typedParameters(rule, options.parameters);
@@ -194,31 +194,52 @@ public final class DataLoader {
         config.setConnectionTimeout(30_000); config.setInitializationFailTimeout(-1);
         config.setReadOnly(false);
         List<StepResult> results = new ArrayList<>();
-        try (var pool = new HikariDataSource(config); Connection connection = pool.getConnection()) {
-            try {
-                for (Step step : rule.steps) results.add(run(connection, rule, step, sources.get(step.id), stamp));
-                List<String> unmet = results.stream().flatMap(r -> r.unmet().stream().map(u -> r.id() + ": " + u)).toList();
-                if (options.apply && !unmet.isEmpty())
-                    throw new ToolException("Counts differ from the rule's expect (" + String.join("; ", unmet) + "). Nothing was committed.");
-                if (options.apply) {
-                    connection.commit();
-                    LOG.info("COMMITTED load {}: {} steps", rule.name, results.size());
-                    Progress.get().line("  APPLIED: " + results.size() + (results.size() == 1 ? " step" : " steps") + " committed");
-                } else {
+        Changelog.Run log = null;
+        if (options.apply) {
+            settings.requireWritable(rule.db);
+            log = new Changelog.Run(rule.backupSchema, "LOAD", rule.name, options.load, rule.ticket);
+            log.runDir = dir.toString();
+        }
+        try (var pool = new HikariDataSource(config)) {
+            if (options.apply) {
+                try (Connection setup = pool.getConnection()) { setup.setAutoCommit(true); Changelog.ensure(setup, rule.backupSchema); }
+            }
+            try (Connection connection = pool.getConnection()) {
+                try {
+                    if (options.apply) Changelog.lock(connection, rule.backupSchema, Changelog.who());
+                    for (Step step : rule.steps) results.add(run(connection, rule, step, sources.get(step.id), stamp));
+                    List<String> unmet = results.stream().flatMap(r -> r.unmet().stream().map(u -> r.id() + ": " + u)).toList();
+                    if (options.apply && !unmet.isEmpty())
+                        throw new ToolException("Counts differ from the rule's expect (" + String.join("; ", unmet) + "). Nothing was committed.");
+                    if (options.apply) {
+                        String undoFile = dir.resolve("undo-" + DataRestorer.safe(rule.name) + ".json").toString();
+                        List<Changelog.Entry> entries = new ArrayList<>();
+                        for (int i = 0; i < results.size(); i++) {
+                            StepResult r = results.get(i);
+                            entries.add(new Changelog.Entry(r.id(), "INSERT", r.table(), rule.steps.get(i).where, null, r.targetBefore(), r.inserted(), r.targetAfter(),
+                                null, null, r.backup(), undoFile));
+                        }
+                        Changelog.record(connection, log, entries, "APPLIED", null);
+                        connection.commit();
+                        LOG.info("COMMITTED load {}: {} steps", rule.name, results.size());
+                        Progress.get().line("  APPLIED: " + results.size() + (results.size() == 1 ? " step" : " steps") + " committed");
+                    } else {
+                        connection.rollback();
+                        LOG.info("PREVIEW complete for {}: nothing changed (rolled back). Add --apply to commit.", rule.name);
+                        Progress.get().line("  PREVIEW: nothing was changed (rolled back). Add --apply to commit.");
+                    }
+                } catch (Exception e) {
                     connection.rollback();
-                    LOG.info("PREVIEW complete for {}: nothing changed (rolled back). Add --apply to commit.", rule.name);
-                    Progress.get().line("  PREVIEW: nothing was changed (rolled back). Add --apply to commit.");
+                    LOG.error("Load {} failed; all steps rolled back: {}", rule.name, e.getMessage());
+                    if (options.apply) Changelog.failure(connection, log, "FAILED", e.getMessage());
+                    throw e;
                 }
-            } catch (Exception e) {
-                connection.rollback();
-                LOG.error("Load {} failed; all steps rolled back: {}", rule.name, e.getMessage());
-                throw e;
             }
         }
         List<DataRestorer.VerifyResult> verified = options.apply
             ? DataRestorer.verifyRules(settings, rule.name, rule.verify, options.load, options) : List.of();
         writeSummary(dir, rule, results, options.apply, verified);
-        if (options.apply) writeUndo(dir, rule, results);
+        if (options.apply) writeUndo(dir, rule, results, log);
         LOG.info("Summary: {}", dir.resolve("LOAD.md"));
         Progress.get().line("  summary: " + dir.resolve("LOAD.md"));
         try {
@@ -417,11 +438,13 @@ public final class DataLoader {
     }
 
     /** Undo = a restore rule: each scope goes back to its backup table, which removes exactly the rows this load inserted. */
-    private static void writeUndo(Path dir, Rule rule, List<StepResult> results) throws Exception {
+    private static void writeUndo(Path dir, Rule rule, List<StepResult> results, Changelog.Run log) throws Exception {
         Map<String, Object> undo = new LinkedHashMap<>();
         undo.put("name", rule.name + "-undo");
         undo.put("db", rule.db);
         undo.put("backupSchema", rule.backupSchema);
+        if (rule.ticket != null) undo.put("ticket", rule.ticket);
+        undo.put("undoOfRunId", log.id.toString());
         undo.put("description", "Undo of load " + rule.name + ": puts each scope back as it was before the load (from its backup table). Run with --restore.");
         List<Map<String, Object>> steps = new ArrayList<>();
         for (int i = results.size() - 1; i >= 0; i--) {

@@ -39,6 +39,7 @@ final class RunPlan {
                 o.export = export; o.sampleRows = sampleRows; o.parallel = parallel; o.limit = limit;
             }
             case RESTORE -> { o.restore = entry.path(); o.export = export; o.sampleRows = sampleRows; }
+            case CHANGE -> { o.change = entry.path(); o.export = export; o.sampleRows = sampleRows; }
             case TEMPLATE_IMPORT -> o.templateUpload = entry.path();
             case TEMPLATE_EXPORT -> o.templateExport = entry.path();
         }
@@ -51,6 +52,7 @@ final class RunPlan {
         switch (entry.kind()) {
             case COMPARE -> c.append(" --rules ").append(quote(entry.path().toString()));
             case RESTORE -> c.append(" --restore ").append(quote(entry.path().toString()));
+            case CHANGE -> c.append(" --change ").append(quote(entry.path().toString()));
             case TEMPLATE_IMPORT -> c.append(" --template-import ").append(quote(entry.path().toString()));
             case TEMPLATE_EXPORT -> c.append(" --template-export ").append(quote(entry.path().toString()));
         }

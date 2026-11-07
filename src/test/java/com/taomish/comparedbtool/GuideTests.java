@@ -87,6 +87,18 @@ class GuideTests {
         }
     }
 
+    @Test void everyChangeRuleInTheGuideIsValid() throws Exception {
+        List<String> changes = blocks("json change");
+        assertThat(changes).isNotEmpty();
+        int n = 0;
+        for (String json : changes) {
+            Path file = tmp.resolve("change-" + (++n) + ".json");
+            Files.writeString(file, json);
+            DataChanger.Rule rule = DataChanger.load(file);
+            assertThat(rule.steps).isNotEmpty();
+        }
+    }
+
     @Test void everyFlagTheGuideNamesExists() throws Exception {
         Pattern flag = Pattern.compile("(?<![\\w-])--[a-z][a-z-]*");
         Set<String> known = new HashSet<>();

@@ -40,7 +40,18 @@ public final class Cli {
                               step "expect" counts are checked, "verify" rules run after --apply
         --load FILE           Copy rows from a SELECT on any datasource into a table using a JSON rule (preview by default, insert only);
                               step "expect" counts are checked, "verify" rules run after --apply; --param overrides a rule parameter
-        --apply               Commit template replacement, data restore or data load; otherwise roll back the preview
+        --change FILE         Run UPDATE / DELETE / free SQL steps from a JSON rule (preview by default): backup, expected counts, preconditions,
+                              typed confirmation on --apply, every committed step written to the changelog table of the database
+        --confirm TEXT        With --change --apply: the confirmation phrase, for scripted runs (must equal the phrase the tool or the rule asks for)
+        --yes                 With --change --apply: skip the typed APPLY of a normal change (never for a risky change or a production database)
+        --rerun               With --change --apply: apply a rule again although the same content was already applied in this database
+        --changelog           Show the changelog of a database (newest first, with backup tables); needs --db
+        --db NAME             With --changelog: the datasource to read
+        --schema NAME         With --changelog: the schema that holds the changelog (default parity_work, the rule's backupSchema)
+        --rule NAME           With --changelog: only this rule name
+        --ticket TEXT         With --changelog: only this ticket
+        --last N              With --changelog: how many rows (default 30)
+        --apply               Commit template replacement, data restore, data load or change; otherwise roll back the preview
         --check               Ask the databases to EXPLAIN every query and describe its columns, then check the rule against them (nothing is executed or read)
         --quiet               No progress messages on the console (the log files and outputs are unchanged)
         --menu                Interactive menu (also the default when started without arguments in a terminal)
@@ -58,8 +69,20 @@ public final class Cli {
         public Path templateExport;
         public Path restore;
         public Path load;
+        public Path change;
         public String targetEnv;
         public boolean apply;
+        /** --change: scripted confirmation, skip of the typed APPLY, apply again. */
+        public String confirm;
+        public boolean yes, rerun;
+        /** --changelog: show the database changelog. */
+        public boolean changelog;
+        public String db, changelogRule, changelogTicket;
+        /** Schema of the changelog tables (default parity_work, the usual backupSchema). */
+        public String changelogSchema;
+        public int last = 30;
+        /** The menu answers the typed confirmation of --change through its own terminal; null reads the console. */
+        public java.util.function.BiPredicate<String, String> confirmer;
         public Path out = Path.of("out");
         public Map<String, String> parameters = new LinkedHashMap<>();
         public int partitions = 64;
@@ -86,7 +109,7 @@ public final class Cli {
             }
             int equal = argument.indexOf('=');
             String name = equal > 0 ? argument.substring(0, equal) : argument;
-            if (Set.of("--template-export", "--template-import", "--template-upload", "--restore", "--load", "--rules", "--out", "--param", "--limit", "--partitions", "--export", "--sample-rows", "--parallel", "--max-partition-mb", "--target-env").contains(name)) {
+            if (Set.of("--template-export", "--template-import", "--template-upload", "--restore", "--load", "--change", "--confirm", "--db", "--schema", "--rule", "--ticket", "--last", "--rules", "--out", "--param", "--limit", "--partitions", "--export", "--sample-rows", "--parallel", "--max-partition-mb", "--target-env").contains(name)) {
                 String value;
                 if (equal > 0) value = argument.substring(equal + 1);
                 else {
@@ -111,6 +134,16 @@ public final class Cli {
                             if (options.load != null) throw new ToolException("Supply only one load rule file");
                             options.load = Path.of(value);
                         }
+                        case "--change" -> {
+                            if (options.change != null) throw new ToolException("Supply only one change rule file");
+                            options.change = Path.of(value);
+                        }
+                        case "--confirm" -> options.confirm = value;
+                        case "--db" -> options.db = value.trim();
+                        case "--schema" -> options.changelogSchema = value.trim();
+                        case "--rule" -> options.changelogRule = value.trim();
+                        case "--ticket" -> options.changelogTicket = value.trim();
+                        case "--last" -> { options.last = Integer.parseInt(value); if (options.last < 1) throw new IllegalArgumentException(); }
                         case "--target-env" -> {
                             if (value.isBlank()) throw new IllegalArgumentException();
                             options.targetEnv = value.trim();
@@ -140,6 +173,9 @@ public final class Cli {
                 case "--menu" -> { options.menu = true; options.menuRequested = true; }
                 case "--validate" -> options.validate = true;
                 case "--apply" -> options.apply = true;
+                case "--yes" -> options.yes = true;
+                case "--rerun" -> options.rerun = true;
+                case "--changelog" -> options.changelog = true;
                 case "--datasources" -> options.datasources = true;
                 case "--allow-prod" -> options.allowProd = true;
                 case "--help", "-h" -> options.help = true;
@@ -165,11 +201,26 @@ public final class Cli {
         if (options.check && (options.rules == null || options.restore != null || options.load != null || options.templateUpload != null || options.templateExport != null
             || options.validate || options.apply || options.datasources))
             throw new ToolException("--check needs --rules FILE and cannot be combined with --validate, --apply, --restore, --load, template options or --datasources.");
-        if (options.apply && ((options.templateUpload == null && options.restore == null && options.load == null) || options.validate))
-            throw new ToolException("--apply requires --template-upload, --restore or --load and cannot be combined with --validate.");
+        if (options.change != null && (options.rules != null || options.templateUpload != null || options.templateExport != null || options.restore != null
+            || options.load != null || options.datasources || options.changelog || !options.parameters.isEmpty()))
+            throw new ToolException("--change cannot be combined with comparison rules, templates, restore, load, --changelog, datasource listing or parameters.");
+        if (options.changelog) {
+            if (options.rules != null || options.templateUpload != null || options.templateExport != null || options.restore != null || options.load != null
+                || options.change != null || options.datasources || options.apply || options.validate || options.check)
+                throw new ToolException("--changelog only reads the changelog: it cannot be combined with rules, templates, restore, load, change or --apply.");
+            if (options.db == null || options.db.isBlank()) throw new ToolException("--changelog needs --db NAME (a datasource from config/datasources.properties).");
+        } else if (options.db != null || options.changelogRule != null || options.changelogTicket != null || options.changelogSchema != null)
+            throw new ToolException("--db, --schema, --rule and --ticket belong to --changelog.");
+        if ((options.confirm != null || options.yes || options.rerun) && options.change == null)
+            throw new ToolException("--confirm, --yes and --rerun belong to --change --apply.");
+        if ((options.confirm != null || options.yes || options.rerun) && !options.apply)
+            throw new ToolException("--confirm, --yes and --rerun only make sense with --apply (a preview commits nothing).");
+        if (options.confirm != null && options.yes) throw new ToolException("Use --confirm or --yes, not both.");
+        if (options.apply && ((options.templateUpload == null && options.restore == null && options.load == null && options.change == null) || options.validate))
+            throw new ToolException("--apply requires --template-upload, --restore, --load or --change and cannot be combined with --validate.");
         if (!options.help && !options.menu && !options.datasources && options.rules == null && options.templateUpload == null && options.templateExport == null
-            && options.restore == null && options.load == null)
-            throw new ToolException("Supply --rules FILE, --template-import FILE, --template-export FILE, --restore FILE or --load FILE.");
+            && options.restore == null && options.load == null && options.change == null && !options.changelog)
+            throw new ToolException("Supply --rules FILE, --template-import FILE, --template-export FILE, --restore FILE, --load FILE, --change FILE or --changelog --db NAME.");
         return options;
     }
 
@@ -192,6 +243,16 @@ public final class Cli {
             try { return new DataLoader(settings).execute(options); }
             catch (ToolException e) { throw e; }
             catch (Exception e) { throw new ToolException("Load failed", e); }
+        }
+        if (options.change != null) {
+            try { return new DataChanger(settings).execute(options); }
+            catch (ToolException e) { throw e; }
+            catch (Exception e) { throw new ToolException("Change failed", e); }
+        }
+        if (options.changelog) {
+            try { Changelog.show(settings, options).forEach(System.out::println); return 0; }
+            catch (ToolException e) { throw e; }
+            catch (Exception e) { throw new ToolException("Reading the changelog failed", e); }
         }
         if (options.datasources) {
             if (settings.getDatasources().isEmpty()) System.out.println("No datasources configured. Check config/datasources.properties.");

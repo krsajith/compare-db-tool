@@ -64,6 +64,8 @@ public final class DataRestorer {
 
     public static class Rule {
         public String name, db, backupSchema = "parity_work", description;
+        /** Set by the tool in the undo rule it writes: the changelog run this rule puts back. */
+        public String ticket, undoOfRunId;
         public List<Step> steps;
         public List<Verify> verify;
     }
@@ -82,7 +84,7 @@ public final class DataRestorer {
     public DataRestorer(DatasourceSettings settings) { this.settings = settings; }
 
     public int execute(Cli.Options options) throws Exception {
-        Rule rule = JSON.readValue(Files.readString(options.restore), Rule.class);
+        Rule rule = JSON.readValue(readText(options.restore), Rule.class);
         validate(rule);
         validateVerify(rule, options.restore);
         if (options.validate) {
@@ -109,27 +111,42 @@ public final class DataRestorer {
         config.setConnectionTimeout(30_000); config.setInitializationFailTimeout(-1);
         config.setReadOnly(false);
         List<StepResult> results = new ArrayList<>();
-        try (var pool = new HikariDataSource(config); Connection connection = pool.getConnection()) {
-            try {
-                for (Step step : rule.steps) results.add(run(connection, rule, step, stamp, options.apply));
-                if (options.apply) {
-                    connection.commit();
-                    LOG.info("COMMITTED restore {}: {} steps", rule.name, results.size());
-                    Progress.get().line("  APPLIED: " + results.size() + (results.size() == 1 ? " step" : " steps") + " committed");
-                } else {
+        Changelog.Run log = null;
+        if (options.apply) {
+            settings.requireWritable(rule.db);
+            log = new Changelog.Run(rule.backupSchema, rule.undoOfRunId == null ? "RESTORE" : "UNDO", rule.name, options.restore, rule.ticket);
+            log.undoOf(rule.undoOfRunId);
+            log.runDir = dir.toString();
+        }
+        try (var pool = new HikariDataSource(config)) {
+            if (options.apply) {
+                try (Connection setup = pool.getConnection()) { setup.setAutoCommit(true); Changelog.ensure(setup, rule.backupSchema); }
+            }
+            try (Connection connection = pool.getConnection()) {
+                try {
+                    if (options.apply) Changelog.lock(connection, rule.backupSchema, Changelog.who());
+                    for (Step step : rule.steps) results.add(run(connection, rule, step, stamp, options.apply));
+                    if (options.apply) {
+                        Changelog.record(connection, log, changelogEntries(dir, rule, results), "APPLIED", null);
+                        connection.commit();
+                        LOG.info("COMMITTED restore {}: {} steps", rule.name, results.size());
+                        Progress.get().line("  APPLIED: " + results.size() + (results.size() == 1 ? " step" : " steps") + " committed");
+                    } else {
+                        connection.rollback();
+                        LOG.info("PREVIEW complete for {}: nothing changed (rolled back). Add --apply to commit.", rule.name);
+                        Progress.get().line("  PREVIEW: nothing was changed (rolled back). Add --apply to commit.");
+                    }
+                } catch (Exception e) {
                     connection.rollback();
-                    LOG.info("PREVIEW complete for {}: nothing changed (rolled back). Add --apply to commit.", rule.name);
-                    Progress.get().line("  PREVIEW: nothing was changed (rolled back). Add --apply to commit.");
+                    LOG.error("Restore {} failed; all steps rolled back: {}", rule.name, e.getMessage());
+                    if (options.apply) Changelog.failure(connection, log, "FAILED", e.getMessage());
+                    throw e;
                 }
-            } catch (Exception e) {
-                connection.rollback();
-                LOG.error("Restore {} failed; all steps rolled back: {}", rule.name, e.getMessage());
-                throw e;
             }
         }
         List<VerifyResult> verified = options.apply ? verify(rule, options) : List.of();
         writeSummary(dir, rule, results, options.apply, verified);
-        if (options.apply) writeUndo(dir, rule, results);
+        if (options.apply) writeUndo(dir, rule, results, log);
         LOG.info("Summary: {}", dir.resolve("RESTORE.md"));
         Progress.get().line("  summary: " + dir.resolve("RESTORE.md"));
         try {
@@ -193,7 +210,7 @@ public final class DataRestorer {
     /** Reads and validates a restore rule file (used to check what a rule suggests, without connecting). */
     static Rule load(Path file) {
         try {
-            Rule rule = JSON.readValue(Files.readString(file), Rule.class);
+            Rule rule = JSON.readValue(readText(file), Rule.class);
             validate(rule);
             return rule;
         } catch (ToolException e) { throw new ToolException("Restore rule " + file.getFileName() + ": " + e.getMessage(), e); }
@@ -316,6 +333,12 @@ public final class DataRestorer {
         try (Statement st = c.createStatement(); ResultSet rs = st.executeQuery(sql)) { rs.next(); return rs.getLong(1); }
     }
 
+    /** Reads a JSON rule; a byte order mark (PowerShell 5.1 writes one with -Encoding utf8) is dropped instead of breaking the parser. */
+    static String readText(Path file) throws java.io.IOException {
+        String text = Files.readString(file);
+        return text.startsWith("﻿") ? text.substring(1) : text;
+    }
+
     static String safe(String name) { return name.replaceAll("[^A-Za-z0-9_-]", "_"); }
 
     private static void writeSummary(Path dir, Rule rule, List<StepResult> results, boolean applied, List<VerifyResult> verified) throws Exception {
@@ -354,12 +377,27 @@ public final class DataRestorer {
         Files.writeString(dir.resolve("RESTORE.md"), md.toString(), StandardCharsets.UTF_8);
     }
 
+    /** One changelog row per step: counts before / changed (replaced + inserted + removed) / after, and the backup table. */
+    static List<Changelog.Entry> changelogEntries(Path dir, Rule rule, List<StepResult> results) {
+        String undoFile = dir.resolve("undo-" + safe(rule.name) + ".json").toString();
+        List<Changelog.Entry> out = new ArrayList<>();
+        for (int i = 0; i < results.size(); i++) {
+            StepResult r = results.get(i);
+            Step s = rule.steps.get(i);
+            out.add(new Changelog.Entry(r.id(), "RESTORE", r.table(), s.where, null, r.targetBefore(), r.changed() + r.missing() + r.removedExtra(), r.targetAfter(),
+                null, null, r.backup(), undoFile));
+        }
+        return out;
+    }
+
     /** Undo = the same steps, restoring the scope from the backup tables and removing what the restore inserted. */
-    private static void writeUndo(Path dir, Rule rule, List<StepResult> results) throws Exception {
+    private static void writeUndo(Path dir, Rule rule, List<StepResult> results, Changelog.Run log) throws Exception {
         Map<String, Object> undo = new LinkedHashMap<>();
         undo.put("name", rule.name + "-undo");
         undo.put("db", rule.db);
         undo.put("backupSchema", rule.backupSchema);
+        if (rule.ticket != null) undo.put("ticket", rule.ticket);
+        undo.put("undoOfRunId", log.id.toString());
         undo.put("description", "Undo of " + rule.name + ": puts back the rows as they were before the restore (from its backup tables).");
         List<Map<String, Object>> steps = new ArrayList<>();
         for (int i = results.size() - 1; i >= 0; i--) {

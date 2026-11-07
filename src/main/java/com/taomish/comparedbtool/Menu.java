@@ -64,8 +64,9 @@ final class Menu {
     private void handle(String choice) {
         switch (choice) {
             case "/rules" -> rulesScreen("Compare rules", RuleCatalog.Kind.COMPARE);
-            case "/restore" -> rulesScreen("Restore and template rules (these change data)", RuleCatalog.Kind.RESTORE,
+            case "/restore" -> rulesScreen("Restore, change and template rules (these change data)", RuleCatalog.Kind.RESTORE, RuleCatalog.Kind.CHANGE,
                 RuleCatalog.Kind.TEMPLATE_IMPORT, RuleCatalog.Kind.TEMPLATE_EXPORT);
+            case "/changelog" -> changelogScreen();
             case "/open" -> {
                 String text = ui.ask("Path of a rule file: ", "");
                 if (text == null || text.isBlank()) return;
@@ -86,6 +87,24 @@ final class Menu {
         }
     }
 
+    /** Picks a datasource and prints its changelog (newest 30). The changelog schema is the usual backupSchema, parity_work. */
+    private void changelogScreen() {
+        List<Ui.Item> items = new ArrayList<>();
+        settings.getDatasources().forEach((name, d) -> items.add(new Ui.Item(name, name, QueryRunner.production(name, d) ? "PRODUCTION" : "")));
+        if (items.isEmpty()) { ui.print("No datasources configured. Check config/datasources.properties."); return; }
+        String choice = ui.pick("Changelog of which database?", items, "Enter selects, Esc goes back");
+        if (choice == null) return;
+        Cli.Options o = new Cli.Options();
+        o.db = choice; o.last = 30;
+        if (QueryRunner.production(choice, settings.getDatasources().get(choice))) {
+            if (!ui.typed("PRODUCTION datasource: " + choice + ". This will read its changelog (--allow-prod).", choice)) return;
+            o.allowProd = true;
+        }
+        try { Changelog.show(settings, o).forEach(ui::print); }
+        catch (ToolException e) { ui.print("ERROR: " + SecretRedactor.clean(e.getMessage())); }
+        catch (Exception e) { ui.print("ERROR: " + SecretRedactor.clean(String.valueOf(e.getMessage()))); }
+    }
+
     private List<Ui.Item> mainItems() {
         List<Ui.Item> items = new ArrayList<>();
         List<History.Run> runs = history.runs();
@@ -102,6 +121,7 @@ final class Menu {
             }
         items.add(new Ui.Item("/rules", "/rules", "all compare rules in rules\\"));
         items.add(new Ui.Item("/restore", "/restore", "restore and template rules (change data, preview first)"));
+        items.add(new Ui.Item("/changelog", "/changelog", "what was applied in a database: rows, who, when, backup tables"));
         items.add(new Ui.Item("/open", "/open", "a rule file by path"));
         items.add(new Ui.Item("/history", "/history", "the last 30 runs"));
         items.add(new Ui.Item("/datasources", "/datasources", "configured connections, production ones marked"));
@@ -229,7 +249,7 @@ final class Menu {
             JsonNode node = JSON.readTree(Files.readString(entry.path()));
             List<Db> dbs = node.has("db") ? List.of(db(node.get("db").asString())) : List.of();
             String facts = switch (entry.kind()) {
-                case RESTORE -> node.path("steps").size() + " steps" + (node.has("verify") ? ", " + node.get("verify").size() + " verify rule(s) after apply" : ", no verify rule");
+                case RESTORE, CHANGE -> node.path("steps").size() + " steps" + (node.has("verify") ? ", " + node.get("verify").size() + " verify rule(s) after apply" : ", no verify rule");
                 case TEMPLATE_IMPORT -> "template import" + (node.has("mode") ? ", mode " + node.get("mode").asString() : "");
                 default -> "template export";
             };
@@ -268,7 +288,7 @@ final class Menu {
             if (kind == RuleCatalog.Kind.COMPARE)
                 items.add(new Ui.Item("check", plan.mode == RunPlan.Mode.CHECK ? "Mode: check against the databases" : "Switch to: check against the databases",
                     plan.mode == RunPlan.Mode.CHECK ? "EXPLAIN only, nothing is read (select to switch back)" : "asks each database to EXPLAIN every query and describe its columns before the long run"));
-            if (kind == RuleCatalog.Kind.COMPARE || kind == RuleCatalog.Kind.RESTORE)
+            if (kind == RuleCatalog.Kind.COMPARE || kind == RuleCatalog.Kind.RESTORE || kind == RuleCatalog.Kind.CHANGE)
                 items.add(new Ui.Item("validate", plan.mode == RunPlan.Mode.VALIDATE ? "Mode: validate only" : "Mode: " + plan.modeLabel(),
                     plan.mode == RunPlan.Mode.VALIDATE ? "checks the rule, opens no connection (select to switch back)" : "select to validate only, without connecting"));
             if (!info.params().isEmpty()) items.add(new Ui.Item("params", "Parameters", paramSummary(info, plan)));
@@ -369,7 +389,9 @@ final class Menu {
             if (!ui.typed("PRODUCTION datasource: " + String.join(", ", prod) + ". This will read production data (--allow-prod).", phrase)) return false;
             plan.allowProd = true;
         }
-        if (plan.mode == RunPlan.Mode.APPLY && !ui.typed("APPLY commits the changes shown by the preview.", "APPLY")) return false;
+        // a --change asks for its own typed phrase after the apply has run inside the transaction (it can be longer for a risky change)
+        if (plan.mode == RunPlan.Mode.APPLY && plan.entry.kind() != RuleCatalog.Kind.CHANGE
+            && !ui.typed("APPLY commits the changes shown by the preview.", "APPLY")) return false;
         if (plan.limit > 0 && plan.mode != RunPlan.Mode.CHECK && !ui.confirm("A row limit of " + plan.limit + " makes the results PARTIAL (exit 2). Run anyway?", false)) return false;
         List<String> changes = changed(info, plan);
         if (!changes.isEmpty()) {
@@ -423,6 +445,7 @@ final class Menu {
     private Result runNow(RunPlan plan) {
         Instant start = Instant.now();
         Cli.Options options = plan.toOptions(out);
+        options.confirmer = (message, phrase) -> ui.typed(message, phrase);
         int exit;
         Path dir = null;
         String verdict = null;
@@ -439,7 +462,7 @@ final class Menu {
             exit = 2; verdict = "ERROR: " + SecretRedactor.clean(String.valueOf(e.getMessage())); ui.print(verdict);
         }
         if (dir == null && plan.mode != RunPlan.Mode.VALIDATE) dir = newestFolder(start);
-        Path summary = dir == null ? null : firstExisting(dir, "SUMMARY.md", "RESTORE.md");
+        Path summary = dir == null ? null : firstExisting(dir, "SUMMARY.md", "RESTORE.md", "CHANGE.md");
         if (verdict == null && summary != null) verdict = statusLine(summary);
         if (verdict == null) verdict = exit == 0 ? "OK" : exitText(exit);
         History.Run r = new History.Run();

@@ -67,6 +67,19 @@ an undo rule (a restore rule) is written, the step `expect` counts must hold (ot
 step's scope must have grown by exactly the rows inserted and no business key may exist twice. The rows read from the source are kept as `<step id>.csv`.
 Use it for data a migration never loaded; use `--restore` to put back rows from a backup table in the same database. The full format with an example is in `HOW-TO-USE.md`, section 6.9b.
 
+## Change rows (`--change`) and the changelog (`--changelog`)
+
+`--change FILE.json` runs UPDATE, DELETE or one free SQL statement per step, in one transaction. It is previewed by default (everything runs and is rolled back, so the counts are real). `--apply`
+runs it again, backs up the rows in scope (`<backupSchema>.change_<rule>_<step>_<stamp>`), checks the `expect` counts (`targetBefore`, `affected`, `targetAfter`) and the `preconditions`
+(read-only SELECTs, evaluated in step order inside the transaction), prints the step table and asks for a typed confirmation: `APPLY` for a normal change, a longer generated phrase
+(`APPLY 2 DELETE postgres-uat opera.vol_id_table`) for a risky one (a `;` or comment in a statement, DDL words, an always-true `where`, a `sql` step without a backup scope, any production datasource), or the
+text the rule names in `confirm`. Scripts use `--confirm "<phrase>"`; `--yes` is only for a normal change. Nothing is blocked by a word list; the confirmation is the guard. An undo rule (`undo-<name>.json`, a restore rule that finds the
+backed-up rows by key) is written, and the `verify` rules run after the commit. Datasources are writable by default; `allow-write=false` in the datasource file refuses every apply on it.
+
+Every applied restore, load and change also writes one row per step into `<backupSchema>.cdt_changelog` in the target database, in the same transaction (a rollback leaves no row), with the backup table, undo rule, counts, user, host, rule checksum and
+status; failures and cancellations are recorded too, an undo marks the original rows `UNDONE`, and two applies cannot run at the same time (row lock). `--changelog --db NAME` prints it newest first; backup tables without a row (older runs) are added as backfilled rows.
+The same rule content is refused a second time in a database unless `--rerun`. Format, risk rules and examples: `HOW-TO-USE.md`, section 6.9c.
+
 ## Restore advice: "there is a mismatch, should I restore, and with which rule?"
 
 A rule can say which restore rule fixes the mismatch it checks for. After the run the tool tells you, prints the exact command and, in the menu, offers the preview right there. **It never restores by itself.**
