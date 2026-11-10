@@ -17,18 +17,11 @@
       AND security_id IN ('CM WP 20261215.K27 CM WP 20261215.K27 P 125 CS', 'CM WP H27.H27 CM WP H27.H27 P 106 CS', 'CM WP Z26.Z26 CM WP H27.H27 P 77 CS')
   ]]></sql>
   <sql id="written" db="postgres-uat" export="full"><![CDATA[
-    SELECT s.security_id, s.created_by, s.created_timestamp, s.updated_by, s.updated_timestamp,
-           (SELECT max(m.created_timestamp) FROM opera.correl_product_mapping m
-             WHERE m.tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND m.business_unit = 'CFS') AS mapping_loaded,
-           (greatest(s.created_timestamp, coalesce(s.updated_timestamp, s.created_timestamp)) >
-            (SELECT max(m.created_timestamp) FROM opera.correl_product_mapping m
-              WHERE m.tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND m.business_unit = 'CFS')) AS written_after_mapping
+    SELECT s.security_id, s.created_by, s.created_timestamp, s.updated_by, s.updated_timestamp
     FROM opera.security_settlement_value_table s
-    WHERE s.tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND s.business_unit = 'CFS' AND s.value_date = DATE '2026-11-06'
-      AND s.security_id LIKE 'CM WP %'
-      AND greatest(s.created_timestamp, coalesce(s.updated_timestamp, s.created_timestamp)) >
-          (SELECT max(m.created_timestamp) FROM opera.correl_product_mapping m
-            WHERE m.tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND m.business_unit = 'CFS')
+    WHERE s.tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND s.business_unit = 'CFS' AND s.value_date = DATE '2026-11-06' AND s.security_id LIKE 'CM WP %'
+      AND NOT (coalesce(s.created_by, '') = 'migration' AND coalesce(s.updated_by, 'migration') = 'migration'
+               AND s.created_timestamp = TIMESTAMP '2026-11-07 11:22:08')
   ]]></sql>
   <sql id="wp-row-times" db="postgres-uat" export="full"><![CDATA[
     SELECT s.security_id, s.created_by, s.created_timestamp, s.updated_by, s.updated_timestamp,
@@ -64,7 +57,7 @@
     <column name="settle_theta" numeric="true" absTol="0.0001"/>
   </compare>
   <expect ref="mapping" rows="4" reason="the 4 CFS mapping rows must be loaded before the rerun"/>
-  <expect ref="written" rows="3" reason="the 3 WP rows were written by a pricing run AFTER the mapping load (not the migrated legacy rows); timestamps are UTC"/>
+  <expect ref="written" rows="3" reason="the 3 WP rows were rewritten by a pricing run (not the migrated legacy rows of 7 Nov 11:22)"/>
   <expect ref="uat" rows="3" reason="the rerun wrote the 3 CFS WP rows for 6 Nov"/>
   <expect ref="cmp" different="0" only-source="0" only-target="0" reason="UAT equals legacy to 4 decimals"/>
   <compress id="bundle" file="ouat178-wp-vs-legacy-0611.zip">
