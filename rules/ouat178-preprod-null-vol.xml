@@ -1,0 +1,104 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Preprod CFS settle batch fails 10 Nov 2026: TypeError float(None) in the engine at
+     derivative_pricer_interface.py:820 (_apply_wp_cso_enrichment). A var_price_vol_table row for a WP leg
+     (QW near, SB far) has a NULL vol or price on the settlement date. Read only.
+     Run: .\compare.ps1 -rules rules\ouat178-preprod-null-vol.xml -target-env postgres-uat
+     (preprod UI operapreprod uses the UAT database; CFS value date 2026-11-06, settlement 2026-11-05).
+     FAIL on pg-null-qw-sb = the rows that break the batch. legacy-qw-sb shows what legacy holds for them. -->
+<rules name="ouat178-preprod-null-vol">
+
+  <parameters>
+    <param name="bu" type="string" value="CFS"/>
+    <param name="tid" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+    <param name="sd_from" type="date" value="2026-11-01"/>
+    <param name="sd_to" type="date" value="2026-11-06"/>
+  </parameters>
+
+  <sql id="identity" db="target" export="full"><![CDATA[
+    SELECT current_database() AS db_name, inet_server_port() AS port, current_user AS db_user, now() AS db_time
+  ]]></sql>
+
+  <sql id="valuation" db="target" export="full"><![CDATA[
+    SELECT tenant_id, business_unit, value_date, settlement_date
+    FROM opera.valuation_date_table WHERE tenant_id = :tid AND business_unit = :bu
+  ]]></sql>
+
+  <!-- The failing rows: QW/SB legs with price or vol NULL (engine does float(price), float(vol)) -->
+  <sql id="pg-null-qw-sb" db="target" export="full"><![CDATA[
+    SELECT bbg_underlying_id, settlement_date, price, vol, updated_timestamp
+    FROM opera.var_price_vol_table
+    WHERE tenant_id = :tid AND settlement_date BETWEEN :sd_from AND :sd_to
+      AND (bbg_underlying_id LIKE 'QW%' OR bbg_underlying_id LIKE 'SB%')
+      AND (price IS NULL OR vol IS NULL)
+    ORDER BY settlement_date, bbg_underlying_id
+  ]]></sql>
+
+  <!-- All QW/SB rows in the window, to see which legs exist and when they were written -->
+  <sql id="pg-qw-sb" db="target" export="full"><![CDATA[
+    SELECT bbg_underlying_id, settlement_date, price, vol, updated_timestamp
+    FROM opera.var_price_vol_table
+    WHERE tenant_id = :tid AND settlement_date BETWEEN :sd_from AND :sd_to
+      AND (bbg_underlying_id LIKE 'QW%' OR bbg_underlying_id LIKE 'SB%')
+    ORDER BY settlement_date, bbg_underlying_id
+  ]]></sql>
+
+  <!-- Same NULL problem on any other product hits the barrier CSO path (line 1750) next -->
+  <sql id="pg-null-all" db="target" export="full"><![CDATA[
+    SELECT settlement_date, left(bbg_underlying_id, 2) AS product, count(*) AS row_count,
+           count(*) FILTER (WHERE vol IS NULL) AS vol_null, count(*) FILTER (WHERE price IS NULL) AS price_null,
+           max(updated_timestamp) AS last_updated
+    FROM opera.var_price_vol_table
+    WHERE tenant_id = :tid AND settlement_date BETWEEN :sd_from AND :sd_to
+    GROUP BY 1, 2
+    HAVING count(*) FILTER (WHERE vol IS NULL OR price IS NULL) > 0
+    ORDER BY 1, 2
+  ]]></sql>
+
+  <!-- Legacy holds var_price_vol_table without BU suffix -->
+  <sql id="legacy-qw-sb" db="mysql-oprdb02" export="full"><![CDATA[
+    SELECT bbg_underlying_id, settlement_date, price, vol
+    FROM dbsystemuat.var_price_vol_table
+    WHERE settlement_date BETWEEN :sd_from AND :sd_to
+      AND (bbg_underlying_id LIKE 'QW%' OR bbg_underlying_id LIKE 'SB%')
+    ORDER BY settlement_date, bbg_underlying_id
+  ]]></sql>
+
+  <sql id="pg-qw-sb-cmp" db="target" export="full"><![CDATA[
+    SELECT bbg_underlying_id, settlement_date, price, vol
+    FROM opera.var_price_vol_table
+    WHERE tenant_id = :tid AND settlement_date BETWEEN :sd_from AND :sd_to
+      AND (bbg_underlying_id LIKE 'QW%' OR bbg_underlying_id LIKE 'SB%')
+  ]]></sql>
+
+  <compare id="qw-sb-legacy-vs-pg" source="legacy-qw-sb" target="pg-qw-sb-cmp" export="full">
+    <key columns="bbg_underlying_id,settlement_date"/>
+    <column name="price" numeric="true" absTol="0.000001"/>
+    <column name="vol" numeric="true" absTol="0.000001"/>
+  </compare>
+
+  <!-- WP mapping and WP securities, context for which legs are priced -->
+  <sql id="mapping" db="target" export="full"><![CDATA[
+    SELECT business_unit, product_code, primary_code, secondary_code, primary_multiplier, secondary_multiplier, updated_timestamp
+    FROM opera.correl_product_mapping WHERE tenant_id = :tid AND business_unit = :bu
+  ]]></sql>
+
+  <sql id="vol-ids" db="target" export="full"><![CDATA[
+    SELECT vol_id, bbg_opt_ticker, expiry_date
+    FROM opera.vol_id_table
+    WHERE tenant_id = :tid AND (vol_id LIKE 'CM QW%' OR vol_id LIKE 'CM SB%') AND expiry_date >= :sd_from
+    ORDER BY expiry_date
+  ]]></sql>
+
+  <expect ref="identity" rows="1" reason="connected to the target"/>
+  <expect ref="valuation" rows="1" reason="one CFS valuation date row"/>
+  <expect ref="pg-null-qw-sb" rows="0" reason="any row here makes the WP enrichment throw float(None) and fails the whole batch"/>
+  <expect ref="pg-null-all" rows="0" reason="NULL vol/price on other products breaks the barrier CSO path the same way"/>
+  <expect ref="pg-qw-sb" rows=">=4" reason="QW and SB near/far legs exist in the window"/>
+  <expect ref="qw-sb-legacy-vs-pg" different="0" only-source="0" reason="PG QW/SB price/vol should equal legacy"/>
+
+  <compress id="bundle" file="ouat178-preprod-null-vol.zip">
+    <include ref="identity"/><include ref="valuation"/><include ref="pg-null-qw-sb"/><include ref="pg-qw-sb"/>
+    <include ref="pg-null-all"/><include ref="legacy-qw-sb"/><include ref="pg-qw-sb-cmp"/><include ref="qw-sb-legacy-vs-pg"/>
+    <include ref="mapping"/><include ref="vol-ids"/>
+  </compress>
+</rules>
