@@ -30,6 +30,27 @@
           (SELECT max(m.created_timestamp) FROM opera.correl_product_mapping m
             WHERE m.tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND m.business_unit = 'CFS')
   ]]></sql>
+  <sql id="wp-row-times" db="postgres-uat" export="full"><![CDATA[
+    SELECT s.security_id, s.created_by, s.created_timestamp, s.updated_by, s.updated_timestamp,
+           (SELECT max(m.created_timestamp) FROM opera.correl_product_mapping m
+             WHERE m.tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND m.business_unit = 'CFS') AS mapping_loaded,
+           now() AS db_now
+    FROM opera.security_settlement_value_table s
+    WHERE s.tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND s.business_unit = 'CFS' AND s.value_date = DATE '2026-11-06' AND s.security_id LIKE 'CM WP %'
+    ORDER BY s.security_id
+  ]]></sql>
+  <sql id="recent-runs" db="postgres-uat" export="full"><![CDATA[
+    SELECT value_date, count(*) AS rows_written, min(greatest(created_timestamp, coalesce(updated_timestamp, created_timestamp))) AS first_write,
+           max(greatest(created_timestamp, coalesce(updated_timestamp, created_timestamp))) AS last_write,
+           count(*) FILTER (WHERE security_id LIKE 'CM WP %') AS wp_rows
+    FROM opera.security_settlement_value_table
+    WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND business_unit = 'CFS'
+      AND greatest(created_timestamp, coalesce(updated_timestamp, created_timestamp)) > now() - interval '3 days'
+    GROUP BY value_date ORDER BY last_write DESC
+  ]]></sql>
+  <sql id="valuation-date" db="postgres-uat" export="full"><![CDATA[
+    SELECT * FROM opera.valuation_date_table WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND upper(business_unit) = 'CFS'
+  ]]></sql>
   <sql id="mapping" db="postgres-uat" export="full"><![CDATA[
     SELECT business_unit, product_code, primary_code, secondary_code, primary_multiplier, secondary_multiplier
     FROM opera.correl_product_mapping WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' ORDER BY 1, 2
@@ -51,6 +72,9 @@
     <include ref="uat"/>
     <include ref="mapping"/>
     <include ref="written"/>
+    <include ref="wp-row-times"/>
+    <include ref="recent-runs"/>
+    <include ref="valuation-date"/>
     <include ref="cmp"/>
   </compress>
 </rules>
