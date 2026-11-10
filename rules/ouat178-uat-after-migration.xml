@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- OUAT-178: state of UAT after the latest migration reload. Read only. Answers: is the WP mapping there (CFS 4 rows, upper case),
+     is the early-expiry security CM WP 20261215.K27 there with maturity 2026-12-15 in both security tables, are the 06-Nov test vol ids gone,
+     and what the last WP pricing run wrote. -->
+<rules name="ouat178-uat-after-migration">
+  <sql id="mapping" db="postgres-uat" export="full"><![CDATA[
+    SELECT business_unit, product_code, primary_code, secondary_code, primary_multiplier, secondary_multiplier, created_by
+    FROM opera.correl_product_mapping
+    WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113'
+    ORDER BY business_unit, product_code
+  ]]></sql>
+  <sql id="wp-securities" db="postgres-uat" export="full"><![CDATA[
+    SELECT 'base' AS src, security_id, vol1_id, vol2_id, maturity_date, status
+    FROM opera.security_info_table
+    WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND business_unit = 'CFS' AND security_id LIKE 'CM WP %'
+    UNION ALL
+    SELECT 'clone', security_id, vol1_id, vol2_id, maturity_date, status
+    FROM opera.cloned_security_info_table
+    WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND business_unit = 'CFS' AND security_id LIKE 'CM WP %'
+    ORDER BY 2, 1
+  ]]></sql>
+  <sql id="k27-early" db="postgres-uat" export="full"><![CDATA[
+    SELECT 'base' AS src, maturity_date FROM opera.security_info_table
+    WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND business_unit = 'CFS'
+      AND security_id = 'CM WP 20261215.K27 CM WP 20261215.K27 P 125 CS'
+    UNION ALL
+    SELECT 'clone', maturity_date FROM opera.cloned_security_info_table
+    WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND business_unit = 'CFS'
+      AND security_id = 'CM WP 20261215.K27 CM WP 20261215.K27 P 125 CS'
+  ]]></sql>
+  <sql id="test-vol-ids" db="postgres-uat" export="full"><![CDATA[
+    SELECT vol_id, expiry_date, created_by FROM opera.vol_id_table
+    WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND vol_id IN ('CM QW K27.Z26', 'CM SB K27.Z26')
+  ]]></sql>
+  <sql id="wp-greeks-latest" db="postgres-uat" export="full"><![CDATA[
+    SELECT s.security_id, s.value_date, s.settle_price, s.settle_delta_1, s.settle_vega_1, s.settle_theta
+    FROM opera.security_settlement_value_table s
+    WHERE s.tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND s.business_unit = 'CFS' AND s.security_id LIKE 'CM WP %'
+      AND s.value_date = (SELECT max(value_date) FROM opera.security_settlement_value_table
+                          WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND business_unit = 'CFS' AND security_id LIKE 'CM WP %')
+    ORDER BY s.security_id
+  ]]></sql>
+  <expect ref="mapping" rows="4" reason="only the 4 CFS rows (KP, KX, WP, WY)"/>
+  <expect ref="k27-early" rows="2" reason="CM WP 20261215.K27 in base and clone (pricing reads the clone)"/>
+  <expect ref="test-vol-ids" rows="0" reason="the 06-Nov test vol ids should be gone after the reload"/>
+  <compress id="bundle" file="ouat178-uat-after-migration.zip">
+    <include ref="mapping"/>
+    <include ref="wp-securities"/>
+    <include ref="k27-early"/>
+    <include ref="test-vol-ids"/>
+    <include ref="wp-greeks-latest"/>
+  </compress>
+</rules>
