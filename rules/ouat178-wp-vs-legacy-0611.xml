@@ -11,10 +11,24 @@
     ) AS t(security_id, settle_price, settle_delta_1, settle_delta_2, settle_vega_1, settle_theta)
   ]]></sql>
   <sql id="uat" db="postgres-uat" export="full"><![CDATA[
-    SELECT security_id, settle_price, settle_delta_1, settle_delta_2, settle_vega_1, settle_theta, created_timestamp AS written_utc
+    SELECT security_id, settle_price, settle_delta_1, settle_delta_2, settle_vega_1, settle_theta
     FROM opera.security_settlement_value_table
     WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND business_unit = 'CFS' AND value_date = DATE '2026-11-06'
       AND security_id IN ('CM WP 20261215.K27 CM WP 20261215.K27 P 125 CS', 'CM WP H27.H27 CM WP H27.H27 P 106 CS', 'CM WP Z26.Z26 CM WP H27.H27 P 77 CS')
+  ]]></sql>
+  <sql id="written" db="postgres-uat" export="full"><![CDATA[
+    SELECT s.security_id, s.created_by, s.created_timestamp, s.updated_by, s.updated_timestamp,
+           (SELECT max(m.created_timestamp) FROM opera.correl_product_mapping m
+             WHERE m.tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND m.business_unit = 'CFS') AS mapping_loaded,
+           (greatest(s.created_timestamp, coalesce(s.updated_timestamp, s.created_timestamp)) >
+            (SELECT max(m.created_timestamp) FROM opera.correl_product_mapping m
+              WHERE m.tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND m.business_unit = 'CFS')) AS written_after_mapping
+    FROM opera.security_settlement_value_table s
+    WHERE s.tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND s.business_unit = 'CFS' AND s.value_date = DATE '2026-11-06'
+      AND s.security_id LIKE 'CM WP %'
+      AND greatest(s.created_timestamp, coalesce(s.updated_timestamp, s.created_timestamp)) >
+          (SELECT max(m.created_timestamp) FROM opera.correl_product_mapping m
+            WHERE m.tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND m.business_unit = 'CFS')
   ]]></sql>
   <sql id="mapping" db="postgres-uat" export="full"><![CDATA[
     SELECT business_unit, product_code, primary_code, secondary_code, primary_multiplier, secondary_multiplier
@@ -29,12 +43,14 @@
     <column name="settle_theta" numeric="true" absTol="0.0001"/>
   </compare>
   <expect ref="mapping" rows="4" reason="the 4 CFS mapping rows must be loaded before the rerun"/>
+  <expect ref="written" rows="3" reason="the 3 WP rows were written by a pricing run AFTER the mapping load (not the migrated legacy rows); timestamps are UTC"/>
   <expect ref="uat" rows="3" reason="the rerun wrote the 3 CFS WP rows for 6 Nov"/>
   <expect ref="cmp" different="0" only-source="0" only-target="0" reason="UAT equals legacy to 4 decimals"/>
   <compress id="bundle" file="ouat178-wp-vs-legacy-0611.zip">
     <include ref="legacy"/>
     <include ref="uat"/>
     <include ref="mapping"/>
+    <include ref="written"/>
     <include ref="cmp"/>
   </compress>
 </rules>
