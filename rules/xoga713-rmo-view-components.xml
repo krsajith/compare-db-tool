@@ -1,0 +1,48 @@
+<rules name="xoga713-rmo-view-components">
+  <!-- Where the time goes in opera.helper_risk_middle_office_reports (read by the Futures, Options and Trade Query reports).
+       Chain: helper_risk_middle_office_reports -> deal_ticket_security_info_table_view -> deal_ticket_table_with_fy_premium_view (dt) joined to valuation_date_table, security_info_table,
+       underlying_settle_value_table, product_master_table, rms_premium_paid_table, security_settlement_value_table, helper_calculated_settle_price_view (csp) and helper_trade_group_view (tg).
+       Each query counts ONE component for one business unit, with its own timeout (the query table of SUMMARY.md shows the time of each). A component that hits the timeout is the suspect.
+       The last query runs the whole chain for 1000 trades only, to scale the cost per trade. Run with the target-env flag (postgres-dev). Read only. -->
+  <parameters>
+    <param name="bu" type="string" value="CFS"/>
+  </parameters>
+
+  <sql id="c1_deals_fy_premium" db="target" export="full" timeout="180"><![CDATA[
+    SELECT count(*) AS row_count FROM opera.deal_ticket_table_with_fy_premium_view WHERE business_unit = upper(:bu)
+  ]]></sql>
+
+  <sql id="c2_security_info" db="target" export="full" timeout="60"><![CDATA[
+    SELECT count(*) AS row_count FROM opera.security_info_table WHERE business_unit = upper(:bu)
+  ]]></sql>
+
+  <sql id="c3_calculated_settle_price" db="target" export="full" timeout="180"><![CDATA[
+    SELECT count(*) AS row_count FROM opera.helper_calculated_settle_price_view WHERE business_unit = upper(:bu)
+  ]]></sql>
+
+  <sql id="c4_trade_group" db="target" export="full" timeout="180"><![CDATA[
+    SELECT count(*) AS row_count FROM opera.helper_trade_group_view WHERE business_unit = upper(:bu)
+  ]]></sql>
+
+  <sql id="c5_settlement_values" db="target" export="full" timeout="120"><![CDATA[
+    SELECT count(*) AS row_count
+    FROM opera.security_settlement_value_table s
+    WHERE s.business_unit = upper(:bu)
+      AND s.value_date = (SELECT v.value_date FROM opera.valuation_date_table v WHERE v.business_unit = upper(:bu) LIMIT 1)
+  ]]></sql>
+
+  <sql id="c6_cloned_deals" db="target" export="full" timeout="120"><![CDATA[
+    SELECT count(*) AS row_count FROM opera.cloned_deal_ticket_table WHERE business_unit = upper(:bu)
+  ]]></sql>
+
+  <sql id="c7_chain_1000_trades" db="target" export="full" timeout="300"><![CDATA[
+    SELECT count(*) AS row_count
+    FROM opera.helper_risk_middle_office_reports r
+    WHERE r.business_unit = upper(:bu)
+      AND r.trade_id IN (SELECT t.trade_id FROM opera.cloned_deal_ticket_table t WHERE t.business_unit = upper(:bu) ORDER BY t.trade_id LIMIT 1000)
+  ]]></sql>
+
+  <compress id="bundle" file="xoga713-rmo-view-components.zip">
+    <include ref="c1_deals_fy_premium"/><include ref="c2_security_info"/><include ref="c3_calculated_settle_price"/><include ref="c4_trade_group"/><include ref="c5_settlement_values"/><include ref="c6_cloned_deals"/><include ref="c7_chain_1000_trades"/>
+  </compress>
+</rules>
