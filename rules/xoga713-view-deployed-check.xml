@@ -1,0 +1,17 @@
+<rules name="xoga713-view-deployed-check">
+  <sql id="viewdef" db="target" export="full"><![CDATA[
+    SELECT c.relkind AS kind,
+           (pg_get_viewdef(c.oid) LIKE '%underlying_settle_value_table%')::int AS live_formula,
+           (pg_get_viewdef(c.oid) LIKE '%asset_class%')::int AS equity_filter,
+           (pg_get_viewdef(c.oid) LIKE '%curr_mult_table%')::int AS old_stored_table,
+           (SELECT string_agg(a.attname, ',' ORDER BY a.attnum) FROM pg_attribute a WHERE a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped) AS columns
+    FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'opera' AND c.relname = 'helper_var_mult_factor_view'
+  ]]></sql>
+  <expect ref="viewdef" rows="1" reason="the object exists"/>
+  <expect ref="viewdef" column="kind" equals="v" reason="it is a view, not a table"/>
+  <expect ref="viewdef" column="live_formula" equals="1" reason="the view reads underlying_settle_value_table (live formula, v2)"/>
+  <expect ref="viewdef" column="equity_filter" equals="1" reason="equity and equity swaps are excluded, as in legacy"/>
+  <expect ref="viewdef" column="old_stored_table" equals="0" reason="it no longer reads the stored curr_mult_table (Nihal's v1)"/>
+  <compress id="bundle" file="xoga713-view-deployed-check.zip"><include ref="viewdef"/></compress>
+</rules>
