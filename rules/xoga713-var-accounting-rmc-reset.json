@@ -3,7 +3,7 @@
   "db": "target",
   "backupSchema": "parity_work",
   "ticket": "XOGA-713",
-  "description": "Removes the RMC rows of the first var_accounting_table load (created_by var-acct-load): they have no delta_2, gamma_2, vega_2. They are loaded again by xoga713-var-accounting-table-load-2.json. Backed up first, undo file written.",
+  "description": "Removes the RMC rows (44 on UAT, any count elsewhere) of the first var_accounting_table load (created_by var-acct-load): they have no delta_2, gamma_2, vega_2. They are loaded again by xoga713-var-accounting-table-load-2.json. Backed up first, undo file written.",
   "steps": [
     {
       "id": "rmc-rows",
@@ -21,8 +21,8 @@
         "strike"
       ],
       "expect": {
-        "targetBefore": "44",
-        "affected": "44",
+        "targetBefore": "<=5000",
+        "affected": "<=5000",
         "targetAfter": "0"
       }
     }
