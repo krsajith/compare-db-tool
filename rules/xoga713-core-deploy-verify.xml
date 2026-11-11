@@ -38,7 +38,8 @@
   <sql id="viewdef" db="target" export="full"><![CDATA[
     SELECT (pg_get_viewdef(c.oid) LIKE '%underlying_settle_value_table%')::int AS live_formula,
            (pg_get_viewdef(c.oid) LIKE '%asset_class%')::int AS equity_filter,
-           (pg_get_viewdef(c.oid) LIKE '%curr_mult_table%')::int AS old_stored_table
+           (pg_get_viewdef(c.oid) LIKE '%curr_mult_table%')::int AS old_stored_table,
+           (SELECT string_agg(a.attname, ',' ORDER BY a.attnum) FROM pg_attribute a WHERE a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped) AS view_columns
     FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
     WHERE n.nspname = 'opera' AND c.relname = 'helper_var_mult_factor_view' AND c.relkind = 'v'
   ]]></sql>
@@ -65,6 +66,7 @@
   <expect ref="viewdef" column="live_formula" equals="1" reason="the multiplier view reads underlying_settle_value_table"/>
   <expect ref="viewdef" column="equity_filter" equals="1" reason="equity and equity swaps are excluded, as in legacy"/>
   <expect ref="viewdef" column="old_stored_table" equals="0" reason="the view no longer reads the stored curr_mult_table"/>
+  <expect ref="viewdef" column="view_columns" equals="tenant_id,invenio_product_code,value_date,lot_mult,curr_mult,mult_factor" reason="exact v2 column list (v1 had no tenant_id and a different order)"/>
   <expect ref="view_rows" column="view_rows" min="100" reason="the view returns about 120 products for the CFS valuation date"/>
   <expect ref="view_rows" column="with_curr_mult" min="100" reason="curr_mult is filled where the FX price exists"/>
   <expect ref="accounting_reads" column="rows_found" min="0" reason="the accounting view can be read without an error (needs its source views)"/>
