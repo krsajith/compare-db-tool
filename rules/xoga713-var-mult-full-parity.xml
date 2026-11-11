@@ -1,0 +1,78 @@
+<rules name="xoga713-var-mult-full-parity">
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+  </parameters>
+
+  <!-- Step 1: the last value dates that legacy holds -->
+  <sql id="dates" db="mysql-oprdb02" export="full"><![CDATA[
+    SELECT DISTINCT value_date FROM dbsystemuat.curr_mult_table ORDER BY value_date DESC LIMIT 10
+  ]]></sql>
+
+  <!-- Step 2: view parity over all those dates, key = product and date -->
+  <sql id="legacy" db="mysql-oprdb02" uses="d=dates" timeout="300"><![CDATA[
+    SELECT invenio_product_code, value_date, lot_mult, curr_mult, mult_factor
+    FROM dbsystemuat.helper_var_mult_factor_view
+    WHERE value_date IN (:d.value_date[])
+  ]]></sql>
+  <sql id="new" db="target" uses="d=dates" timeout="300"><![CDATA[
+    SELECT invenio_product_code, value_date, lot_mult, curr_mult, mult_factor
+    FROM opera.helper_var_mult_factor_view
+    WHERE tenant_id = :tenant AND value_date IN (:d.value_date[])
+  ]]></sql>
+  <compare id="mult" source="legacy" target="new" export="full">
+    <key columns="invenio_product_code,value_date"/>
+    <column name="lot_mult" relTol="0.000000001"/>
+    <column name="curr_mult" relTol="0.000000001"/>
+    <column name="mult_factor" relTol="0.000000001"/>
+  </compare>
+
+  <!-- Step 3, only if curr_mult differs: legacy stored value against the sp_curr_mult_extract formula for those products and dates.
+       If stored differs from the formula on old dates but not on recent ones, the stored row is a stale snapshot from before the master constant was edited. -->
+  <sql id="stored_vs_formula" db="mysql-oprdb02" uses="x=mult:different" when="#mult.different > 0" export="full"><![CDATA[
+    SELECT c.invenio_product_code, c.value_date, p.curr_mult_type, p.constant_curr_mult, s.settle_value AS fx,
+           c.curr_mult AS stored_curr_mult,
+           CASE WHEN p.curr_mult_type = 'multiplication' THEN p.constant_curr_mult * s.settle_value
+                WHEN p.curr_mult_type = 'division' THEN p.constant_curr_mult / s.settle_value END AS formula_curr_mult
+    FROM dbsystemuat.curr_mult_table c
+    LEFT JOIN dbsystemuat.product_master_table p ON p.invenio_product_code = c.invenio_product_code
+    LEFT JOIN dbsystemuat.underlying_settle_value_table s ON s.underlying_id = p.curr_mult_factor AND s.value_date = c.value_date
+    WHERE c.invenio_product_code IN (:x.invenio_product_code[])
+      AND c.value_date IN (SELECT value_date FROM (SELECT DISTINCT value_date FROM dbsystemuat.curr_mult_table ORDER BY value_date DESC LIMIT 10) t)
+    ORDER BY c.invenio_product_code, c.value_date
+  ]]></sql>
+
+  <!-- Step 4: mapping tables, legacy against new -->
+  <sql id="map_legacy" db="mysql-oprdb02"><![CDATA[SELECT invenio_product_code FROM dbsystemuat.var_product_code_mapping_table]]></sql>
+  <sql id="map_new" db="target"><![CDATA[SELECT invenio_product_code FROM opera.var_product_code_mapping_table WHERE tenant_id = :tenant]]></sql>
+  <compare id="mapping" source="map_legacy" target="map_new" export="full"><key columns="invenio_product_code"/></compare>
+
+  <!-- Step 5, only if new has extra mapped products: do they have accounting rows (then Combined VAR gives them a multiplier that legacy did not) -->
+  <sql id="extra_in_accounting" db="target" uses="m=mapping:only-target" when="#mapping.onlyTarget > 0" export="full"><![CDATA[
+    SELECT a.invenio_product_code, count(*) AS accounting_rows, min(a.value_date) AS first_date, max(a.value_date) AS last_date
+    FROM opera.helper_var_accounting_report a
+    WHERE a.invenio_product_code IN (:m.invenio_product_code[])
+    GROUP BY a.invenio_product_code
+  ]]></sql>
+
+  <!-- Step 6: price ids that do not match in letter case (the view has no row for these) -->
+  <sql id="case_gaps" db="target" export="full"><![CDATA[
+    SELECT p.invenio_product_code, p.curr_mult_factor AS master_id, min(s.underlying_id) AS price_id
+    FROM opera.product_master_table p
+    JOIN opera.var_product_code_mapping_table v ON v.tenant_id = p.tenant_id AND v.invenio_product_code = p.invenio_product_code
+    LEFT JOIN opera.underlying_settle_value_table s ON s.tenant_id = p.tenant_id AND lower(s.underlying_id) = lower(p.curr_mult_factor)
+    WHERE p.tenant_id = :tenant AND p.curr_mult_factor IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM opera.underlying_settle_value_table x WHERE x.tenant_id = p.tenant_id AND x.underlying_id = p.curr_mult_factor)
+    GROUP BY p.invenio_product_code, p.curr_mult_factor
+  ]]></sql>
+
+  <expect ref="mult" different="0" reason="the new view equals the legacy view for every product and date"/>
+  <expect ref="mult" only-source="0" reason="no legacy row missing in new (letter case or missing price)"/>
+  <expect ref="mult" only-target="0" reason="no extra rows in new"/>
+  <expect ref="mapping" only-target="0" reason="the PG VAR mapping must not hold products legacy does not"/>
+  <expect ref="mapping" only-source="0" reason="the PG VAR mapping must hold every legacy product"/>
+  <expect ref="case_gaps" rows="0" reason="every VAR product has a price id with the same letter case"/>
+
+  <compress id="bundle" file="xoga713-var-mult-full-parity.zip">
+    <include ref="mult"/><include ref="stored_vs_formula"/><include ref="mapping"/><include ref="extra_in_accounting"/><include ref="case_gaps"/><include ref="dates"/>
+  </compress>
+</rules>

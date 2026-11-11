@@ -1,0 +1,22 @@
+{
+  "name": "xoga713-var-mult-fix-price-id-case",
+  "db": "target",
+  "backupSchema": "parity_work",
+  "ticket": "XOGA-713",
+  "description": "VAR products whose curr_mult_factor differs from the FX price id only in letter case (CR BRLUSD SPOT BGN against CR BRLUSD Spot BGN) get the price id spelling, so the view finds the price.",
+  "steps": [
+    {
+      "id": "align-case",
+      "action": "update",
+      "table": "opera.product_master_table",
+      "where": "tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND curr_mult_factor IS NOT NULL AND invenio_product_code IN (SELECT invenio_product_code FROM opera.var_product_code_mapping_table WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113') AND NOT EXISTS (SELECT 1 FROM opera.underlying_settle_value_table x WHERE x.tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND x.underlying_id = opera.product_master_table.curr_mult_factor) AND (SELECT count(DISTINCT s.underlying_id) FROM opera.underlying_settle_value_table s WHERE s.tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND lower(s.underlying_id) = lower(opera.product_master_table.curr_mult_factor)) = 1",
+      "key": ["uuid"],
+      "set": {
+        "curr_mult_factor": "(SELECT min(s.underlying_id) FROM opera.underlying_settle_value_table s WHERE s.tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND lower(s.underlying_id) = lower(opera.product_master_table.curr_mult_factor))",
+        "updated_by": "'xoga713'",
+        "updated_timestamp": "now()"
+      },
+      "expect": { "targetBefore": "2", "affected": "2", "targetAfter": "0" }
+    }
+  ]
+}
