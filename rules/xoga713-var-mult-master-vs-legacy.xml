@@ -1,0 +1,47 @@
+<rules name="xoga713-var-mult-master-vs-legacy">
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+  </parameters>
+
+  <sql id="legacy" db="mysql-oprdb02" timeout="300"><![CDATA[
+    SELECT p.invenio_product_code, p.curr_mult_type, p.constant_curr_mult, p.curr_mult_factor, p.lot_mult, p.murex_mult
+    FROM dbsystemuat.product_master_table p
+    JOIN dbsystemuat.var_product_code_mapping_table v ON v.invenio_product_code = p.invenio_product_code
+  ]]></sql>
+
+  <sql id="new" db="target" timeout="300"><![CDATA[
+    SELECT p.invenio_product_code, p.curr_mult_type, p.constant_curr_mult, p.curr_mult_factor, p.lot_mult, p.murex_mult
+    FROM opera.product_master_table p
+    JOIN opera.var_product_code_mapping_table v
+      ON v.tenant_id = p.tenant_id AND v.invenio_product_code = p.invenio_product_code
+    WHERE p.tenant_id = :tenant
+  ]]></sql>
+
+  <sql id="ids_missing" db="target" export="full"><![CDATA[
+    SELECT p.invenio_product_code, p.curr_mult_factor AS master_id, s.underlying_id AS price_id_other_case
+    FROM opera.product_master_table p
+    JOIN opera.var_product_code_mapping_table v
+      ON v.tenant_id = p.tenant_id AND v.invenio_product_code = p.invenio_product_code
+    LEFT JOIN opera.underlying_settle_value_table s
+      ON s.tenant_id = p.tenant_id AND lower(s.underlying_id) = lower(p.curr_mult_factor)
+    WHERE p.tenant_id = :tenant
+      AND p.curr_mult_factor IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM opera.underlying_settle_value_table x
+                      WHERE x.tenant_id = p.tenant_id AND x.underlying_id = p.curr_mult_factor)
+    GROUP BY p.invenio_product_code, p.curr_mult_factor, s.underlying_id
+  ]]></sql>
+
+  <compare id="master" source="legacy" target="new" export="full">
+    <key columns="invenio_product_code"/>
+    <column name="curr_mult_type" caseInsensitive="true" trim="true"/>
+    <column name="constant_curr_mult" relTol="0.000000001"/>
+    <column name="curr_mult_factor" trim="true"/>
+    <column name="lot_mult" relTol="0.000000001"/>
+    <column name="murex_mult" relTol="0.000000001"/>
+  </compare>
+
+  <expect ref="master" different="0" reason="CM JN and CM CRD gave a different curr_mult than legacy; this shows which master column differs"/>
+  <expect ref="ids_missing" rows="0" reason="every curr_mult_factor must exist in underlying_settle_value_table with the same letter case, otherwise the view has no row (CM CRD, EG THE)"/>
+
+  <compress id="bundle" file="xoga713-var-mult-master-vs-legacy.zip"><include ref="master"/><include ref="ids_missing"/></compress>
+</rules>
