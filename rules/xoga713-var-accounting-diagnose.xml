@@ -1,0 +1,63 @@
+<rules name="xoga713-var-accounting-diagnose">
+  <!-- Why the new helper_var_accounting_report does not match legacy for cfs (no key matched) and returns nothing for grn.
+       Read-only. Run with the target-env flag for the environment. Steps: dates, stage counts of the view chain, then a cfs comparison without the dates. -->
+
+  <sql id="legacy_dates" db="mysql-oprdb02" export="full"><![CDATA[
+    SELECT 'valuation_date_table' AS source, value_date, settlement_date, NULL AS row_count FROM dbsystemuat.valuation_date_table
+    UNION ALL SELECT 'accounting_report_cfs', min(value_date), max(settlement_date), count(*) FROM dbsystemuat.helper_var_accounting_report_cfs
+    UNION ALL SELECT 'accounting_report_grn', min(value_date), max(settlement_date), count(*) FROM dbsystemuat.helper_var_accounting_report_grn
+    UNION ALL SELECT 'var_accounting_table_cfs', min(value_date), max(value_date), count(*) FROM dbsystemuat.var_accounting_table_cfs
+    UNION ALL SELECT 'var_accounting_table_grn', min(value_date), max(value_date), count(*) FROM dbsystemuat.var_accounting_table_grn
+  ]]></sql>
+
+  <sql id="new_dates" db="target" export="full"><![CDATA[
+    SELECT 'valuation_date_table ' || upper(business_unit) AS source, value_date, settlement_date, NULL::bigint AS row_count
+    FROM opera.valuation_date_table WHERE upper(business_unit) IN ('CFS', 'GRN')
+    UNION ALL SELECT 'var_accounting_table ' || upper(business_unit), min(value_date), max(value_date), count(*)
+    FROM opera.var_accounting_table WHERE upper(business_unit) IN ('CFS', 'GRN') GROUP BY upper(business_unit)
+    UNION ALL SELECT 'accounting_view ' || upper(business_unit), min(value_date), max(settlement_date), count(*)
+    FROM opera.helper_var_accounting_report WHERE upper(business_unit) IN ('CFS', 'GRN') GROUP BY upper(business_unit)
+  ]]></sql>
+
+  <sql id="stages" db="target" export="full" timeout="180"><![CDATA[
+    SELECT s.bu, s.stage, s.row_count FROM (
+      SELECT 'CFS' AS bu, '1 var_accounting_table' AS stage, count(*) AS row_count FROM opera.var_accounting_table WHERE upper(business_unit) = 'CFS'
+      UNION ALL SELECT 'CFS', '2 future view', count(*) FROM opera.helper_var_future_view WHERE upper(business_unit) = 'CFS'
+      UNION ALL SELECT 'CFS', '3 vanilla view', count(*) FROM opera.helper_var_vanilla_view WHERE upper(business_unit) = 'CFS'
+      UNION ALL SELECT 'CFS', '4 future rows with an underlying_list_table match', count(*) FROM opera.helper_var_future_view f JOIN opera.underlying_list_table u ON u.underlying_id = f.p1_name WHERE upper(f.business_unit) = 'CFS'
+      UNION ALL SELECT 'CFS', '5 vanilla rows with a vol_id_table match', count(*) FROM opera.helper_var_vanilla_view v JOIN opera.vol_id_table vi ON vi.vol_id = v.vol_id WHERE upper(v.business_unit) = 'CFS'
+      UNION ALL SELECT 'CFS', '6 accounting view', count(*) FROM opera.helper_var_accounting_report WHERE upper(business_unit) = 'CFS'
+      UNION ALL SELECT 'GRN', '1 var_accounting_table', count(*) FROM opera.var_accounting_table WHERE upper(business_unit) = 'GRN'
+      UNION ALL SELECT 'GRN', '2 future view', count(*) FROM opera.helper_var_future_view WHERE upper(business_unit) = 'GRN'
+      UNION ALL SELECT 'GRN', '3 vanilla view', count(*) FROM opera.helper_var_vanilla_view WHERE upper(business_unit) = 'GRN'
+      UNION ALL SELECT 'GRN', '4 future rows with an underlying_list_table match', count(*) FROM opera.helper_var_future_view f JOIN opera.underlying_list_table u ON u.underlying_id = f.p1_name WHERE upper(f.business_unit) = 'GRN'
+      UNION ALL SELECT 'GRN', '5 vanilla rows with a vol_id_table match', count(*) FROM opera.helper_var_vanilla_view v JOIN opera.vol_id_table vi ON vi.vol_id = v.vol_id WHERE upper(v.business_unit) = 'GRN'
+      UNION ALL SELECT 'GRN', '6 accounting view', count(*) FROM opera.helper_var_accounting_report WHERE upper(business_unit) = 'GRN'
+    ) s ORDER BY 1, 2
+  ]]></sql>
+
+  <sql id="cfs_legacy" db="mysql-oprdb02" timeout="300"><![CDATA[
+    SELECT subportfolio, p1_name, contract_month, derivative_type, strike, coalesce(vol_id, '') AS vol_id, delta, gamma, theta, vega, delta1, gamma1, vega1,
+           invenio_product_code, future_continuation_series, option_continuation_series
+    FROM dbsystemuat.helper_var_accounting_report_cfs
+  ]]></sql>
+  <sql id="cfs_new" db="target" timeout="300"><![CDATA[
+    SELECT subportfolio, p1_name, contract_month, derivative_type, strike::double precision AS strike, coalesce(vol_id, '') AS vol_id, delta, gamma, theta, vega, delta1, gamma1, vega1,
+           invenio_product_code, future_continuation_series, option_continuation_series
+    FROM opera.helper_var_accounting_report WHERE lower(business_unit) = 'cfs'
+  ]]></sql>
+  <compare id="cfs_nodate" source="cfs_legacy" target="cfs_new" export="full">
+    <key columns="subportfolio,p1_name,contract_month,derivative_type,strike,vol_id"/>
+    <column name="delta" relTol="0.000000001"/>
+    <column name="gamma" relTol="0.000000001"/>
+    <column name="theta" relTol="0.000000001"/>
+    <column name="vega" relTol="0.000000001"/>
+    <column name="delta1" relTol="0.000000001"/>
+    <column name="gamma1" relTol="0.000000001"/>
+    <column name="vega1" relTol="0.000000001"/>
+  </compare>
+
+  <expect ref="stages" rows="12" reason="12 stage counts (6 per business unit)"/>
+  <expect ref="cfs_nodate" matched="&gt;=1" reason="without the dates, cfs rows match legacy by product, contract month, type and strike"/>
+  <compress id="bundle" file="xoga713-var-accounting-diagnose.zip"><include ref="legacy_dates"/><include ref="new_dates"/><include ref="stages"/><include ref="cfs_nodate"/></compress>
+</rules>
