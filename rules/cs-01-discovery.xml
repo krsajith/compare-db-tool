@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rules name="cs-01-discovery">
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+    <param name="pgdb" type="string" value="uat"/>
+  </parameters>
+  <sql id="my-dates" db="mysql-oprdb02" export="full"><![CDATA[
+    SELECT value_date, count(*) AS cache_rows, count(DISTINCT trade_id) AS trades, max(created_timestamp) AS built, max(updated_timestamp) AS updated
+    FROM dbsystemuat.helper_client_statement_report_view_cache_table_cfs
+    GROUP BY value_date ORDER BY value_date DESC LIMIT 10
+  ]]></sql>
+  <sql id="pg-dates" db="postgres-uat" export="full"><![CDATA[
+    SELECT value_date, count(*) AS cache_rows, count(DISTINCT trade_id) AS trades, max(created_timestamp) AS built, max(updated_timestamp) AS updated
+    FROM opera.helper_client_statement_report_view_cache_table
+    WHERE tenant_id = :tenant AND business_unit = 'CFS'
+    GROUP BY value_date ORDER BY value_date DESC LIMIT 10
+  ]]></sql>
+  <sql id="pg-valuation-date" db="postgres-uat" export="full"><![CDATA[
+    SELECT business_unit, value_date FROM opera.valuation_date_table WHERE tenant_id = :tenant AND business_unit = 'CFS'
+  ]]></sql>
+  <expect ref="my-dates" rows="&gt;=1" reason="legacy cache has rows"/>
+  <expect ref="pg-dates" rows="&gt;=1" reason="new cache has rows"/>
+  <expect ref="pg-valuation-date" rows="1"/>
+  <compress id="bundle" file="cs-01-discovery.zip"><include ref="my-dates"/><include ref="pg-dates"/><include ref="pg-valuation-date"/></compress>
+</rules>

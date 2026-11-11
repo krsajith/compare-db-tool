@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rules name="cs-03-funnel-legacy-vs-new-cfs">
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+    <param name="valueDate" type="date" value="2026-11-06"/>
+  </parameters>
+  <sql id="l1" db="mysql-oprdb02" timeout="300" fetchSize="5000"><![CDATA[
+    SELECT DISTINCT trade_id, contract_number, counterparty_parent FROM dbsystemuat.cloned_deal_ticket_table_cfs
+  ]]></sql>
+  <sql id="n1" db="postgres-uat" timeout="300" fetchSize="5000"><![CDATA[
+    SELECT DISTINCT trade_id, contract_number, counterparty_parent FROM opera.cloned_deal_ticket_table WHERE tenant_id = :tenant AND business_unit = 'CFS'
+  ]]></sql>
+  <sql id="l2" db="mysql-oprdb02" timeout="300" fetchSize="5000"><![CDATA[
+    SELECT DISTINCT d.trade_id, d.contract_number, d.counterparty_parent
+    FROM dbsystemuat.cloned_deal_ticket_table_cfs d
+    JOIN dbsystemuat.deal_active_lots_table_cfs a ON a.trade_id = d.trade_id
+    WHERE a.value_date = :valueDate
+  ]]></sql>
+  <sql id="n2" db="postgres-uat" timeout="300" fetchSize="5000"><![CDATA[
+    SELECT DISTINCT d.trade_id, d.contract_number, d.counterparty_parent
+    FROM opera.cloned_deal_ticket_table d
+    JOIN opera.deal_active_lots_table a ON a.tenant_id = d.tenant_id AND a.business_unit = d.business_unit AND a.trade_id = d.trade_id
+    WHERE d.tenant_id = :tenant AND d.business_unit = 'CFS' AND a.value_date = :valueDate
+  ]]></sql>
+  <sql id="l3" db="mysql-oprdb02" timeout="300" fetchSize="5000"><![CDATA[
+    SELECT DISTINCT d.trade_id, d.contract_number, d.counterparty_parent
+    FROM dbsystemuat.cloned_deal_ticket_table_cfs d
+    JOIN dbsystemuat.deal_active_lots_table_cfs a ON a.trade_id = d.trade_id
+    WHERE a.value_date = :valueDate AND a.active_lots != 0
+  ]]></sql>
+  <sql id="n3" db="postgres-uat" timeout="300" fetchSize="5000"><![CDATA[
+    SELECT DISTINCT d.trade_id, d.contract_number, d.counterparty_parent
+    FROM opera.cloned_deal_ticket_table d
+    JOIN opera.deal_active_lots_table a ON a.tenant_id = d.tenant_id AND a.business_unit = d.business_unit AND a.trade_id = d.trade_id
+    WHERE d.tenant_id = :tenant AND d.business_unit = 'CFS' AND a.value_date = :valueDate AND a.active_lots != 0
+  ]]></sql>
+  <sql id="l4" db="mysql-oprdb02" timeout="300" fetchSize="5000"><![CDATA[
+    SELECT DISTINCT trade_id, contract_number, client_code FROM dbsystemuat.helper_client_statement_report_view_cache_table_cfs WHERE value_date = :valueDate
+  ]]></sql>
+  <sql id="n4" db="postgres-uat" timeout="300" fetchSize="5000"><![CDATA[
+    SELECT DISTINCT trade_id, contract_number, client_code FROM opera.helper_client_statement_report_view_cache_table
+    WHERE tenant_id = :tenant AND business_unit = 'CFS' AND value_date = :valueDate
+  ]]></sql>
+  <funnel id="trades" key="trade_id">
+    <stage id="s1-clone" source="l1" target="n1" reason="all cloned deal tickets of the BU"/>
+    <stage id="s2-lots-row" source="l2" target="n2" reason="deal has an active-lots row on the value date"/>
+    <stage id="s3-lots-nonzero" source="l3" target="n3" reason="active lots not zero on the value date"/>
+    <stage id="s4-cache" source="l4" target="n4" reason="deal is in the statement cache of the value date"/>
+  </funnel>
+  <expect ref="trades" first-divergence="none" reason="legacy and new keep the same deals at every stage"/>
+  <compress id="bundle" file="cs-03-funnel.zip"><include ref="trades"/></compress>
+</rules>

@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rules name="cs-02-cache-legacy-vs-new-cfs">
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+    <param name="valueDate" type="date" value="2026-11-06"/>
+  </parameters>
+  <sql id="legacy" db="mysql-oprdb02" timeout="300" fetchSize="5000"><![CDATA[
+    SELECT trade_id, value_date, client_code, contract_number, derivative_type, product_code, active_lots, traded_price,
+           settle_price, future_price, underlying1_price, mult_factor, nc_factor, fx_nc_factor, mtm_nc, mtm_usd, mkt_value_usd,
+           premium_paid_usd, barrier1_hit, created_timestamp, updated_by
+    FROM dbsystemuat.helper_client_statement_report_view_cache_table_cfs WHERE value_date = :valueDate
+  ]]></sql>
+  <sql id="new" db="postgres-uat" timeout="300" fetchSize="5000"><![CDATA[
+    SELECT trade_id, value_date, client_code, contract_number, derivative_type, product_code, active_lots, traded_price,
+           settle_price, future_price, underlying1_price, mult_factor, nc_factor, fx_nc_factor, mtm_nc, mtm_usd, mkt_value_usd,
+           premium_paid_usd, barrier1_hit, created_timestamp, updated_by
+    FROM opera.helper_client_statement_report_view_cache_table
+    WHERE tenant_id = :tenant AND business_unit = 'CFS' AND value_date = :valueDate
+  ]]></sql>
+  <presence id="trades" key="trade_id" sources="legacy, new"/>
+  <compare id="cache" source="legacy" target="new">
+    <key columns="trade_id"/>
+    <column name="value_date" dateOnly="true"/>
+    <column name="active_lots" absTol="0.000001"/>
+    <column name="traded_price" absTol="0.000001"/>
+    <column name="settle_price" absTol="0.000001"/>
+    <column name="future_price" absTol="0.000001"/>
+    <column name="underlying1_price" absTol="0.000001"/>
+    <column name="mult_factor" absTol="0.000001"/>
+    <column name="nc_factor" absTol="0.000001"/>
+    <column name="fx_nc_factor" absTol="0.000001"/>
+    <column name="mtm_nc" absTol="0.005"/>
+    <column name="mtm_usd" absTol="0.005"/>
+    <column name="mkt_value_usd" absTol="0.005"/>
+    <column name="premium_paid_usd" absTol="0.005"/>
+    <column name="created_timestamp" ignore="true"/>
+    <column name="updated_by" ignore="true"/>
+    <breakdown columns="client_code" top="15"/>
+    <breakdown columns="derivative_type" top="10"/>
+  </compare>
+  <expect ref="cache" different="0" only-source="0" only-target="0" duplicates="0" reason="the statement cache of the same value date must be identical"/>
+  <expect ref="trades" mismatched="0" reason="same trades on both sides"/>
+  <compress id="bundle" file="cs-02-cache-legacy-vs-new.zip"><include ref="cache"/><include ref="trades"/></compress>
+</rules>
