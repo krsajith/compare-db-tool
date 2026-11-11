@@ -1,0 +1,64 @@
+<rules name="xoga713-rmo-index-and-view-check">
+  <!-- Status of the RMO join indexes (built CONCURRENTLY by changeSet create-rmo-join-indexes-v1) and the cost of the view the Futures, Options and Trade Query reports read
+       (opera.helper_risk_middle_office_reports). The engine runs: SELECT * FROM opera.helper_risk_middle_office_reports WHERE LOWER(business_unit) = :bu, without a date filter.
+       The query table of SUMMARY.md shows the time of each query: compare view_count_lower (the engine's predicate) with view_count_equals (a predicate an index can use).
+       Run with the target-env flag (postgres-dev for operadev). Read only. -->
+  <parameters>
+    <param name="bu" type="string" value="CFS"/>
+  </parameters>
+
+  <sql id="index_state" db="target" export="full"><![CDATA[
+    SELECT c.relname AS index_name, t.relname AS table_name, i.indisvalid AS valid, i.indisready AS ready, pg_size_pretty(pg_relation_size(c.oid)) AS size
+    FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid JOIN pg_class t ON t.oid = i.indrelid JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'opera' AND c.relname IN ('idx_security_info_tenant_bu_sec', 'idx_sec_settle_value_tenant_bu_sec_vd')
+    ORDER BY 1
+  ]]></sql>
+
+  <sql id="invalid_indexes" db="target" export="full"><![CDATA[
+    SELECT c.relname AS index_name, t.relname AS table_name, i.indisvalid AS valid, i.indisready AS ready
+    FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid JOIN pg_class t ON t.oid = i.indrelid JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'opera' AND (NOT i.indisvalid OR NOT i.indisready)
+    ORDER BY 1
+  ]]></sql>
+
+  <sql id="build_progress" db="target" export="full"><![CDATA[
+    SELECT p.pid, p.phase, p.index_relid::regclass::text AS index_name, p.relid::regclass::text AS table_name,
+           p.blocks_done, p.blocks_total, p.tuples_done, p.tuples_total
+    FROM pg_stat_progress_create_index p
+  ]]></sql>
+
+  <sql id="index_sessions" db="target" export="full"><![CDATA[
+    SELECT pid, state, wait_event_type, wait_event, now() - query_start AS running_for, left(query, 140) AS query
+    FROM pg_stat_activity
+    WHERE pid <> pg_backend_pid() AND (query ILIKE '%create index%' OR query ILIKE '%reindex%')
+    ORDER BY query_start
+  ]]></sql>
+
+  <sql id="changelog_and_lock" db="target" export="full"><![CDATA[
+    SELECT (SELECT string_agg(id || ' ' || exectype || ' ' || to_char(dateexecuted, 'YYYY-MM-DD HH24:MI:SS'), '; ') FROM opera.databasechangelog WHERE id = 'create-rmo-join-indexes-v1') AS rmo_index_changeset,
+           (SELECT locked::int FROM opera.databasechangeloglock) AS liquibase_locked
+  ]]></sql>
+
+  <sql id="table_sizes" db="target" export="full"><![CDATA[
+    SELECT c.relname AS table_name, c.reltuples::bigint AS approx_rows, pg_size_pretty(pg_total_relation_size(c.oid)) AS total_size
+    FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'opera' AND c.relname IN ('security_info_table', 'security_settlement_value_table', 'cloned_deal_ticket_table', 'deal_ticket_table', 'premium_fy_table')
+    ORDER BY 1
+  ]]></sql>
+
+  <sql id="view_count_lower" db="target" export="full" timeout="600"><![CDATA[
+    SELECT count(*) AS view_rows FROM opera.helper_risk_middle_office_reports WHERE LOWER(business_unit) = LOWER(:bu)
+  ]]></sql>
+
+  <sql id="view_count_equals" db="target" export="full" timeout="600"><![CDATA[
+    SELECT count(*) AS view_rows FROM opera.helper_risk_middle_office_reports WHERE business_unit = UPPER(:bu)
+  ]]></sql>
+
+  <expect ref="index_state" rows="2" reason="both RMO join indexes exist"/>
+  <expect ref="invalid_indexes" rows="0" reason="no INVALID or not-ready index in schema opera: an interrupted CONCURRENTLY build leaves one, and CREATE INDEX IF NOT EXISTS then does nothing"/>
+  <expect ref="changelog_and_lock" column="liquibase_locked" equals="0" reason="Liquibase is not still running (a long index build keeps core from finishing its start)"/>
+
+  <compress id="bundle" file="xoga713-rmo-index-and-view-check.zip">
+    <include ref="index_state"/><include ref="invalid_indexes"/><include ref="build_progress"/><include ref="index_sessions"/><include ref="changelog_and_lock"/><include ref="table_sizes"/><include ref="view_count_lower"/><include ref="view_count_equals"/>
+  </compress>
+</rules>
