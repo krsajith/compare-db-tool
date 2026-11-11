@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Indexes on opera.underlying_settle_value_table (and the two spot-id config tables), with size and use counts.
+     Read-only. Run with the target env: target-env postgres-uat, or postgres-prod together with allow-prod (only when the user says so). -->
+<rules name="cs-08-usv-indexes">
+  <sql id="indexes" db="target" export="full"><![CDATA[
+    SELECT i.tablename, i.indexname, i.indexdef,
+           pg_size_pretty(pg_relation_size(format('%I.%I', i.schemaname, i.indexname)::regclass)) AS index_size,
+           s.idx_scan, s.last_idx_scan
+    FROM pg_indexes i
+    LEFT JOIN pg_stat_user_indexes s ON s.schemaname = i.schemaname AND s.indexrelname = i.indexname
+    WHERE i.schemaname = 'opera'
+      AND i.tablename IN ('underlying_settle_value_table', 'currency_spot_mapping_table', 'product_master_table')
+    ORDER BY i.tablename, i.indexname
+  ]]></sql>
+  <sql id="table-size" db="target" export="full"><![CDATA[
+    SELECT c.relname AS table_name, c.reltuples::bigint AS approx_rows,
+           pg_size_pretty(pg_relation_size(c.oid)) AS table_size, pg_size_pretty(pg_indexes_size(c.oid)) AS all_indexes_size
+    FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'opera' AND c.relname IN ('underlying_settle_value_table', 'currency_spot_mapping_table', 'product_master_table')
+  ]]></sql>
+  <expect ref="indexes" rows="&gt;=1" reason="the table has indexes"/>
+  <expect ref="table-size" rows="3"/>
+  <compress id="bundle" file="cs-08-usv-indexes.zip"><include ref="indexes"/><include ref="table-size"/></compress>
+</rules>
