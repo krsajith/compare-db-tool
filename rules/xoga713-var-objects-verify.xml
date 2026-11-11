@@ -56,7 +56,10 @@
             FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'opera' AND c.relname = 'helper_var_mult_factor_view' AND c.relkind = 'v') AS mult_view_live,
            (SELECT (pg_get_viewdef(c.oid) LIKE '%helper_var_future_view%' AND pg_get_viewdef(c.oid) LIKE '%helper_var_vanilla_view%' AND pg_get_viewdef(c.oid) LIKE '%var_bu_rule%')::int
             FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'opera' AND c.relname = 'helper_var_accounting_report' AND c.relkind = 'v') AS accounting_view_chain,
-           (SELECT string_agg(a.attname, ',' ORDER BY a.attnum) FROM pg_attribute a WHERE a.attrelid = 'opera.helper_var_mult_factor_view'::regclass AND a.attnum > 0 AND NOT a.attisdropped) AS mult_view_columns
+           (SELECT string_agg(a.attname, ',' ORDER BY a.attnum) FROM pg_attribute a WHERE a.attrelid = 'opera.helper_var_mult_factor_view'::regclass AND a.attnum > 0 AND NOT a.attisdropped) AS mult_view_columns,
+           (SELECT (pg_get_viewdef(c.oid) LIKE '%lower(%derivative_type%')::int FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'opera' AND c.relname = 'helper_var_future_view' AND c.relkind = 'v') AS future_view_v2,
+           (SELECT (pg_get_viewdef(c.oid) LIKE '%lower(%derivative_type%' AND pg_get_viewdef(c.oid) LIKE '%left6sp10%')::int FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'opera' AND c.relname = 'helper_var_vanilla_view' AND c.relkind = 'v') AS vanilla_view_v2,
+           (SELECT count(*) FROM opera.var_bu_rule WHERE (bu = 'frt') OR (bu = 'rmc' AND has_extra_greeks) OR (bu = 'cfs' AND vol_id_mode = 'left6sp10' AND 'amer_disc_up_out_call' = ANY (vanilla_derivative_types))) AS rule_v2_rows
   ]]></sql>
 
   <sql id="source_data" db="target" export="full" timeout="120"><![CDATA[
@@ -83,7 +86,7 @@
 
   <expect ref="kinds" column="found" equals="10" reason="all ten objects exist"/>
   <expect ref="kinds" column="right_kind" equals="10" reason="four views and six tables"/>
-  <expect ref="changesets_ok" column="executed" equals="8" reason="var_bu_rule, future view, vanilla view, multiplier view v2, the accounting view and the three v2 changeSets (rule rows, future view, vanilla view) all ran (EXECUTED)"/>
+  <expect ref="changesets_ok" column="executed" min="5" reason="at least 5 (the v1 changeSets); 8 only after Liquibase ran the three v2 changeSets, which a manual SQL run does not record: var_bu_rule, future view, vanilla view, multiplier view v2, the accounting view and the three v2 changeSets (rule rows, future view, vanilla view) all ran (EXECUTED)"/>
   <expect ref="changesets_ok" column="accounting_view_created" equals="1" reason="create-helper_var_accounting_report-view-v1 ran, the accounting view exists"/>
   <expect ref="lock_state" column="locked" equals="0" reason="Liquibase released its lock"/>
   <expect ref="rules_table" column="bu_rows" equals="34" reason="one rule row per business unit (frt is new in v2)"/>
@@ -94,6 +97,9 @@
   <expect ref="viewdefs" column="mult_view_live" equals="1" reason="the multiplier view is the live definition with the equity filter"/>
   <expect ref="viewdefs" column="accounting_view_chain" equals="1" reason="the accounting view reads the future and vanilla views and var_bu_rule"/>
   <expect ref="viewdefs" column="mult_view_columns" equals="tenant_id,invenio_product_code,value_date,lot_mult,curr_mult,mult_factor" reason="exact v2 column list"/>
+  <expect ref="viewdefs" column="future_view_v2" equals="1" reason="the future view is v2 (case-insensitive derivative type), whether deployed by Liquibase or run by hand"/>
+  <expect ref="viewdefs" column="vanilla_view_v2" equals="1" reason="the vanilla view is v2 (case-insensitive type, vol_id rule for cfs)"/>
+  <expect ref="viewdefs" column="rule_v2_rows" equals="3" reason="var_bu_rule has the v2 rows for frt, rmc (extra greeks) and cfs (amer_disc types, vol_id rule)"/>
   <expect ref="source_data" column="var_accounting_table_rows" min="1" reason="var_accounting_table feeds the future and vanilla views; 0 means load it with rules/xoga713-var-accounting-table-load.json"/>
   <expect ref="source_data" column="var_mapping_rows" min="100" reason="the VAR product mapping (about 124 rows in legacy)"/>
   <expect ref="mult_rows" column="view_rows" min="100" reason="the multiplier view returns about 120 products for the CFS valuation date"/>
