@@ -1,0 +1,17 @@
+<rules name="xoga713-legacy-var-view-definitions">
+  <!-- The LIVE definitions of the legacy VAR views (cfs, grn, usg). The DDL dump of 2025-11-29 that the new views were ported from returns derivative_type as stored (lower case),
+       while the live helper_var_accounting_report_cfs returns FUTURE. This reads the real text so the port can follow the live logic. Read-only, MySQL only. -->
+
+  <sql id="definitions" db="mysql-oprdb02" export="full" timeout="120"><![CDATA[
+    SELECT TABLE_NAME AS view_name, CHAR_LENGTH(VIEW_DEFINITION) AS definition_length, VIEW_DEFINITION AS definition
+    FROM information_schema.VIEWS
+    WHERE TABLE_SCHEMA = 'dbsystemuat'
+      AND TABLE_NAME IN ('helper_var_future_view_cfs', 'helper_var_vanilla_view_cfs', 'helper_var_accounting_report_cfs',
+                         'helper_var_future_view_grn', 'helper_var_vanilla_view_grn', 'helper_var_accounting_report_grn',
+                         'helper_var_future_view_usg', 'helper_var_vanilla_view_usg', 'helper_var_accounting_report_usg')
+    ORDER BY TABLE_NAME
+  ]]></sql>
+
+  <expect ref="definitions" rows="9" reason="three views for each of cfs, grn and usg"/>
+  <compress id="bundle" file="xoga713-legacy-var-view-definitions.zip"><include ref="definitions"/></compress>
+</rules>
