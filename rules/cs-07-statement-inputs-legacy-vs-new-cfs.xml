@@ -1,0 +1,260 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Client statement CFS, legacy MySQL vs new PostgreSQL: every input the legacy statement view reads, compared value by value
+     in ONE run. Read-only, finds differences, fixes nothing.
+     Why inputs and not the cache: the legacy cache keeps one date only (primary key trade_id, rebuilt from
+     helper_client_statement_report_view_cfs on the single-row valuation_date_table, now 11-Nov), so the legacy 06-Nov
+     statement values exist only in the old PDFs (already compared: 147 of 165 identical). What legacy still keeps for 06-Nov is
+     compared here. Inputs, from the view definition in D:/oga/db-schema/opera_view_definitions.sql:
+       deals      cloned_deal_ticket_table_cfs (scope = the view filter: RMS subportfolio, traded before the value date, not JPM9A400)
+       lots       deal_ticket_active_lots_view_cfs = latest lots per trade up to the value date; new reads latest_active_lot
+       securities cloned_security_info_table_cfs
+       premium    premium_fy_table_cfs, rms_premium_paid_table_cfs
+       prices     underlying_settle_value_table (spot, FX, futures underlyings) on the value date, keyed case-insensitively so a
+                  letter-case difference shows as a CASE_ONLY change of underlying_id instead of a missing row
+       averages   security_average_till_now_monitoring_table_cfs on the value date
+       fixings    fixing_table_cfs (fixed FX factor)
+       config     product_master_table (lot/curr multipliers, FX spot id), currency_spot_mapping_table, client_master_data_cfs
+     security_settlement_value_table_cfs has no 06-Nov rows in MySQL (purged), so only its available dates are listed.
+     Columns checked against the MySQL DDL (OGA_table_structures.sql) and opera on 11-Nov-2026. -->
+<rules name="cs-07-statement-inputs-legacy-vs-new-cfs">
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+    <param name="valueDate" type="date" value="2026-11-06"/>
+  </parameters>
+
+  <!-- 0. context: dates on both sides, and which legacy settlement-price dates still exist -->
+  <sql id="dates" db="mysql-oprdb02" export="full"><![CDATA[
+    SELECT 'legacy valuation_date_table' AS what, value_date, settlement_date, NULL AS row_count FROM dbsystemuat.valuation_date_table
+    UNION ALL SELECT 'legacy statement cache', max(value_date), NULL, count(*) FROM dbsystemuat.helper_client_statement_report_view_cache_table_cfs
+    UNION ALL SELECT 'legacy security_settlement_value_table_cfs latest', max(value_date), NULL, count(DISTINCT value_date) FROM dbsystemuat.security_settlement_value_table_cfs
+  ]]></sql>
+  <sql id="pg-dates" db="postgres-uat" export="full"><![CDATA[
+    SELECT 'new valuation_date_table' AS what, value_date, settlement_date, NULL::bigint AS row_count FROM opera.valuation_date_table WHERE tenant_id = :tenant AND business_unit = 'CFS'
+    UNION ALL SELECT 'new statement cache', max(value_date), NULL, count(*) FROM opera.helper_client_statement_report_view_cache_table WHERE tenant_id = :tenant AND business_unit = 'CFS'
+  ]]></sql>
+
+  <!-- 1. deals -->
+  <sql id="l-deals" db="mysql-oprdb02" timeout="600" fetchSize="5000"><![CDATA[
+    SELECT trade_id, contract_number, counterparty_parent, security_id, subportfolio, market_action, transaction_date,
+           original_lots, premium, netting_status, netting_date, is_fixing_done, fixing_date, opt_periodicity, deal_status, trade_source
+    FROM dbsystemuat.cloned_deal_ticket_table_cfs
+    WHERE subportfolio LIKE 'RMS%' AND transaction_date < :valueDate AND counterparty_parent <> 'JPM9A400'
+  ]]></sql>
+  <sql id="n-deals" db="postgres-uat" timeout="600" fetchSize="5000"><![CDATA[
+    SELECT trade_id, contract_number, counterparty_parent, security_id, subportfolio, market_action, transaction_date,
+           original_lots, premium, netting_status, netting_date, is_fixing_done, fixing_date, opt_periodicity, deal_status, trade_source
+    FROM opera.cloned_deal_ticket_table
+    WHERE tenant_id = :tenant AND business_unit = 'CFS' AND is_latest_version = 1
+      AND subportfolio LIKE 'RMS%' AND transaction_date < :valueDate AND counterparty_parent <> 'JPM9A400'
+  ]]></sql>
+  <compare id="deals" source="l-deals" target="n-deals">
+    <key columns="trade_id"/>
+    <column name="original_lots" absTol="0.000000001"/>
+    <column name="premium" absTol="0.000000001"/>
+    <column name="transaction_date" dateOnly="true"/>
+    <column name="netting_date" dateOnly="true"/>
+    <column name="fixing_date" dateOnly="true"/>
+    <breakdown columns="deal_status" top="10"/>
+    <breakdown columns="trade_source" top="10"/>
+    <breakdown columns="netting_status" top="10"/>
+  </compare>
+
+  <!-- 2. lots as of the value date (legacy deal_ticket_active_lots_view_cfs logic; new = latest_active_lot, what the refresh reads) -->
+  <sql id="l-lots" db="mysql-oprdb02" timeout="600" fetchSize="5000"><![CDATA[
+    SELECT a.trade_id, a.value_date AS lots_date, a.active_lots
+    FROM dbsystemuat.deal_active_lots_table_cfs a
+    JOIN (SELECT trade_id, max(value_date) AS value_date FROM dbsystemuat.deal_active_lots_table_cfs WHERE value_date <= :valueDate GROUP BY trade_id) m
+      ON m.trade_id = a.trade_id AND m.value_date = a.value_date
+  ]]></sql>
+  <sql id="n-lots" db="postgres-uat" timeout="600" fetchSize="5000"><![CDATA[
+    SELECT trade_id, value_date AS lots_date, active_lots
+    FROM opera.latest_active_lot WHERE tenant_id = :tenant AND business_unit = 'CFS'
+  ]]></sql>
+  <compare id="lots" source="l-lots" target="n-lots">
+    <key columns="trade_id"/>
+    <column name="lots_date" dateOnly="true"/>
+    <column name="active_lots" absTol="0.000000001"/>
+  </compare>
+
+  <!-- 3. securities -->
+  <sql id="l-sec" db="mysql-oprdb02" timeout="600" fetchSize="5000"><![CDATA[
+    SELECT security_id, derivative_type, product_code, currency, contract_month, maturity_date, underlying1_id, underlying2_id,
+           strike, strike1, strike2, barrier_type, barrier1_level, barrier2_level, averaging_startdate, averaging_enddate
+    FROM dbsystemuat.cloned_security_info_table_cfs
+  ]]></sql>
+  <sql id="n-sec" db="postgres-uat" timeout="600" fetchSize="5000"><![CDATA[
+    SELECT security_id, derivative_type, product_code, currency, contract_month, maturity_date, underlying1_id, underlying2_id,
+           strike, strike1, strike2, barrier_type, barrier1_level, barrier2_level, averaging_startdate, averaging_enddate
+    FROM opera.cloned_security_info_table WHERE tenant_id = :tenant AND business_unit = 'CFS'
+  ]]></sql>
+  <compare id="securities" source="l-sec" target="n-sec">
+    <key columns="security_id"/>
+    <column name="strike" absTol="0.000000001"/>
+    <column name="strike1" absTol="0.000000001"/>
+    <column name="strike2" absTol="0.000000001"/>
+    <column name="barrier1_level" absTol="0.000000001"/>
+    <column name="barrier2_level" absTol="0.000000001"/>
+    <column name="maturity_date" dateOnly="true"/>
+    <column name="averaging_startdate" dateOnly="true"/>
+    <column name="averaging_enddate" dateOnly="true"/>
+    <breakdown columns="derivative_type" top="10"/>
+  </compare>
+
+  <!-- 4. premium -->
+  <sql id="l-premfy" db="mysql-oprdb02" timeout="600" fetchSize="5000"><![CDATA[
+    SELECT trade_id, financial_year, premium FROM dbsystemuat.premium_fy_table_cfs
+  ]]></sql>
+  <sql id="n-premfy" db="postgres-uat" timeout="600" fetchSize="5000"><![CDATA[
+    SELECT trade_id, financial_year, premium FROM opera.premium_fy_table WHERE tenant_id = :tenant AND business_unit = 'CFS'
+  ]]></sql>
+  <compare id="premium-fy" source="l-premfy" target="n-premfy">
+    <key columns="trade_id,financial_year"/>
+    <column name="premium" absTol="0.000000001"/>
+  </compare>
+  <sql id="l-prempaid" db="mysql-oprdb02" timeout="600" fetchSize="5000"><![CDATA[
+    SELECT trade_id, is_premium_paid, netting_status FROM dbsystemuat.rms_premium_paid_table_cfs
+  ]]></sql>
+  <sql id="n-prempaid" db="postgres-uat" timeout="600" fetchSize="5000"><![CDATA[
+    SELECT trade_id, is_premium_paid, netting_status FROM opera.rms_premium_paid_table WHERE tenant_id = :tenant AND business_unit = 'CFS'
+  ]]></sql>
+  <compare id="premium-paid" source="l-prempaid" target="n-prempaid"><key columns="trade_id"/></compare>
+
+  <!-- 5. prices on the value date, keyed case-insensitively -->
+  <sql id="l-und" db="mysql-oprdb02" timeout="300"><![CDATA[
+    SELECT lower(underlying_id) AS price_key, underlying_id, settle_value, settlement_date
+    FROM dbsystemuat.underlying_settle_value_table WHERE value_date = :valueDate
+  ]]></sql>
+  <sql id="n-und" db="postgres-uat" timeout="300"><![CDATA[
+    SELECT lower(underlying_id) AS price_key, underlying_id, settle_value, settlement_date
+    FROM opera.underlying_settle_value_table WHERE tenant_id = :tenant AND value_date = :valueDate
+  ]]></sql>
+  <compare id="underlying-prices" source="l-und" target="n-und">
+    <key columns="price_key"/>
+    <column name="settle_value" absTol="0.000000001"/>
+    <column name="settlement_date" dateOnly="true"/>
+  </compare>
+
+  <!-- 6. average till now on the value date -->
+  <sql id="l-avg" db="mysql-oprdb02" timeout="300"><![CDATA[
+    SELECT security_id, average_till_now FROM dbsystemuat.security_average_till_now_monitoring_table_cfs WHERE value_date = :valueDate
+  ]]></sql>
+  <sql id="n-avg" db="postgres-uat" timeout="300"><![CDATA[
+    SELECT security_id, average_till_now FROM opera.security_average_till_now_monitoring_table
+    WHERE tenant_id = :tenant AND business_unit = 'CFS' AND value_date = :valueDate
+  ]]></sql>
+  <compare id="average-till-now" source="l-avg" target="n-avg">
+    <key columns="security_id"/>
+    <column name="average_till_now" absTol="0.000000001"/>
+  </compare>
+
+  <!-- 7. fixings -->
+  <sql id="l-fix" db="mysql-oprdb02" timeout="300"><![CDATA[
+    SELECT trade_id, contract_number, fixing_date, fixing_rate FROM dbsystemuat.fixing_table_cfs
+  ]]></sql>
+  <sql id="n-fix" db="postgres-uat" timeout="300"><![CDATA[
+    SELECT trade_id, contract_number, fixing_date, fixing_rate FROM opera.fixing_table WHERE tenant_id = :tenant AND business_unit = 'CFS'
+  ]]></sql>
+  <compare id="fixings" source="l-fix" target="n-fix">
+    <key columns="trade_id"/>
+    <column name="fixing_date" dateOnly="true"/>
+    <column name="fixing_rate" absTol="0.000000001"/>
+  </compare>
+
+  <!-- 8. config: product master (the row the refresh picks: the tenant's, else the shared one), spot mapping, clients -->
+  <sql id="l-prod" db="mysql-oprdb02" export="full"><![CDATA[
+    SELECT invenio_product_code, bbg_product_code, currency, lot_mult, constant_curr_mult, curr_mult_factor, curr_mult_type,
+           constant_nc_factor, murex_mult, price_conv_factor
+    FROM dbsystemuat.product_master_table
+  ]]></sql>
+  <sql id="n-prod" db="postgres-uat" export="full"><![CDATA[
+    SELECT DISTINCT ON (invenio_product_code)
+           invenio_product_code, bbg_product_code, currency, lot_mult, constant_curr_mult, curr_mult_factor, curr_mult_type,
+           constant_nc_factor, murex_mult, price_conv_factor
+    FROM opera.product_master_table
+    WHERE tenant_id = :tenant OR tenant_id IS NULL
+    ORDER BY invenio_product_code, CASE WHEN tenant_id = :tenant THEN 0 ELSE 1 END
+  ]]></sql>
+  <compare id="products" source="l-prod" target="n-prod">
+    <key columns="invenio_product_code"/>
+    <column name="lot_mult" absTol="0.000000001"/>
+    <column name="constant_curr_mult" absTol="0.000000001"/>
+    <column name="constant_nc_factor" absTol="0.000000001"/>
+    <column name="murex_mult" absTol="0.000000001"/>
+    <column name="price_conv_factor" absTol="0.000000001"/>
+  </compare>
+  <sql id="l-spot" db="mysql-oprdb02" export="full"><![CDATA[
+    SELECT currency, spot, quantotype FROM dbsystemuat.currency_spot_mapping_table
+  ]]></sql>
+  <sql id="n-spot" db="postgres-uat" export="full"><![CDATA[
+    SELECT currency, spot, quantotype FROM opera.currency_spot_mapping_table WHERE tenant_id = :tenant
+  ]]></sql>
+  <compare id="spot-mapping" source="l-spot" target="n-spot"><key columns="currency"/></compare>
+  <sql id="l-client" db="mysql-oprdb02" export="full"><![CDATA[
+    SELECT client_code, client_name, counterparty_parent, generate_statement, client_status FROM dbsystemuat.client_master_data_cfs
+  ]]></sql>
+  <sql id="n-client" db="postgres-uat" export="full"><![CDATA[
+    SELECT client_code, client_name, counterparty_parent, generate_statement, client_status FROM opera.client_master_data
+    WHERE tenant_id = :tenant AND business_unit = 'CFS'
+  ]]></sql>
+  <compare id="clients" source="l-client" target="n-client"><key columns="client_code"/></compare>
+
+  <!-- 9. semantics: joins that legacy makes case- and trailing-space-insensitively (utf8mb4_general_ci) and PostgreSQL makes
+       exactly. Equal data on both sides can still give different statements; these list what matches only loosely in new. -->
+  <sql id="n-spot-case" db="postgres-uat" export="full"><![CDATA[
+    SELECT DISTINCT m.currency, m.spot AS config_value, u.underlying_id AS price_spelling
+    FROM opera.currency_spot_mapping_table m
+    JOIN (SELECT DISTINCT underlying_id FROM opera.underlying_settle_value_table WHERE tenant_id = :tenant AND value_date = :valueDate) u
+      ON lower(trim(u.underlying_id)) = lower(trim(m.spot)) AND u.underlying_id <> m.spot
+    WHERE m.tenant_id = :tenant
+  ]]></sql>
+  <sql id="n-prod-case" db="postgres-uat" export="full"><![CDATA[
+    SELECT p.curr_mult_factor AS config_value, u.underlying_id AS price_spelling, count(*) AS products,
+           string_agg(p.invenio_product_code, ', ' ORDER BY p.invenio_product_code) AS product_codes,
+           count(*) FILTER (WHERE p.tenant_id IS NULL) AS shared_rows
+    FROM opera.product_master_table p
+    JOIN (SELECT DISTINCT underlying_id FROM opera.underlying_settle_value_table WHERE tenant_id = :tenant AND value_date = :valueDate) u
+      ON lower(trim(u.underlying_id)) = lower(trim(p.curr_mult_factor)) AND u.underlying_id <> p.curr_mult_factor
+    WHERE p.tenant_id = :tenant OR p.tenant_id IS NULL
+    GROUP BY 1, 2
+  ]]></sql>
+  <sql id="n-client-join-case" db="postgres-uat" export="full"><![CDATA[
+    SELECT d.counterparty_parent AS deal_value, c.client_name AS client_master_value, c.client_code, count(*) AS deals
+    FROM opera.cloned_deal_ticket_table d
+    JOIN opera.client_master_data c
+      ON c.tenant_id = d.tenant_id AND c.business_unit = d.business_unit
+     AND lower(trim(c.client_name)) = lower(trim(d.counterparty_parent)) AND c.client_name <> d.counterparty_parent
+    WHERE d.tenant_id = :tenant AND d.business_unit = 'CFS' AND d.is_latest_version = 1 AND d.subportfolio LIKE 'RMS%'
+    GROUP BY 1, 2, 3
+  ]]></sql>
+  <sql id="n-product-code-case" db="postgres-uat" export="full"><![CDATA[
+    SELECT s.product_code AS security_value, p.invenio_product_code AS product_master_value, count(*) AS securities
+    FROM opera.cloned_security_info_table s
+    JOIN opera.product_master_table p
+      ON lower(trim(p.invenio_product_code)) = lower(trim(s.product_code)) AND p.invenio_product_code <> s.product_code
+    WHERE s.tenant_id = :tenant AND s.business_unit = 'CFS'
+    GROUP BY 1, 2
+  ]]></sql>
+  <expect ref="n-spot-case" rows="0" reason="spot ids must equal the price spelling exactly in PostgreSQL (legacy ignores case)"/>
+  <expect ref="n-prod-case" rows="0" reason="product FX spot id must equal the price spelling exactly (else FX factor 1)"/>
+  <expect ref="n-client-join-case" rows="0" reason="deal counterparty must equal the client name exactly (else no client code)"/>
+  <expect ref="n-product-code-case" rows="0" reason="security product code must equal product master exactly (else no multipliers)"/>
+
+  <expect ref="deals" different="0" only-source="0" only-target="0" duplicates="0" reason="same deals in statement scope"/>
+  <expect ref="lots" different="0" only-source="0" only-target="0" duplicates="0" reason="same lots as of the value date"/>
+  <expect ref="securities" different="0" only-source="0" only-target="0" duplicates="0"/>
+  <expect ref="premium-fy" different="0" only-source="0" only-target="0" duplicates="0"/>
+  <expect ref="premium-paid" different="0" only-source="0" only-target="0" duplicates="0"/>
+  <expect ref="underlying-prices" different="0" only-source="0" only-target="0" duplicates="0" reason="same prices and same spelling (CASE_ONLY = letter case)"/>
+  <expect ref="average-till-now" different="0" only-source="0" only-target="0" duplicates="0"/>
+  <expect ref="fixings" different="0" only-source="0" only-target="0" duplicates="0"/>
+  <expect ref="products" different="0" only-source="0" only-target="0" duplicates="0" reason="multipliers and FX spot id spelled as legacy"/>
+  <expect ref="spot-mapping" different="0" only-source="0" only-target="0" duplicates="0"/>
+  <expect ref="clients" different="0" only-source="0" only-target="0" duplicates="0"/>
+  <compress id="bundle" file="cs-07-statement-inputs.zip">
+    <include ref="dates"/><include ref="pg-dates"/>
+    <include ref="deals"/><include ref="lots"/><include ref="securities"/><include ref="premium-fy"/><include ref="premium-paid"/>
+    <include ref="underlying-prices"/><include ref="average-till-now"/><include ref="fixings"/>
+    <include ref="products"/><include ref="spot-mapping"/><include ref="clients"/>
+    <include ref="n-spot-case"/><include ref="n-prod-case"/><include ref="n-client-join-case"/><include ref="n-product-code-case"/>
+  </compress>
+</rules>
