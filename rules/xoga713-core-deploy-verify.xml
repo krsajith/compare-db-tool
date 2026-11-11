@@ -1,0 +1,75 @@
+<rules name="xoga713-core-deploy-verify">
+  <!-- Run on each environment, once with the target-env flag set to postgres-dev and once to postgres-uat. Read-only. -->
+
+  <sql id="changelog" db="target" export="full"><![CDATA[
+    SELECT orderexecuted, id, author, filename, exectype, dateexecuted
+    FROM opera.databasechangelog
+    WHERE filename LIKE '%create-helper-var-mult-factor-view.xml'
+       OR filename LIKE '%add-views-for-var-report.xml'
+       OR filename LIKE '%add-tables-for-var-report.xml'
+       OR filename LIKE '%add-tables-for-rmo-trade-query-report-tables.xml'
+       OR filename LIKE '%alter-fn-populate-security-info-strikes-search-path.xml'
+    ORDER BY orderexecuted
+  ]]></sql>
+
+  <sql id="v2_status" db="target" export="full"><![CDATA[
+    SELECT id, author, exectype, dateexecuted FROM opera.databasechangelog
+    WHERE id = 'create-helper_var_mult_factor_view-view-v2' AND author = 'oga-opera'
+  ]]></sql>
+
+  <sql id="accounting_status" db="target" export="full"><![CDATA[
+    SELECT id, author, exectype, dateexecuted FROM opera.databasechangelog
+    WHERE id = 'create-helper_var_accounting_report-view-v1' AND author = 'Nihal'
+  ]]></sql>
+
+  <sql id="lock_state" db="target" export="full"><![CDATA[
+    SELECT locked::int AS locked, lockedby FROM opera.databasechangeloglock
+  ]]></sql>
+
+  <sql id="objects" db="target" export="full"><![CDATA[
+    SELECT count(*) AS found,
+           count(*) FILTER (WHERE (relname IN ('helper_var_mult_factor_view', 'helper_var_accounting_report') AND relkind = 'v')
+                              OR (relname IN ('curr_mult_table', 'var_dynamic_report', 'derivative_type_table', 'rms_premium_paid_table') AND relkind IN ('r', 'p'))) AS right_kind
+    FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'opera'
+      AND c.relname IN ('helper_var_mult_factor_view', 'helper_var_accounting_report', 'curr_mult_table', 'var_dynamic_report', 'derivative_type_table', 'rms_premium_paid_table')
+  ]]></sql>
+
+  <sql id="viewdef" db="target" export="full"><![CDATA[
+    SELECT (pg_get_viewdef(c.oid) LIKE '%underlying_settle_value_table%')::int AS live_formula,
+           (pg_get_viewdef(c.oid) LIKE '%asset_class%')::int AS equity_filter,
+           (pg_get_viewdef(c.oid) LIKE '%curr_mult_table%')::int AS old_stored_table
+    FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'opera' AND c.relname = 'helper_var_mult_factor_view' AND c.relkind = 'v'
+  ]]></sql>
+
+  <sql id="view_rows" db="target" export="full" timeout="120"><![CDATA[
+    SELECT (SELECT value_date FROM opera.valuation_date_table WHERE upper(business_unit) = 'CFS' LIMIT 1) AS cfs_value_date,
+           count(*) AS view_rows, count(m.curr_mult) AS with_curr_mult
+    FROM opera.helper_var_mult_factor_view m
+    WHERE m.tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = 'CFS' LIMIT 1)
+      AND m.value_date = (SELECT value_date FROM opera.valuation_date_table WHERE upper(business_unit) = 'CFS' LIMIT 1)
+  ]]></sql>
+
+  <sql id="accounting_reads" db="target" export="full" timeout="180"><![CDATA[
+    SELECT count(*) AS rows_found FROM (SELECT 1 FROM opera.helper_var_accounting_report LIMIT 1) t
+  ]]></sql>
+
+  <expect ref="changelog" rows=">=16" reason="the four changelog files ran: 2 + 5 + 3 + 6 changesets, plus the strikes search-path fix"/>
+  <expect ref="v2_status" rows="1" reason="changeSet v2 (live multiplier view) is recorded"/>
+  <expect ref="v2_status" column="exectype" equals="EXECUTED" reason="v2 really ran, it was not skipped by a precondition"/>
+  <expect ref="accounting_status" rows="1" reason="the accounting view changeSet is recorded (a failed precondition with CONTINUE leaves no row)"/>
+  <expect ref="lock_state" column="locked" equals="0" reason="Liquibase finished and released its lock"/>
+  <expect ref="objects" column="found" equals="6" reason="all six objects exist"/>
+  <expect ref="objects" column="right_kind" equals="6" reason="two are views and four are tables"/>
+  <expect ref="viewdef" column="live_formula" equals="1" reason="the multiplier view reads underlying_settle_value_table"/>
+  <expect ref="viewdef" column="equity_filter" equals="1" reason="equity and equity swaps are excluded, as in legacy"/>
+  <expect ref="viewdef" column="old_stored_table" equals="0" reason="the view no longer reads the stored curr_mult_table"/>
+  <expect ref="view_rows" column="view_rows" min="100" reason="the view returns about 120 products for the CFS valuation date"/>
+  <expect ref="view_rows" column="with_curr_mult" min="100" reason="curr_mult is filled where the FX price exists"/>
+  <expect ref="accounting_reads" column="rows_found" min="0" reason="the accounting view can be read without an error (needs its source views)"/>
+
+  <compress id="bundle" file="xoga713-core-deploy-verify.zip">
+    <include ref="changelog"/><include ref="v2_status"/><include ref="accounting_status"/><include ref="lock_state"/><include ref="objects"/><include ref="viewdef"/><include ref="view_rows"/><include ref="accounting_reads"/>
+  </compress>
+</rules>
