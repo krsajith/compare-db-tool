@@ -1,0 +1,108 @@
+<rules name="xoga713-deploy-check-core-engine">
+  <!-- Deployment check for the core PRs (288 289 290 291 292 293, changelog and views) and the calculation engine PR 53 (seen through the rows it writes).
+       Part A needs only the core deploy. Part B needs a Run Report of the VaR Report (BI Trigger Reports) for the business unit and value date given in the parameters, made AFTER the engine deploy.
+       Run with the target-env flag. Read only. -->
+  <parameters>
+    <param name="vd" type="date" value="2026-11-06"/>
+    <param name="bu" type="string" value="CFS"/>
+  </parameters>
+
+  <!-- ===== Part A: core deploy ===== -->
+  <sql id="changesets" db="target" export="full"><![CDATA[
+    SELECT orderexecuted, id, author, exectype, dateexecuted FROM opera.databasechangelog
+    WHERE id IN ('create-helper_var_accounting_report-view-v2', 'create-helper_settle_pricing_subportfoliovalues_view-v2', 'create-helper_settle_pricing_subportfoliovalues_view-v2-bu',
+                 'add-tenant_id-to-curr_mult_table-v1', 'create-rmo-join-indexes-v1', 'create-deal_ticket_security_info_table_view-v1', 'create-helper-cash-balance-report-view-fast-v2-active-lot-cache',
+                 'create-helper_eod_monthend_report_view-v2-bu', 'create-helper_risk_middle_office_reports-v1', 'create-helper_trade_group_view-v1',
+                 'redefine-deal_ticket_active_lots_view-v2-latest-active-lot', 'create-procedure-sp_refresh_sensitivity_report_cache-V4', 'create-deal-ticket-table-with-fy-premium-view-V4-active-lot-cache')
+    ORDER BY orderexecuted
+  ]]></sql>
+
+  <sql id="changeset_counts" db="target" export="full"><![CDATA[
+    SELECT count(*) FILTER (WHERE exectype = 'EXECUTED' AND id IN ('create-helper_var_accounting_report-view-v2', 'create-helper_settle_pricing_subportfoliovalues_view-v2', 'create-helper_settle_pricing_subportfoliovalues_view-v2-bu',
+                 'add-tenant_id-to-curr_mult_table-v1', 'create-rmo-join-indexes-v1', 'create-deal_ticket_security_info_table_view-v1', 'create-helper-cash-balance-report-view-fast-v2-active-lot-cache',
+                 'create-helper_eod_monthend_report_view-v2-bu', 'create-helper_risk_middle_office_reports-v1', 'create-helper_trade_group_view-v1')) AS required_executed,
+           count(*) FILTER (WHERE exectype = 'EXECUTED' AND id = 'redefine-deal_ticket_active_lots_view-v2-latest-active-lot') AS thin_active_lots_view_executed,
+           count(*) FILTER (WHERE id = 'create-procedure-sp_refresh_sensitivity_report_cache-V4' AND author = 'Nihal') AS nihal_sensitivity_changeset_ran,
+           count(*) FILTER (WHERE id = 'create-deal-ticket-table-with-fy-premium-view-V4-active-lot-cache') AS nihal_fy_premium_v4_ran
+    FROM opera.databasechangelog
+  ]]></sql>
+
+  <sql id="lock_state" db="target" export="full"><![CDATA[
+    SELECT locked::int AS locked FROM opera.databasechangeloglock
+  ]]></sql>
+
+  <sql id="definitions" db="target" export="full"><![CDATA[
+    SELECT
+      (SELECT count(*) FROM pg_attribute a WHERE a.attrelid = 'opera.helper_var_accounting_report'::regclass AND a.attname = 'tenant_id' AND NOT a.attisdropped) AS accounting_view_has_tenant_id,
+      (SELECT count(*) FROM pg_attribute a WHERE a.attrelid = 'opera.helper_settle_pricing_subportfoliovalues_view'::regclass AND a.attname IN ('business_unit', 'tenant_id') AND NOT a.attisdropped) AS settle_view_bu_tenant_columns,
+      (SELECT (pg_get_viewdef('opera.helper_settle_pricing_subportfoliovalues_view'::regclass) NOT LIKE '%value_date AS settlement_date%')::int) AS settle_view_real_settlement_date,
+      (SELECT (p.prosrc LIKE '%fn_sensitivity_report_source_v2%' AND p.prosrc LIKE '%pg_advisory_xact_lock%')::int
+         FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'opera' AND p.proname = 'sp_refresh_sensitivity_report_cache' LIMIT 1) AS sensitivity_procedure_is_staged_v4,
+      (SELECT (pg_get_viewdef('opera.deal_ticket_table_with_fy_premium_view'::regclass) ILIKE '%og2%' AND pg_get_viewdef('opera.deal_ticket_table_with_fy_premium_view'::regclass) ILIKE '%ft.business_unit%')::int) AS fy_premium_fixing_join_scoped,
+      (SELECT (pg_get_viewdef('opera.deal_ticket_active_lots_view'::regclass) LIKE '%latest_active_lot%')::int) AS active_lots_view_reads_cache,
+      (SELECT count(*) FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'opera' AND c.relname IN ('idx_security_info_tenant_bu_sec', 'idx_sec_settle_value_tenant_bu_sec_vd') AND i.indisvalid) AS rmo_indexes_valid,
+      (SELECT count(*) FROM information_schema.columns WHERE table_schema = 'opera' AND table_name = 'curr_mult_table' AND column_name = 'tenant_id') AS curr_mult_has_tenant_id
+  ]]></sql>
+
+  <sql id="combined_var_probe" db="target" export="full" timeout="180"><![CDATA[
+    SELECT 1 AS probe_ok, max(settlement_date) AS max_settle
+    FROM opera.helper_var_accounting_report
+    WHERE tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = 'CFS' LIMIT 1)
+  ]]></sql>
+
+  <sql id="fy_premium_duplicates" db="target" export="full" timeout="300"><![CDATA[
+    SELECT business_unit, count(*) AS view_rows, count(DISTINCT trade_id) AS trades
+    FROM opera.deal_ticket_table_with_fy_premium_view
+    GROUP BY business_unit HAVING count(*) <> count(DISTINCT trade_id)
+  ]]></sql>
+
+  <!-- ===== Part B: engine deploy, seen through the rows of the Run Report ===== -->
+  <sql id="engine" db="target" export="full" timeout="180"><![CDATA[
+    SELECT count(*) AS engine_rows,
+           count(*) FILTER (WHERE upper(p1_name) LIKE 'CM OR%') AS cm_or_rows,
+           count(*) FILTER (WHERE settlement_date = (SELECT settlement_date FROM opera.valuation_date_table WHERE upper(business_unit) = upper(:bu) LIMIT 1)) AS rows_with_valuation_settlement_date,
+           count(*) FILTER (WHERE p1_settleprice IS NOT NULL AND p1_settleprice <> 0) AS rows_with_underlying_price,
+           max(created_timestamp) AS last_written
+    FROM opera.var_accounting_table
+    WHERE upper(business_unit) = upper(:bu) AND value_date = :vd AND upper(created_by) = 'SYSTEM'
+  ]]></sql>
+
+  <sql id="engine_other_bus" db="target" export="full" timeout="180"><![CDATA[
+    SELECT upper(business_unit) AS business_unit, value_date, count(*) AS row_count
+    FROM opera.var_accounting_table
+    WHERE upper(created_by) = 'SYSTEM' AND created_timestamp > now() - interval '12 hours' AND upper(business_unit) <> upper(:bu)
+    GROUP BY upper(business_unit), value_date
+  ]]></sql>
+
+  <sql id="var_results" db="target" export="full"><![CDATA[
+    SELECT count(*) AS result_rows FROM opera.var_report_table WHERE upper(business_unit) = upper(:bu) AND value_date = :vd
+  ]]></sql>
+
+  <!-- Part A expectations -->
+  <expect ref="changeset_counts" column="required_executed" equals="10" reason="the 10 changesets of PRs 290, 291 and 292 that stay in the changelog ran (EXECUTED)"/>
+  <expect ref="lock_state" column="locked" equals="0" reason="Liquibase released its lock"/>
+  <expect ref="definitions" column="accounting_view_has_tenant_id" equals="1" reason="PR 290: helper_var_accounting_report has tenant_id (Combined VAR filters by it)"/>
+  <expect ref="combined_var_probe" column="probe_ok" equals="1" reason="PR 290: the statement of the Combined VAR service (max settlement date by tenant) runs"/>
+  <expect ref="definitions" column="settle_view_bu_tenant_columns" equals="2" reason="PRs 291 and 292: the settle pricing view carries business_unit and tenant_id (the engine filters by business_unit)"/>
+  <expect ref="definitions" column="settle_view_real_settlement_date" equals="1" reason="the settle pricing view returns the settlement date of the snapshot, not the value date"/>
+  <expect ref="definitions" column="sensitivity_procedure_is_staged_v4" equals="1" reason="PR 293: sp_refresh_sensitivity_report_cache is the staged V4 (calls fn_sensitivity_report_source_v2, advisory lock), not Nihal's V3-style text. 0 means PR 292 was deployed without PR 293: run recon-functions/sp_refresh_sensitivity_report_cache_v4.sql"/>
+  <expect ref="definitions" column="fy_premium_fixing_join_scoped" equals="1" reason="PR 293: the fy-premium view keeps the XOGA-65 scope of the fixing_table join (og2, ogp, rba, rbc, usg only)"/>
+  <expect ref="fy_premium_duplicates" rows="0" reason="no business unit repeats a trade in the fy-premium view (the unscoped fixing join of the V4 changeset would)"/>
+  <expect ref="definitions" column="active_lots_view_reads_cache" equals="1" reason="PR 293: deal_ticket_active_lots_view is the thin view over latest_active_lot. 0 means the changeset was skipped: fn_latest_active_lot_reconcile reported a difference or the cache is empty; reconcile, then restart core"/>
+  <expect ref="changeset_counts" column="thin_active_lots_view_executed" equals="1" reason="PR 293: the changeset redefine-deal_ticket_active_lots_view-v2-latest-active-lot ran"/>
+  <expect ref="definitions" column="rmo_indexes_valid" equals="2" reason="PR 293: both RMO join indexes exist and are valid (a CONCURRENTLY build that was interrupted leaves an INVALID index)"/>
+  <expect ref="definitions" column="curr_mult_has_tenant_id" equals="1" reason="curr_mult_table has tenant_id (0: the changeset was skipped, the database has several tenants and rows; backfill by hand)"/>
+
+  <!-- Part B expectations: only meaningful after a Run Report made after the engine deploy -->
+  <expect ref="engine" column="engine_rows" min="1" reason="Part B: the Run Report wrote rows (created_by SYSTEM) for the business unit and value date: run it first and use the same vd and bu"/>
+  <expect ref="engine" column="cm_or_rows" min="1" when="#upper(#bu) == 'CFS' or #upper(#bu) == 'ROV'" reason="engine PR 53 with PR 52: CFS and ROV take the CM OR products (160 rows were missing before)"/>
+  <expect expr="#engine.first.engine_rows == #engine.first.rows_with_valuation_settlement_date" reason="the engine rows carry the settlement date of the valuation date (core settle view v2 read by the engine)"/>
+  <expect ref="engine" column="rows_with_underlying_price" min="1" reason="p1_settleprice is the underlying price (it was the deal price, 0 for most rows, before)"/>
+  <expect ref="engine_other_bus" rows="0" reason="the Run Report wrote only the requested business unit"/>
+  <expect ref="var_results" column="result_rows" min="1" reason="the Run Report wrote VaR results (var_report_table)"/>
+
+  <compress id="bundle" file="xoga713-deploy-check-core-engine.zip">
+    <include ref="changesets"/><include ref="changeset_counts"/><include ref="definitions"/><include ref="combined_var_probe"/><include ref="fy_premium_duplicates"/><include ref="engine"/><include ref="engine_other_bus"/><include ref="var_results"/>
+  </compress>
+</rules>
