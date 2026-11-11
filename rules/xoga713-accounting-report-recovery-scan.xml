@@ -1,0 +1,28 @@
+<rules name="xoga713-accounting-report-recovery-scan">
+  <!-- helper_var_accounting_report was dropped by changeSet drop-helper_var_accounting_report-table-v1 and its view was never created.
+       This scan looks for copies of the data and for the objects the view needs. Run it on postgres-dev and postgres-uat. Read-only. -->
+
+  <sql id="copies" db="target" export="full"><![CDATA[
+    SELECT n.nspname AS schema_name, c.relname AS object_name, c.relkind AS kind, c.reltuples::bigint AS approx_rows
+    FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE c.relname ILIKE '%helper_var_accounting%' AND c.relkind IN ('r', 'p', 'v', 'm')
+    ORDER BY 1, 2
+  ]]></sql>
+
+  <sql id="prerequisites" db="target" export="full"><![CDATA[
+    SELECT w.name AS needed_object,
+           (SELECT c.relkind FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'opera' AND c.relname = w.name LIMIT 1) AS kind_found
+    FROM (VALUES ('helper_var_future_view'), ('helper_var_vanilla_view'), ('var_bu_rule'), ('underlying_list_table'), ('vol_id_table'),
+                 ('future_cont_series_table'), ('option_cont_series_table')) AS w(name)
+    ORDER BY 1
+  ]]></sql>
+
+  <sql id="drop_log" db="target" export="full"><![CDATA[
+    SELECT id, author, exectype, dateexecuted FROM opera.databasechangelog
+    WHERE id LIKE '%helper_var_accounting_report%' ORDER BY orderexecuted
+  ]]></sql>
+
+  <expect ref="copies" rows=">=1" reason="a copy of the accounting data exists somewhere (a backup schema or the old table)"/>
+  <expect ref="prerequisites" rows="7" reason="one row per needed object, kind_found is empty where it is missing"/>
+  <compress id="bundle" file="xoga713-accounting-report-recovery-scan.zip"><include ref="copies"/><include ref="prerequisites"/><include ref="drop_log"/></compress>
+</rules>
