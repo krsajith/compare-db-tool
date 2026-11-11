@@ -1,0 +1,200 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Client statement 06-Nov-2026 CFS: the three items cs-10 left open, read-only, one run.
+     cs-10 result: every BFA input is identical to legacy (deals, lots, securities, leg security prices, prices,
+     averages, fixings, products, bookings); the refresh prices each leg from the security price as legacy does.
+     A. BFA: how the 45 printed swap rows are built from their legs. For each PDF row (contract + traded price,
+        old and new figures typed in from the Statement Compare page) the new cache legs give the exact sum and the
+        sum of legs rounded to cents. If old = rounded sum, legacy rounds each leg (new rounds legs only on
+        sub-account blocks, PR 184). Booking sub_account shows which block each contract is in.
+     B. 22 security prices of 06-Nov differ from the legacy history table (CM OR EUR swaps about 100 times larger in new):
+        full list, who wrote them, the product master rows, and which clients hold positions on them.
+     C. 2,096 traded prices still cut to 4 decimals after PR 194 (5.02145 kept as 5.0215): which trades,
+        and why the deal ticket full price was not used. -->
+<rules name="cs-11-open-items-after-cs10-cfs">
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+    <param name="valueDate" type="date" value="2026-11-06"/>
+  </parameters>
+
+  <!-- A. BFA swap rows: exact leg sum vs leg-rounded sum vs the PDFs -->
+  <sql id="n-bfa-rows" db="postgres-uat" timeout="300" export="full"><![CDATA[
+    WITH pdf(contract_number, price, old_pdf, new_pdf) AS (
+        VALUES ('BFA_CT_003', 74.0, -229.79, -229.78),
+           ('BFA_CT_009', 70.05, -23740.8, -23740.83),
+           ('BFA_CT_010', 70.35, -23780.13, -23780.12),
+           ('BFA_CT_014', 70.48, -4342.8, -4342.82),
+           ('BFA_CT_015', 70.72, -5351.28, -5351.23),
+           ('BFA_CT_018', 70.5, -31358.56, -31358.54),
+           ('BFA_CT_019', 71.55, -45680.94, -45680.97),
+           ('BFA_CT_038', 74.4, -13269.94, -13269.95),
+           ('BFA_CT_038', 71.0, -124216.11, -124215.98),
+           ('BFA_CT_053', 71.75, -17399.92, -17400.0),
+           ('BFA_CT_053', 70.0, -27374.27, -27374.26),
+           ('BFA_CT_055', 70.0, -27553.13, -27553.18),
+           ('BFA_CT_084', 72.0, -37805.1, -37805.14),
+           ('BFA_CT_083', 70.0, -68687.19, -68687.24),
+           ('BFA_CT_084', 70.0, -46939.86, -46939.81),
+           ('BFA_CT_089', 70.5, -197987.22, -197987.34),
+           ('BFA_CT_093', 78.8, 321.75, 321.74),
+           ('BFA_CT_093', 76.5, -68470.35, -68470.54),
+           ('BFA_CT_042', 70.9, -187887.7, -187887.86),
+           ('BFA_CT_043', 70.35, -101632.96, -101633.31),
+           ('BFA_CT_050', 69.5, -9931.23, -9931.01),
+           ('BFA_CT_051', 70.05, -2013.99, -2013.74),
+           ('BFA_CT_052', 70.05, -307379.93, -307379.8),
+           ('BFA_CT_054', 70.05, -2866.71, -2866.96),
+           ('BFA_CT_056', 70.05, -10745.02, -10744.45),
+           ('BFA_CT_057', 70.05, -229319.97, -229319.79),
+           ('BFA_CT_058', 70.05, -456776.32, -456777.0),
+           ('BFA_CT_059', 69.5, -29174.86, -29174.73),
+           ('BFA_CT_067', 69.5, -3367.28, -3367.32),
+           ('BFA_CT_068', 69.5, -8386.95, -8387.17),
+           ('BFA_CT_069', 69.5, -176826.65, -176826.67),
+           ('BFA_CT_073', 69.5, -164383.71, -164383.48),
+           ('BFA_CT_074', 69.5, -29655.48, -29655.65),
+           ('BFA_CT_078', 70.5, -6602.46, -6602.25),
+           ('BFA_CT_079', 70.5, -17110.5, -17110.4),
+           ('BFA_CT_080', 70.5, -5345.34, -5344.83),
+           ('BFA_CT_087', 71.5, -75251.01, -75250.88),
+           ('BFA_CT_090', 71.8, -203293.09, -203292.82),
+           ('BFA_CT_091', 72.3, -65692.77, -65692.39),
+           ('BFA_CT_092', 72.3, -44074.2, -44074.03),
+           ('BFA_CT_095', 75.0, -60769.26, -60769.57),
+           ('BFA_CT_094', 75.0, -25916.67, -25916.8),
+           ('BFA_CT_149', 70.15, 9525.52, 9525.5),
+           ('BFA_CT_176', 70.47, 43393.12, 43393.09),
+           ('BFA_CT_198', 70.82, 154213.28, 154213.18)
+    ), legs AS (
+        SELECT c.contract_number, round(c.traded_price::numeric, 6) AS price, c.trade_id, c.active_lots, c.settle_price,
+               c.mtm_usd, c.mult_factor
+        FROM opera.helper_client_statement_report_view_cache_table c
+        WHERE c.tenant_id = :tenant AND c.business_unit = 'CFS' AND c.value_date = :valueDate
+          AND c.contract_number LIKE 'BFA_CT%'
+    ), g AS (
+        SELECT contract_number, price, count(*) AS legs, sum(active_lots) AS lots,
+               min(settle_price) AS min_settle, max(settle_price) AS max_settle,
+               sum(mtm_usd)::numeric AS exact_sum, sum(round(mtm_usd::numeric, 2)) AS leg_rounded_sum,
+               max(abs(mtm_usd)) AS max_leg_mtm, min(mult_factor) AS mult_factor
+        FROM legs GROUP BY 1, 2
+    ), b AS (
+        SELECT contract_number, string_agg(DISTINCT coalesce(nullif(btrim(sub_account), ''), '(main)'), ', ') AS block
+        FROM opera.client_statement_booking_order_information_table
+        WHERE tenant_id = :tenant AND lower(business_unit) = 'cfs' AND contract_number LIKE 'BFA_CT%'
+        GROUP BY 1
+    )
+    SELECT p.contract_number, p.price, b.block, g.legs, g.lots, g.min_settle, g.max_settle, g.mult_factor, g.max_leg_mtm,
+           p.old_pdf, p.new_pdf,
+           round(g.exact_sum * s.f, 2) AS exact_sum_signed,
+           round(g.leg_rounded_sum * s.f, 2) AS leg_rounded_sum_signed,
+           round(p.old_pdf::numeric - g.leg_rounded_sum * s.f, 2) AS old_minus_leg_rounded,
+           round(p.old_pdf::numeric - g.exact_sum * s.f, 2) AS old_minus_exact,
+           round(p.new_pdf::numeric - g.exact_sum * s.f, 2) AS new_minus_exact
+    FROM pdf p
+    LEFT JOIN g ON g.contract_number = p.contract_number AND g.price = p.price::numeric
+    LEFT JOIN b ON b.contract_number = p.contract_number
+    CROSS JOIN LATERAL (SELECT CASE WHEN sign(g.exact_sum) = sign(p.new_pdf::numeric) OR g.exact_sum = 0 THEN 1 ELSE -1 END AS f) s
+    ORDER BY p.contract_number, p.price
+  ]]></sql>
+  <sql id="n-bfa-legs" db="postgres-uat" timeout="300" export="full"><![CDATA[
+    SELECT c.contract_number, c.trade_id, c.traded_price, c.active_lots, c.settle_price, c.average_till_now,
+           c.averaging_startdate, c.averaging_enddate, c.mult_factor, c.mtm_usd
+    FROM opera.helper_client_statement_report_view_cache_table c
+    WHERE c.tenant_id = :tenant AND c.business_unit = 'CFS' AND c.value_date = :valueDate
+      AND c.contract_number IN ('BFA_CT_053', 'BFA_CT_051', 'BFA_CT_058', 'BFA_CT_003')
+    ORDER BY c.contract_number, c.trade_id
+  ]]></sql>
+
+  <!-- B. security prices that differ from the legacy history table -->
+  <sql id="l-ssv-price" db="mysql-oprdb02" timeout="600" fetchSize="5000"><![CDATA[
+    SELECT security_id, settle_price FROM dbsystemuat.historical_security_settlement_value_table_cfs WHERE value_date = :valueDate
+  ]]></sql>
+  <sql id="n-ssv-price" db="postgres-uat" timeout="600" fetchSize="5000"><![CDATA[
+    SELECT security_id, settle_price FROM opera.security_settlement_value_table
+    WHERE tenant_id = :tenant AND business_unit = 'CFS' AND value_date = :valueDate
+  ]]></sql>
+  <compare id="ssv-price" source="l-ssv-price" target="n-ssv-price">
+    <key columns="security_id"/>
+    <column name="settle_price" absTol="0.000001"/>
+  </compare>
+  <sql id="n-or-ssv" db="postgres-uat" timeout="120" export="full"><![CDATA[
+    SELECT v.security_id, v.value_date, v.settle_price, v.created_by, v.created_timestamp, v.updated_by, v.updated_timestamp
+    FROM opera.security_settlement_value_table v
+    WHERE v.tenant_id = :tenant AND v.business_unit = 'CFS' AND v.value_date BETWEEN :valueDate - 7 AND :valueDate
+      AND v.security_id LIKE 'CM OR %'
+    ORDER BY v.security_id, v.value_date
+  ]]></sql>
+  <sql id="l-or-ssv" db="mysql-oprdb02" timeout="120" export="full"><![CDATA[
+    SELECT security_id, value_date, settle_price FROM dbsystemuat.historical_security_settlement_value_table_cfs
+    WHERE value_date BETWEEN DATE_SUB(:valueDate, INTERVAL 7 DAY) AND :valueDate AND security_id LIKE 'CM OR %'
+    ORDER BY security_id, value_date
+  ]]></sql>
+  <sql id="n-or-product" db="postgres-uat" export="full"><![CDATA[
+    SELECT tenant_id, invenio_product_code, currency, lot_mult, constant_curr_mult, curr_mult_factor, murex_mult, price_conv_factor
+    FROM opera.product_master_table WHERE invenio_product_code LIKE 'CM OR%' AND (tenant_id = :tenant OR tenant_id IS NULL)
+  ]]></sql>
+  <sql id="l-or-product" db="mysql-oprdb02" export="full"><![CDATA[
+    SELECT invenio_product_code, currency, lot_mult, constant_curr_mult, curr_mult_factor, murex_mult, price_conv_factor
+    FROM dbsystemuat.product_master_table WHERE invenio_product_code LIKE 'CM OR%'
+  ]]></sql>
+  <sql id="n-or-holders" db="postgres-uat" timeout="120" export="full"><![CDATA[
+    SELECT c.client_code, c.contract_number, d.security_id, c.active_lots, c.traded_price, c.settle_price, c.mtm_nc, c.mtm_usd
+    FROM opera.helper_client_statement_report_view_cache_table c
+    JOIN opera.cloned_deal_ticket_table d
+      ON d.tenant_id = c.tenant_id AND d.business_unit = c.business_unit AND d.trade_id = c.trade_id AND d.is_latest_version = 1
+    WHERE c.tenant_id = :tenant AND c.business_unit = 'CFS' AND c.value_date = :valueDate AND d.security_id LIKE 'CM OR %'
+    ORDER BY c.client_code, c.contract_number
+  ]]></sql>
+
+  <!-- C. traded prices still cut to 4 decimals -->
+  <sql id="l-price-more-decimals" db="mysql-oprdb02" timeout="600" export="full"><![CDATA[
+    SELECT d.instrument, CASE WHEN d.contract_number IS NULL OR d.contract_number = '' THEN 'no contract' ELSE 'contract' END AS contract,
+           count(*) AS trades, min(d.trade_id) AS example_trade, min(d.premium) AS example_price
+    FROM dbsystemuat.cloned_deal_ticket_table_cfs d
+    JOIN (SELECT a.trade_id FROM dbsystemuat.deal_active_lots_table_cfs a
+          JOIN (SELECT trade_id, max(value_date) AS value_date FROM dbsystemuat.deal_active_lots_table_cfs WHERE value_date <= :valueDate GROUP BY trade_id) m
+            ON m.trade_id = a.trade_id AND m.value_date = a.value_date
+          WHERE a.active_lots != 0) l ON l.trade_id = d.trade_id
+    WHERE d.subportfolio LIKE 'RMS%' AND d.transaction_date < :valueDate AND d.counterparty_parent <> 'JPM9A400'
+      AND abs(d.premium - round(d.premium, 4)) > 0.000000001
+    GROUP BY 1, 2 ORDER BY 3 DESC
+  ]]></sql>
+  <sql id="n-price-path" db="postgres-uat" timeout="600" export="full"><![CDATA[
+    WITH lal AS (
+        SELECT trade_id FROM opera.latest_active_lot WHERE tenant_id = :tenant AND business_unit = 'CFS' AND active_lots <> 0
+    ), dt AS (
+        SELECT dt.trade_id, count(*) AS latest_rows, count(DISTINCT dt.premium) AS prices, max(dt.premium) AS premium
+        FROM opera.deal_ticket_table dt
+        WHERE dt.tenant_id = :tenant AND dt.is_latest_version = 1 AND dt.trade_id IN (SELECT trade_id FROM lal)
+        GROUP BY dt.trade_id
+    )
+    SELECT c.instrument, CASE WHEN c.contract_number IS NULL OR c.contract_number = '' THEN 'no contract' ELSE 'contract' END AS contract,
+           CASE WHEN dt.trade_id IS NULL THEN 'no latest deal ticket row'
+                WHEN dt.prices > 1 THEN 'deal ticket has several prices'
+                WHEN abs(dt.premium - round(dt.premium::numeric, 4)::double precision) <= 0.000000001 THEN 'deal ticket also 4 decimals'
+                WHEN round(dt.premium::numeric, 4) <> c.premium THEN 'deal ticket price differs'
+                ELSE 'full price used' END AS price_path,
+           count(*) AS trades, min(c.trade_id) AS example_trade
+    FROM opera.cloned_deal_ticket_table c
+    JOIN lal ON lal.trade_id = c.trade_id
+    LEFT JOIN dt ON dt.trade_id = c.trade_id
+    WHERE c.tenant_id = :tenant AND c.business_unit = 'CFS' AND c.is_latest_version = 1
+      AND c.subportfolio LIKE 'RMS%' AND c.transaction_date < :valueDate AND c.counterparty_parent <> 'JPM9A400'
+    GROUP BY 1, 2, 3 ORDER BY 4 DESC
+  ]]></sql>
+  <sql id="n-price-examples" db="postgres-uat" timeout="120" export="full"><![CDATA[
+    SELECT c.trade_id, c.instrument, c.contract_number, c.counterparty_parent, c.premium AS clone_premium,
+           dt.premium AS deal_premium, dt.is_latest_version, dt.version_no
+    FROM opera.cloned_deal_ticket_table c
+    LEFT JOIN opera.deal_ticket_table dt ON dt.tenant_id = c.tenant_id AND dt.trade_id = c.trade_id
+    WHERE c.tenant_id = :tenant AND c.business_unit = 'CFS' AND c.is_latest_version = 1
+      AND c.trade_id IN ('TR-FY-2026-292041', 'TR-FY-2026-288367', 'TR-FY-2026-244400', 'TR-FY-2026-254564', 'TR-FY-2026-172471')
+    ORDER BY c.trade_id, dt.version_no
+  ]]></sql>
+
+  <expect ref="ssv-price" different="0" only-source="0" only-target="0" duplicates="0" reason="06-Nov security prices equal the legacy history"/>
+  <compress id="bundle" file="cs-11-open-items.zip">
+    <include ref="n-bfa-rows"/><include ref="n-bfa-legs"/>
+    <include ref="ssv-price"/><include ref="n-or-ssv"/><include ref="l-or-ssv"/><include ref="n-or-product"/><include ref="l-or-product"/><include ref="n-or-holders"/>
+    <include ref="l-price-more-decimals"/><include ref="n-price-path"/><include ref="n-price-examples"/>
+  </compress>
+</rules>
