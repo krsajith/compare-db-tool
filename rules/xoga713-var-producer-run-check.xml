@@ -1,0 +1,96 @@
+<rules name="xoga713-var-producer-run-check">
+  <!-- After "Run Report" of the VaR Report (Opera) in the BI app (engine var_report_service.py) for one business unit and value date.
+       Checks, in one run: who wrote the rows, the tenant the engine used, that only the requested business unit was written, the VaR results, what the accounting view shows,
+       and the engine rows against legacy var_accounting_table_cfs value by value. Run with the target-env flag. Reads only. Parameters: vd = the value date you gave, bu = the business unit you gave. -->
+  <parameters>
+    <param name="vd" type="date" value="2026-11-06"/>
+    <param name="bu" type="string" value="CFS"/>
+  </parameters>
+
+  <sql id="writers" db="target" export="full" timeout="180"><![CDATA[
+    SELECT tenant_id, created_by, count(*) AS row_count, min(created_timestamp) AS first_written, max(created_timestamp) AS last_written
+    FROM opera.var_accounting_table
+    WHERE upper(business_unit) = upper(:bu) AND value_date = :vd
+    GROUP BY tenant_id, created_by ORDER BY 1, 2
+  ]]></sql>
+
+  <sql id="loaded_left" db="target" export="full"><![CDATA[
+    SELECT count(*) AS loaded_rows_left
+    FROM opera.var_accounting_table
+    WHERE upper(business_unit) = upper(:bu) AND value_date = :vd AND created_by = 'var-acct-load'
+  ]]></sql>
+
+  <sql id="engine_rows" db="target" export="full"><![CDATA[
+    SELECT count(*) AS engine_rows, count(DISTINCT tenant_id) AS tenants,
+           count(*) FILTER (WHERE tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = 'CFS' LIMIT 1)) AS rows_with_valuation_tenant
+    FROM opera.var_accounting_table
+    WHERE upper(business_unit) = upper(:bu) AND value_date = :vd AND upper(created_by) = 'SYSTEM'
+  ]]></sql>
+
+  <sql id="other_bus" db="target" export="full" timeout="180"><![CDATA[
+    SELECT upper(business_unit) AS business_unit, value_date, created_by, count(*) AS row_count, max(created_timestamp) AS last_written
+    FROM opera.var_accounting_table
+    WHERE upper(created_by) = 'SYSTEM' AND created_timestamp > now() - interval '12 hours' AND upper(business_unit) <> upper(:bu)
+    GROUP BY upper(business_unit), value_date, created_by ORDER BY 1
+  ]]></sql>
+
+  <sql id="var_results" db="target" export="full"><![CDATA[
+    SELECT count(*) AS result_rows, count(DISTINCT aggregation_level) AS levels, max(created_timestamp) AS last_written
+    FROM opera.var_report_table
+    WHERE upper(business_unit) = upper(:bu) AND value_date = :vd
+  ]]></sql>
+
+  <sql id="accounting_view" db="target" export="full" timeout="180"><![CDATA[
+    SELECT count(*) AS view_rows, min(value_date) AS first_date, max(value_date) AS last_date
+    FROM opera.helper_var_accounting_report
+    WHERE lower(business_unit) = lower(:bu)
+  ]]></sql>
+
+  <sql id="types_legacy" db="mysql-oprdb02" export="full"><![CDATA[
+    SELECT BINARY derivative_type AS derivative_type_exact, count(*) AS row_count
+    FROM dbsystemuat.var_accounting_table_cfs WHERE value_date = :vd GROUP BY BINARY derivative_type ORDER BY 1
+  ]]></sql>
+  <sql id="types_new" db="target" export="full"><![CDATA[
+    SELECT derivative_type AS derivative_type_exact, count(*) AS row_count
+    FROM opera.var_accounting_table WHERE upper(business_unit) = upper(:bu) AND value_date = :vd GROUP BY derivative_type ORDER BY 1
+  ]]></sql>
+
+  <sql id="legacy" db="mysql-oprdb02" timeout="300"><![CDATA[
+    SELECT upper(derivative_type) AS dtype, settlement_date, subportfolio, p1_name, contract_month, strike,
+           p1_settleprice, delta, gamma, vega, theta AS settle_theta, mtm_usd, mtm_nc, delta1 AS delta_2, gamma1 AS gamma_2, vega1 AS vega_2
+    FROM dbsystemuat.var_accounting_table_cfs WHERE value_date = :vd
+  ]]></sql>
+  <sql id="new" db="target" timeout="300"><![CDATA[
+    SELECT upper(derivative_type) AS dtype, settlement_date, subportfolio, p1_name, contract_month, strike,
+           p1_settleprice, delta, gamma, vega, settle_theta, mtm_usd, mtm_nc, delta_2, gamma_2, vega_2
+    FROM opera.var_accounting_table WHERE upper(business_unit) = upper(:bu) AND value_date = :vd AND upper(created_by) = 'SYSTEM'
+  ]]></sql>
+  <compare id="rows" source="legacy" target="new" export="full">
+    <key columns="dtype,settlement_date,subportfolio,p1_name,contract_month,strike"/>
+    <column name="p1_settleprice" relTol="0.000000001"/>
+    <column name="delta" relTol="0.000000001"/>
+    <column name="gamma" relTol="0.000000001"/>
+    <column name="vega" relTol="0.000000001"/>
+    <column name="settle_theta" relTol="0.000000001"/>
+    <column name="mtm_usd" relTol="0.000000001"/>
+    <column name="mtm_nc" relTol="0.000000001"/>
+    <column name="delta_2" relTol="0.000000001"/>
+    <column name="gamma_2" relTol="0.000000001"/>
+    <column name="vega_2" relTol="0.000000001"/>
+  </compare>
+
+  <expect ref="engine_rows" column="engine_rows" min="1" reason="the run wrote rows (created_by SYSTEM) for the business unit and value date"/>
+  <expect ref="loaded_left" column="loaded_rows_left" equals="0" reason="the engine replaced the loaded snapshot for that business unit and date (it deletes first)"/>
+  <expect ref="engine_rows" column="tenants" equals="1" reason="the engine used one tenant"/>
+  <expect expr="#engine_rows.first.engine_rows == #engine_rows.first.rows_with_valuation_tenant" reason="the engine wrote under the tenant of valuation_date_table; otherwise the accounting views (joined on tenant_id) show nothing"/>
+  <expect ref="other_bus" rows="0" reason="only the requested business unit was written; any row here means the unfiltered pricing cache view wrote other business units"/>
+  <expect ref="var_results" column="result_rows" min="1" reason="the run wrote VaR results (var_report_table) for the business unit and date"/>
+  <expect ref="accounting_view" column="view_rows" min="1" reason="Combined VAR reads this view for the business unit"/>
+  <expect ref="rows" only-source="0" reason="every legacy row of that date is in the engine output"/>
+  <expect ref="rows" only-target="0" reason="the engine wrote no row that legacy does not have"/>
+  <expect ref="rows" different="0" reason="the engine values equal the legacy producer (greeks, mark-to-market, second leg for CM WP)"/>
+
+  <compress id="bundle" file="xoga713-var-producer-run-check.zip">
+    <include ref="writers"/><include ref="engine_rows"/><include ref="other_bus"/><include ref="var_results"/><include ref="accounting_view"/><include ref="types_legacy"/><include ref="types_new"/><include ref="rows"/>
+  </compress>
+</rules>
