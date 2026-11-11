@@ -1,0 +1,101 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Client statement 06-Nov-2026 CFS, BFA CT swap cents (0.01 to 0.68 on 45 rows): read-only, one run.
+     October lesson (xoga605 TESTER_FINDINGS 3.1, scripts 40/41): swap and accumulator cents came from the
+     per-leg security prices (security_settlement_value_table) differing from the prices legacy printed with,
+     not from the statement code. cs-07 compared the securities but not their 06-Nov prices.
+     MySQL keeps the 06-Nov prices only in historical_security_settlement_value_table_cfs (the current table has 0 rows).
+     Checks: 1 all CFS security prices of the value date, legacy history vs new;
+     2 BFA CT legs, legacy inputs (premium double, lots, leg price) vs the new cache;
+     3 PR 194 premium path: function deployed, column types, clone vs deal ticket premium. -->
+<rules name="cs-09-bfa-leg-prices-premium-cfs">
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+    <param name="valueDate" type="date" value="2026-11-06"/>
+  </parameters>
+
+  <!-- 1. security prices of the value date -->
+  <sql id="l-ssv-counts" db="mysql-oprdb02" timeout="120" export="full"><![CDATA[
+    SELECT 'current' AS legacy_table, count(*) AS row_count FROM dbsystemuat.security_settlement_value_table_cfs WHERE value_date = :valueDate
+    UNION ALL SELECT 'historical', count(*) FROM dbsystemuat.historical_security_settlement_value_table_cfs WHERE value_date = :valueDate
+  ]]></sql>
+  <sql id="l-ssv" db="mysql-oprdb02" timeout="300" fetchSize="5000"><![CDATA[
+    SELECT security_id, settle_price
+    FROM dbsystemuat.historical_security_settlement_value_table_cfs
+    WHERE value_date = :valueDate
+  ]]></sql>
+  <sql id="n-ssv" db="postgres-uat" timeout="300" fetchSize="5000"><![CDATA[
+    SELECT security_id, settle_price
+    FROM opera.security_settlement_value_table
+    WHERE tenant_id = :tenant AND business_unit = 'CFS' AND value_date = :valueDate
+  ]]></sql>
+  <compare id="ssv-prices" source="l-ssv" target="n-ssv">
+    <key columns="security_id"/>
+    <column name="settle_price" absTol="0.000000001"/>
+  </compare>
+  <sql id="n-ssv-writes" db="postgres-uat" timeout="120" export="full"><![CDATA[
+    SELECT coalesce(updated_by, created_by) AS written_by,
+           date_trunc('minute', coalesce(updated_timestamp, created_timestamp)) AS written_at,
+           count(*) AS row_count
+    FROM opera.security_settlement_value_table
+    WHERE tenant_id = :tenant AND business_unit = 'CFS' AND value_date = :valueDate
+    GROUP BY 1, 2 ORDER BY 2
+  ]]></sql>
+
+  <!-- 2. BFA CT legs: legacy inputs vs new cache -->
+  <sql id="l-bfa-legs" db="mysql-oprdb02" timeout="120" export="full"><![CDATA[
+    SELECT d.trade_id, d.contract_number, d.security_id, d.premium, a.active_lots, h.settle_price
+    FROM dbsystemuat.cloned_deal_ticket_table_cfs d
+    JOIN dbsystemuat.deal_active_lots_table_cfs a ON a.trade_id = d.trade_id AND a.value_date = :valueDate
+    LEFT JOIN dbsystemuat.historical_security_settlement_value_table_cfs h ON h.security_id = d.security_id AND h.value_date = :valueDate
+    WHERE d.contract_number LIKE 'BFA_CT%' AND a.active_lots != 0
+  ]]></sql>
+  <sql id="n-bfa-legs" db="postgres-uat" timeout="120" export="full"><![CDATA[
+    SELECT c.trade_id, c.contract_number, d.security_id, c.traded_price AS premium, c.active_lots, c.settle_price
+    FROM opera.helper_client_statement_report_view_cache_table c
+    JOIN opera.cloned_deal_ticket_table d
+      ON d.tenant_id = c.tenant_id AND d.business_unit = c.business_unit AND d.trade_id = c.trade_id AND d.is_latest_version = 1
+    WHERE c.tenant_id = :tenant AND c.business_unit = 'CFS' AND c.value_date = :valueDate
+      AND c.contract_number LIKE 'BFA_CT%'
+  ]]></sql>
+  <compare id="bfa-legs" source="l-bfa-legs" target="n-bfa-legs">
+    <key columns="trade_id"/>
+    <column name="contract_number"/>
+    <column name="security_id"/>
+    <column name="premium" absTol="0.000000001"/>
+    <column name="active_lots" absTol="0.000000001"/>
+    <column name="settle_price" absTol="0.000000001"/>
+  </compare>
+
+  <!-- 3. PR 194 premium path -->
+  <sql id="n-fn-premium-fix" db="postgres-uat" timeout="60" export="full"><![CDATA[
+    SELECT position('dt_price' in pg_get_functiondef('opera.fn_refresh_client_statement_positions(text,text,date,text)'::regprocedure)) > 0 AS has_premium_fix
+  ]]></sql>
+  <sql id="n-premium-types" db="postgres-uat" timeout="60" export="full"><![CDATA[
+    SELECT table_name, data_type, numeric_precision, numeric_scale
+    FROM information_schema.columns
+    WHERE table_schema = 'opera' AND table_name IN ('deal_ticket_table', 'cloned_deal_ticket_table') AND column_name = 'premium'
+  ]]></sql>
+  <sql id="n-bfa-premium-sources" db="postgres-uat" timeout="120" export="full"><![CDATA[
+    SELECT c.trade_id, c.contract_number, c.traded_price AS cache_premium, d.premium AS clone_premium,
+           (SELECT max(t.premium) FROM opera.deal_ticket_table t
+             WHERE t.tenant_id = c.tenant_id AND t.trade_id = c.trade_id AND t.is_latest_version = 1) AS deal_premium,
+           (SELECT count(DISTINCT t.premium) FROM opera.deal_ticket_table t
+             WHERE t.tenant_id = c.tenant_id AND t.trade_id = c.trade_id AND t.is_latest_version = 1) AS deal_latest_prices,
+           c.active_lots, c.settle_price, c.mult_factor, c.nc_factor, c.fx_nc_factor, c.mtm_usd
+    FROM opera.helper_client_statement_report_view_cache_table c
+    JOIN opera.cloned_deal_ticket_table d
+      ON d.tenant_id = c.tenant_id AND d.business_unit = c.business_unit AND d.trade_id = c.trade_id AND d.is_latest_version = 1
+    WHERE c.tenant_id = :tenant AND c.business_unit = 'CFS' AND c.value_date = :valueDate
+      AND c.contract_number LIKE 'BFA_CT%'
+    ORDER BY c.contract_number, c.trade_id
+  ]]></sql>
+
+  <expect ref="ssv-prices" different="0" only-source="0" only-target="0" duplicates="0" reason="new security prices of 06-Nov = the prices legacy stored for 06-Nov"/>
+  <expect ref="bfa-legs" different="0" only-source="0" only-target="0" duplicates="0" reason="BFA CT legs: same premium, lots and leg price as legacy"/>
+  <expect ref="n-fn-premium-fix" column="has_premium_fix" equals="true" reason="PR 194 full-precision premium is deployed on UAT"/>
+  <compress id="bundle" file="cs-09-bfa-leg-prices-premium.zip">
+    <include ref="l-ssv-counts"/><include ref="ssv-prices"/><include ref="n-ssv-writes"/>
+    <include ref="l-bfa-legs"/><include ref="n-bfa-legs"/><include ref="bfa-legs"/>
+    <include ref="n-fn-premium-fix"/><include ref="n-premium-types"/><include ref="n-bfa-premium-sources"/>
+  </compress>
+</rules>
