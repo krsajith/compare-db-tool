@@ -1,0 +1,22 @@
+{
+  "name": "xoga713-combined-var-multfactor-date-filter",
+  "db": "postgres-dev",
+  "backupSchema": "parity_work",
+  "ticket": "XOGA-713",
+  "description": "Combined VAR rule: the multFactor reference reads helper_var_mult_factor_view only for the value dates that are in helper_var_accounting_report, instead of every product for every FX date.",
+  "steps": [
+    {
+      "id": "multfactor-date-filter",
+      "action": "update",
+      "table": "opera.oga_configservice_uploadrules",
+      "where": "template_name IN ('Combined VAR','Combined VAR pipeline') AND rule_data->'referenceRegistry'->'references'->'multFactor'->>'query' = 'SELECT invenio_product_code, value_date, lot_mult, curr_mult, mult_factor FROM opera.helper_var_mult_factor_view'",
+      "key": ["uuid"],
+      "set": {
+        "rule_data": "jsonb_set(rule_data, '{referenceRegistry,references,multFactor,query}', to_jsonb('SELECT m.invenio_product_code, m.value_date, m.lot_mult, m.curr_mult, m.mult_factor FROM opera.helper_var_mult_factor_view m WHERE m.value_date IN (SELECT a.value_date FROM opera.helper_var_accounting_report a GROUP BY a.value_date)'::text))",
+        "updated_by": "'xoga713'",
+        "updated_timestamp": "now()"
+      },
+      "expect": { "targetBefore": "3", "affected": "3", "targetAfter": "0" }
+    }
+  ]
+}
