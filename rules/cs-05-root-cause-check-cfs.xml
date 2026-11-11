@@ -1,0 +1,111 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Client statement 06-Nov-2026 (confirmation 05-Nov) legacy vs new: root-cause check, read-only, CFS.
+     Both PDFs print CONFIRMATION DATE 05-Nov-26, so the value date is 06-Nov-2026.
+     Answers: (A) which value date each system is on and whether MySQL still holds date-keyed inputs for it,
+     (B) ACM CRD MTM USD = MTM NC in new (FX 1): known post-migration issue 2 and 3 in
+     knowledge-base/post-migration-fixes.md, spot id letter case in currency_spot_mapping_table and
+     product_master_table.curr_mult_factor, which a reload from MySQL brings back,
+     (C) MAO_W_303 printed only by legacy: is the trade in the new cache, and its lots on both sides.
+     The legacy statement cache keeps one date only (primary key trade_id, filled from the view on valuation_date_table),
+     so it is not compared here. -->
+<rules name="cs-05-root-cause-check-cfs">
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+    <param name="valueDate" type="date" value="2026-11-06"/>
+  </parameters>
+
+  <!-- A. dates -->
+  <sql id="my-valuation-date" db="mysql-oprdb02" export="full"><![CDATA[
+    SELECT date_id, value_date, settlement_date FROM dbsystemuat.valuation_date_table
+  ]]></sql>
+  <sql id="my-cache-date" db="mysql-oprdb02" export="full"><![CDATA[
+    SELECT value_date, count(*) AS cache_rows FROM dbsystemuat.helper_client_statement_report_view_cache_table_cfs GROUP BY value_date
+  ]]></sql>
+  <sql id="pg-valuation-date" db="postgres-uat" export="full"><![CDATA[
+    SELECT business_unit, value_date, settlement_date, updated_timestamp FROM opera.valuation_date_table
+    WHERE tenant_id = :tenant AND business_unit = 'CFS'
+  ]]></sql>
+  <sql id="pg-cache-date" db="postgres-uat" export="full"><![CDATA[
+    SELECT value_date, count(*) AS cache_rows, max(created_timestamp) AS built FROM opera.helper_client_statement_report_view_cache_table
+    WHERE tenant_id = :tenant AND business_unit = 'CFS' GROUP BY value_date
+  ]]></sql>
+  <!-- does MySQL still hold the date-keyed inputs of the value date? -->
+  <sql id="my-inputs-on-date" db="mysql-oprdb02" export="full"><![CDATA[
+    SELECT 'deal_active_lots_table_cfs' AS input_table, count(*) AS row_count FROM dbsystemuat.deal_active_lots_table_cfs WHERE value_date = :valueDate
+    UNION ALL SELECT 'security_settlement_value_table_cfs', count(*) FROM dbsystemuat.security_settlement_value_table_cfs WHERE value_date = :valueDate
+    UNION ALL SELECT 'underlying_settle_value_table', count(*) FROM dbsystemuat.underlying_settle_value_table WHERE value_date = :valueDate
+  ]]></sql>
+  <sql id="pg-inputs-on-date" db="postgres-uat" export="full"><![CDATA[
+    SELECT 'deal_active_lots_table' AS input_table, count(*) AS row_count FROM opera.deal_active_lots_table WHERE tenant_id = :tenant AND business_unit = 'CFS' AND value_date = :valueDate
+    UNION ALL SELECT 'security_settlement_value_table', count(*) FROM opera.security_settlement_value_table WHERE tenant_id = :tenant AND business_unit = 'CFS' AND value_date = :valueDate
+    UNION ALL SELECT 'underlying_settle_value_table', count(*) FROM opera.underlying_settle_value_table WHERE tenant_id = :tenant AND value_date = :valueDate
+  ]]></sql>
+
+  <!-- B. ACM CRD: FX factor in the new cache, and the spot id spelling (post-migration fixes 2 and 3) -->
+  <sql id="pg-acm-crd-cache" db="postgres-uat" export="full"><![CDATA[
+    SELECT trade_id, contract_number, product_code, currency, nc_factor, fx_nc_factor, curr_mult, mtm_nc, mtm_usd
+    FROM opera.helper_client_statement_report_view_cache_table
+    WHERE tenant_id = :tenant AND business_unit = 'CFS' AND value_date = :valueDate AND contract_number LIKE 'ACM_CRD%'
+    ORDER BY contract_number, trade_id LIMIT 50
+  ]]></sql>
+  <sql id="pg-spot-mapping-case" db="postgres-uat" export="full"><![CDATA[
+    SELECT DISTINCT m.currency, m.spot AS mapping_spot, u.underlying_id AS price_spot
+    FROM opera.currency_spot_mapping_table m
+    JOIN (SELECT DISTINCT underlying_id FROM opera.underlying_settle_value_table WHERE tenant_id = :tenant AND value_date = :valueDate) u
+      ON lower(u.underlying_id) = lower(m.spot) AND u.underlying_id <> m.spot
+    WHERE m.tenant_id = :tenant
+  ]]></sql>
+  <sql id="pg-product-curr-case" db="postgres-uat" export="full"><![CDATA[
+    SELECT p.curr_mult_factor AS product_value, u.underlying_id AS price_spot, count(*) AS products, min(p.invenio_product_code) AS example_product
+    FROM opera.product_master_table p
+    JOIN (SELECT DISTINCT underlying_id FROM opera.underlying_settle_value_table WHERE tenant_id = :tenant AND value_date = :valueDate) u
+      ON lower(u.underlying_id) = lower(p.curr_mult_factor) AND u.underlying_id <> p.curr_mult_factor
+    GROUP BY 1, 2
+  ]]></sql>
+  <sql id="pg-crd-product" db="postgres-uat" export="full"><![CDATA[
+    SELECT p.invenio_product_code, p.bbg_product_code, p.currency, p.curr_mult_type, p.curr_mult_factor, p.constant_curr_mult, p.constant_nc_factor,
+           (SELECT max(u.settle_value) FROM opera.underlying_settle_value_table u
+             WHERE u.tenant_id = :tenant AND u.value_date = :valueDate AND u.underlying_id = p.curr_mult_factor) AS spot_exact,
+           (SELECT max(u.settle_value) FROM opera.underlying_settle_value_table u
+             WHERE u.tenant_id = :tenant AND u.value_date = :valueDate AND lower(u.underlying_id) = lower(p.curr_mult_factor)) AS spot_any_case
+    FROM opera.product_master_table p WHERE p.invenio_product_code = 'CM CRD'
+  ]]></sql>
+  <sql id="my-crd-product" db="mysql-oprdb02" export="full"><![CDATA[
+    SELECT p.invenio_product_code, p.bbg_product_code, p.currency, p.curr_mult_type, p.curr_mult_factor, p.constant_curr_mult, p.constant_nc_factor,
+           (SELECT max(u.settle_value) FROM dbsystemuat.underlying_settle_value_table u
+             WHERE u.value_date = :valueDate AND u.underlying_id = p.curr_mult_factor) AS spot_on_date
+    FROM dbsystemuat.product_master_table p WHERE p.invenio_product_code = 'CM CRD'
+  ]]></sql>
+
+  <!-- C. MAO_W_303 -->
+  <sql id="pg-mao303" db="postgres-uat" export="full"><![CDATA[
+    SELECT 'cache' AS place, c.trade_id, c.value_date, c.active_lots, c.derivative_type, c.mtm_usd
+    FROM opera.helper_client_statement_report_view_cache_table c
+    WHERE c.tenant_id = :tenant AND c.business_unit = 'CFS' AND c.value_date = :valueDate AND c.contract_number = 'MAO_W_303'
+    UNION ALL
+    SELECT 'lots', a.trade_id, a.value_date, a.active_lots, NULL, NULL
+    FROM opera.deal_active_lots_table a
+    WHERE a.tenant_id = :tenant AND a.business_unit = 'CFS' AND a.value_date = :valueDate
+      AND a.trade_id IN (SELECT d.trade_id FROM opera.cloned_deal_ticket_table d
+                         WHERE d.tenant_id = :tenant AND d.business_unit = 'CFS' AND d.contract_number = 'MAO_W_303')
+  ]]></sql>
+  <sql id="my-mao303" db="mysql-oprdb02" export="full"><![CDATA[
+    SELECT a.trade_id, a.value_date, a.active_lots, s.derivative_type, s.maturity_date
+    FROM dbsystemuat.deal_active_lots_table_cfs a
+    JOIN (SELECT DISTINCT trade_id, security_id FROM dbsystemuat.cloned_deal_ticket_table_cfs WHERE contract_number = 'MAO_W_303') d ON d.trade_id = a.trade_id
+    LEFT JOIN dbsystemuat.cloned_security_info_table_cfs s ON s.security_id = d.security_id
+    WHERE a.value_date = :valueDate
+  ]]></sql>
+
+  <expect ref="pg-valuation-date" column="value_date" equals="2026-11-06" reason="new system is on the PDF value date"/>
+  <expect ref="pg-spot-mapping-case" rows="0" reason="post-migration fix 2: no spot id differs from the price table only by case"/>
+  <expect ref="pg-product-curr-case" rows="0" reason="post-migration fix 3: no product curr_mult_factor differs only by case"/>
+  <expect ref="pg-acm-crd-cache" column="fx_nc_factor" each="true" max="0.5" reason="BRL product: FX factor about 1/5.46, not 1"/>
+  <expect ref="my-inputs-on-date" column="row_count" each="true" min="1" reason="MySQL still has the date-keyed inputs of the value date"/>
+  <compress id="bundle" file="cs-05-root-cause-check.zip">
+    <include ref="my-valuation-date"/><include ref="my-cache-date"/><include ref="pg-valuation-date"/><include ref="pg-cache-date"/>
+    <include ref="my-inputs-on-date"/><include ref="pg-inputs-on-date"/><include ref="pg-acm-crd-cache"/>
+    <include ref="pg-spot-mapping-case"/><include ref="pg-product-curr-case"/><include ref="pg-crd-product"/><include ref="my-crd-product"/>
+    <include ref="pg-mao303"/><include ref="my-mao303"/>
+  </compress>
+</rules>
