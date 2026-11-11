@@ -1,0 +1,30 @@
+{
+  "name": "xoga713-var-accounting-rmc-reset",
+  "db": "target",
+  "backupSchema": "parity_work",
+  "ticket": "XOGA-713",
+  "description": "Removes the RMC rows of the first var_accounting_table load (created_by var-acct-load): they have no delta_2, gamma_2, vega_2. They are loaded again by xoga713-var-accounting-table-load-2.json. Backed up first, undo file written.",
+  "steps": [
+    {
+      "id": "rmc-rows",
+      "action": "delete",
+      "table": "opera.var_accounting_table",
+      "where": "created_by = 'var-acct-load' AND upper(business_unit) = 'RMC'",
+      "key": [
+        "business_unit",
+        "value_date",
+        "settlement_date",
+        "subportfolio",
+        "p1_name",
+        "contract_month",
+        "derivative_type",
+        "strike"
+      ],
+      "expect": {
+        "targetBefore": "44",
+        "affected": "44",
+        "targetAfter": "0"
+      }
+    }
+  ]
+}

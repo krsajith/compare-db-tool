@@ -24,6 +24,7 @@
     SELECT orderexecuted, id, author, exectype, dateexecuted FROM opera.databasechangelog
     WHERE id IN ('create-var_bu_rule-table-v1', 'create-helper_var_future_view-view-v1', 'create-helper_var_vanilla_view-view-v1',
                  'create-helper_var_mult_factor_view-view-v2', 'create-helper_var_accounting_report-view-v1',
+                 'update-var_bu_rule-v2', 'create-helper_var_future_view-view-v2', 'create-helper_var_vanilla_view-view-v2',
                  'drop-helper_var_accounting_report-table-v1', 'create-curr_mult_table-v1', 'create-var_dynamic_report-v1')
     ORDER BY orderexecuted
   ]]></sql>
@@ -33,7 +34,8 @@
            count(*) FILTER (WHERE id = 'create-helper_var_accounting_report-view-v1' AND exectype = 'EXECUTED') AS accounting_view_created
     FROM opera.databasechangelog
     WHERE id IN ('create-var_bu_rule-table-v1', 'create-helper_var_future_view-view-v1', 'create-helper_var_vanilla_view-view-v1',
-                 'create-helper_var_mult_factor_view-view-v2', 'create-helper_var_accounting_report-view-v1')
+                 'create-helper_var_mult_factor_view-view-v2', 'create-helper_var_accounting_report-view-v1',
+                 'update-var_bu_rule-v2', 'create-helper_var_future_view-view-v2', 'create-helper_var_vanilla_view-view-v2')
   ]]></sql>
 
   <sql id="lock_state" db="target" export="full"><![CDATA[
@@ -81,13 +83,13 @@
 
   <expect ref="kinds" column="found" equals="10" reason="all ten objects exist"/>
   <expect ref="kinds" column="right_kind" equals="10" reason="four views and six tables"/>
-  <expect ref="changesets_ok" column="executed" equals="5" reason="var_bu_rule, future view, vanilla view, multiplier view v2 and the accounting view changeSets all ran (EXECUTED)"/>
+  <expect ref="changesets_ok" column="executed" equals="8" reason="var_bu_rule, future view, vanilla view, multiplier view v2, the accounting view and the three v2 changeSets (rule rows, future view, vanilla view) all ran (EXECUTED)"/>
   <expect ref="changesets_ok" column="accounting_view_created" equals="1" reason="create-helper_var_accounting_report-view-v1 ran, the accounting view exists"/>
   <expect ref="lock_state" column="locked" equals="0" reason="Liquibase released its lock"/>
-  <expect ref="rules_table" column="bu_rows" equals="33" reason="one rule row per business unit"/>
-  <expect ref="rules_table" column="emit_rows" equals="12" reason="11 business units plus usg emit trade_group_type"/>
+  <expect ref="rules_table" column="bu_rows" equals="34" reason="one rule row per business unit (frt is new in v2)"/>
+  <expect ref="rules_table" column="emit_rows" equals="13" reason="12 business units plus usg emit trade_group_type (frt is new)"/>
   <expect ref="rules_table" column="global_rows" equals="10" reason="10 business units use the CFS valuation date"/>
-  <expect ref="rules_table" column="own_rows" equals="8" reason="8 business units use their own valuation date"/>
+  <expect ref="rules_table" column="own_rows" equals="9" reason="9 business units use their own valuation date (frt is new)"/>
   <expect ref="rules_table" column="none_rows" equals="15" reason="15 business units show all value dates"/>
   <expect ref="viewdefs" column="mult_view_live" equals="1" reason="the multiplier view is the live definition with the equity filter"/>
   <expect ref="viewdefs" column="accounting_view_chain" equals="1" reason="the accounting view reads the future and vanilla views and var_bu_rule"/>

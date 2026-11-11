@@ -1,0 +1,80 @@
+{
+  "name": "xoga713-var-accounting-table-load-2",
+  "db": "target",
+  "backupSchema": "parity_work",
+  "ticket": "XOGA-713",
+  "description": "Second load of opera.var_accounting_table from legacy MySQL. Run AFTER xoga713-var-accounting-rmc-reset.json. Step rmc: RMC again, now with delta1/gamma1/vega1 (the live legacy rmc views have them; the first load wrote NULL). Step new-bus: the business units the 2025 DDL dump did not list (alm, coc, cof, oad, odr, spc, frt). Insert only.",
+  "params": {
+    "fromDate": {
+      "type": "date",
+      "value": "2026-10-01"
+    }
+  },
+  "steps": [
+    {
+      "id": "rmc",
+      "table": "opera.var_accounting_table",
+      "where": "created_by = 'var-acct-load' AND upper(business_unit) = 'RMC'",
+      "key": [
+        "business_unit",
+        "value_date",
+        "settlement_date",
+        "subportfolio",
+        "p1_name",
+        "contract_month",
+        "derivative_type",
+        "strike"
+      ],
+      "source": {
+        "db": "mysql-oprdb02",
+        "sql": "SELECT 'RMC' AS business_unit, value_date, settlement_date, subportfolio, p1_name, contract_month, derivative_type, strike, p1_settleprice, delta, gamma, vega, theta AS settle_theta, mtm_usd, mtm_nc, delta1 AS delta_2, gamma1 AS gamma_2, vega1 AS vega_2 FROM dbsystemuat.var_accounting_table_rmc WHERE value_date >= :fromDate"
+      },
+      "constants": {
+        "uuid": "$uuid",
+        "tenant_id": "227cd5f5-4498-4dba-bda9-05b8edc41113",
+        "created_by": "var-acct-load",
+        "created_timestamp": "$now"
+      },
+      "expect": {
+        "targetBefore": "0",
+        "source": ">=0",
+        "inserted": ">=0"
+      }
+    },
+    {
+      "id": "new-bus",
+      "table": "opera.var_accounting_table",
+      "where": "created_by = 'var-acct-load' AND upper(business_unit) IN ('ALM','COC','COF','OAD','ODR','SPC','FRT')",
+      "key": [
+        "business_unit",
+        "value_date",
+        "settlement_date",
+        "subportfolio",
+        "p1_name",
+        "contract_month",
+        "derivative_type",
+        "strike"
+      ],
+      "source": {
+        "db": "mysql-oprdb02",
+        "sql": "SELECT 'ALM' AS business_unit, value_date, settlement_date, subportfolio, p1_name, contract_month, derivative_type, strike, p1_settleprice, delta, gamma, vega, theta AS settle_theta, NULL AS mtm_usd, NULL AS mtm_nc, NULL AS delta_2, NULL AS gamma_2, NULL AS vega_2 FROM dbsystemuat.var_accounting_table_alm WHERE value_date >= :fromDate UNION ALL SELECT 'COC' AS business_unit, value_date, settlement_date, subportfolio, p1_name, contract_month, derivative_type, strike, p1_settleprice, delta, gamma, vega, theta AS settle_theta, NULL AS mtm_usd, NULL AS mtm_nc, NULL AS delta_2, NULL AS gamma_2, NULL AS vega_2 FROM dbsystemuat.var_accounting_table_coc WHERE value_date >= :fromDate UNION ALL SELECT 'COF' AS business_unit, value_date, settlement_date, subportfolio, p1_name, contract_month, derivative_type, strike, p1_settleprice, delta, gamma, vega, theta AS settle_theta, NULL AS mtm_usd, NULL AS mtm_nc, NULL AS delta_2, NULL AS gamma_2, NULL AS vega_2 FROM dbsystemuat.var_accounting_table_cof WHERE value_date >= :fromDate UNION ALL SELECT 'OAD' AS business_unit, value_date, settlement_date, subportfolio, p1_name, contract_month, derivative_type, strike, p1_settleprice, delta, gamma, vega, theta AS settle_theta, NULL AS mtm_usd, NULL AS mtm_nc, NULL AS delta_2, NULL AS gamma_2, NULL AS vega_2 FROM dbsystemuat.var_accounting_table_oad WHERE value_date >= :fromDate UNION ALL SELECT 'ODR' AS business_unit, value_date, settlement_date, subportfolio, p1_name, contract_month, derivative_type, strike, p1_settleprice, delta, gamma, vega, theta AS settle_theta, NULL AS mtm_usd, NULL AS mtm_nc, NULL AS delta_2, NULL AS gamma_2, NULL AS vega_2 FROM dbsystemuat.var_accounting_table_odr WHERE value_date >= :fromDate UNION ALL SELECT 'SPC' AS business_unit, value_date, settlement_date, subportfolio, p1_name, contract_month, derivative_type, strike, p1_settleprice, delta, gamma, vega, theta AS settle_theta, NULL AS mtm_usd, NULL AS mtm_nc, NULL AS delta_2, NULL AS gamma_2, NULL AS vega_2 FROM dbsystemuat.var_accounting_table_spc WHERE value_date >= :fromDate UNION ALL SELECT 'FRT' AS business_unit, value_date, settlement_date, subportfolio, p1_name, contract_month, derivative_type, strike, p1_settleprice, delta, gamma, vega, theta AS settle_theta, NULL AS mtm_usd, NULL AS mtm_nc, NULL AS delta_2, NULL AS gamma_2, NULL AS vega_2 FROM dbsystemuat.var_accounting_table_frt WHERE value_date >= :fromDate"
+      },
+      "constants": {
+        "uuid": "$uuid",
+        "tenant_id": "227cd5f5-4498-4dba-bda9-05b8edc41113",
+        "created_by": "var-acct-load",
+        "created_timestamp": "$now"
+      },
+      "expect": {
+        "targetBefore": "0",
+        "source": ">=0",
+        "inserted": ">=0"
+      }
+    }
+  ],
+  "verify": [
+    {
+      "rule": "xoga713-var-accounting-table-parity-2.xml"
+    }
+  ]
+}

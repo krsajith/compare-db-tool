@@ -1,23 +1,29 @@
 <rules name="xoga713-var-accounting-view-vs-legacy">
   <!-- New opera.helper_var_accounting_report (view over helper_var_future_view and helper_var_vanilla_view) against the legacy MySQL views
        helper_var_accounting_report_cfs (variant with delta1, gamma1, vega1 and the CM WP special case) and helper_var_accounting_report_grn
-       (plain variant, no trade_group_type). Run after var_accounting_table was loaded, with the target-env flag for the environment. Read-only. -->
+       (plain variant, no trade_group_type) and helper_var_accounting_report_rmc. Both views show only the CURRENT valuation date, so a row by row comparison is only valid when the two valuation dates are equal (the first expectation says so).
+       derivative_type is compared in upper case: the legacy producer writes FUTURE and future. Run after var_accounting_table was loaded, with the target-env flag. Read-only. -->
+
+  <sql id="leg_vd" db="mysql-oprdb02"><![CDATA[SELECT date_format(value_date, '%Y-%m-%d') AS d FROM dbsystemuat.valuation_date_table LIMIT 1]]></sql>
+  <sql id="new_vd" db="target"><![CDATA[SELECT to_char(value_date, 'YYYY-MM-DD') AS d FROM opera.valuation_date_table WHERE upper(business_unit) = 'CFS' LIMIT 1]]></sql>
+  <expect expr="#leg_vd.first.d == #new_vd.first.d" reason="the legacy and the new valuation dates are equal, otherwise the two views show different days and no row can match"/>
 
   <sql id="cfs_legacy" db="mysql-oprdb02" timeout="300"><![CDATA[
-    SELECT value_date, settlement_date, subportfolio, p1_name, contract_month, derivative_type, strike, coalesce(vol_id, '') AS vol_id,
+    SELECT value_date, settlement_date, subportfolio, p1_name, contract_month, upper(derivative_type) AS dtype, derivative_type, strike, coalesce(vol_id, '') AS vol_id,
            p1_settleprice, invenio_product_code, future_expiry, option_expiry, future_continuation_series, option_continuation_series,
            delta, gamma, theta, vega, delta1, gamma1, vega1
     FROM dbsystemuat.helper_var_accounting_report_cfs
   ]]></sql>
   <sql id="cfs_new" db="target" timeout="300"><![CDATA[
-    SELECT value_date, settlement_date, subportfolio, p1_name, contract_month, derivative_type, strike::double precision AS strike, coalesce(vol_id, '') AS vol_id,
+    SELECT value_date, settlement_date, subportfolio, p1_name, contract_month, upper(derivative_type) AS dtype, derivative_type, strike::double precision AS strike, coalesce(vol_id, '') AS vol_id,
            p1_settleprice, invenio_product_code, future_expiry, option_expiry, future_continuation_series, option_continuation_series,
            delta, gamma, theta, vega, delta1, gamma1, vega1
     FROM opera.helper_var_accounting_report
     WHERE lower(business_unit) = 'cfs'
   ]]></sql>
   <compare id="cfs" source="cfs_legacy" target="cfs_new" export="full">
-    <key columns="value_date,settlement_date,subportfolio,p1_name,contract_month,derivative_type,strike,vol_id"/>
+    <key columns="value_date,settlement_date,subportfolio,p1_name,contract_month,dtype,strike,vol_id"/>
+    <column name="derivative_type" ignore="true"/>
     <column name="p1_settleprice" relTol="0.000000001"/>
     <column name="delta" relTol="0.000000001"/>
     <column name="gamma" relTol="0.000000001"/>
@@ -29,25 +35,52 @@
   </compare>
 
   <sql id="grn_legacy" db="mysql-oprdb02" timeout="300"><![CDATA[
-    SELECT value_date, settlement_date, subportfolio, p1_name, contract_month, derivative_type, strike, coalesce(vol_id, '') AS vol_id,
+    SELECT value_date, settlement_date, subportfolio, p1_name, contract_month, upper(derivative_type) AS dtype, derivative_type, strike, coalesce(vol_id, '') AS vol_id,
            p1_settleprice, invenio_product_code, future_expiry, option_expiry, future_continuation_series, option_continuation_series,
            delta, gamma, theta, vega
     FROM dbsystemuat.helper_var_accounting_report_grn
   ]]></sql>
   <sql id="grn_new" db="target" timeout="300"><![CDATA[
-    SELECT value_date, settlement_date, subportfolio, p1_name, contract_month, derivative_type, strike::double precision AS strike, coalesce(vol_id, '') AS vol_id,
+    SELECT value_date, settlement_date, subportfolio, p1_name, contract_month, upper(derivative_type) AS dtype, derivative_type, strike::double precision AS strike, coalesce(vol_id, '') AS vol_id,
            p1_settleprice, invenio_product_code, future_expiry, option_expiry, future_continuation_series, option_continuation_series,
            delta, gamma, theta, vega
     FROM opera.helper_var_accounting_report
     WHERE lower(business_unit) = 'grn'
   ]]></sql>
   <compare id="grn" source="grn_legacy" target="grn_new" export="full">
-    <key columns="value_date,settlement_date,subportfolio,p1_name,contract_month,derivative_type,strike,vol_id"/>
+    <key columns="value_date,settlement_date,subportfolio,p1_name,contract_month,dtype,strike,vol_id"/>
+    <column name="derivative_type" ignore="true"/>
     <column name="p1_settleprice" relTol="0.000000001"/>
     <column name="delta" relTol="0.000000001"/>
     <column name="gamma" relTol="0.000000001"/>
     <column name="theta" relTol="0.000000001"/>
     <column name="vega" relTol="0.000000001"/>
+  </compare>
+
+  <sql id="rmc_legacy" db="mysql-oprdb02" timeout="300"><![CDATA[
+    SELECT value_date, settlement_date, subportfolio, p1_name, contract_month, upper(derivative_type) AS dtype, derivative_type, strike, coalesce(vol_id, '') AS vol_id,
+           p1_settleprice, invenio_product_code, future_expiry, option_expiry, future_continuation_series, option_continuation_series,
+           delta, gamma, theta, vega, delta1, gamma1, vega1
+    FROM dbsystemuat.helper_var_accounting_report_rmc
+  ]]></sql>
+  <sql id="rmc_new" db="target" timeout="300"><![CDATA[
+    SELECT value_date, settlement_date, subportfolio, p1_name, contract_month, upper(derivative_type) AS dtype, derivative_type, strike::double precision AS strike, coalesce(vol_id, '') AS vol_id,
+           p1_settleprice, invenio_product_code, future_expiry, option_expiry, future_continuation_series, option_continuation_series,
+           delta, gamma, theta, vega, delta1, gamma1, vega1
+    FROM opera.helper_var_accounting_report
+    WHERE lower(business_unit) = 'rmc'
+  ]]></sql>
+  <compare id="rmc" source="rmc_legacy" target="rmc_new" export="full">
+    <key columns="value_date,settlement_date,subportfolio,p1_name,contract_month,dtype,strike,vol_id"/>
+    <column name="derivative_type" ignore="true"/>
+    <column name="p1_settleprice" relTol="0.000000001"/>
+    <column name="delta" relTol="0.000000001"/>
+    <column name="gamma" relTol="0.000000001"/>
+    <column name="theta" relTol="0.000000001"/>
+    <column name="vega" relTol="0.000000001"/>
+    <column name="delta1" relTol="0.000000001"/>
+    <column name="gamma1" relTol="0.000000001"/>
+    <column name="vega1" relTol="0.000000001"/>
   </compare>
 
   <expect ref="cfs" different="0" reason="cfs rows equal the legacy view (greeks, expiries, continuation series)"/>
@@ -56,5 +89,8 @@
   <expect ref="grn" different="0" reason="grn rows equal the legacy view"/>
   <expect ref="grn" only-source="0" reason="no grn row of legacy is missing"/>
   <expect ref="grn" only-target="0" reason="no extra grn row"/>
-  <compress id="bundle" file="xoga713-var-accounting-view-vs-legacy.zip"><include ref="cfs"/><include ref="grn"/></compress>
+  <expect ref="rmc" different="0" reason="rmc rows equal the legacy view (including delta1, gamma1, vega1)"/>
+  <expect ref="rmc" only-source="0" reason="no rmc row of legacy is missing"/>
+  <expect ref="rmc" only-target="0" reason="no extra rmc row"/>
+  <compress id="bundle" file="xoga713-var-accounting-view-vs-legacy.zip"><include ref="cfs"/><include ref="grn"/><include ref="rmc"/></compress>
 </rules>
