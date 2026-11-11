@@ -1,0 +1,48 @@
+<rules name="xoga713-var-mult-view-check">
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+    <param name="cob" type="date" value="2026-11-05"/>
+  </parameters>
+
+  <sql id="view_rows" db="target" export="full"><![CDATA[
+    SELECT count(*) AS view_rows, count(curr_mult) AS with_curr_mult, count(lot_mult) AS with_lot_mult, count(mult_factor) AS with_mult_factor
+    FROM opera.helper_var_mult_factor_view
+    WHERE tenant_id = :tenant AND value_date = :cob
+  ]]></sql>
+
+  <sql id="missing_products" db="target" export="full"><![CDATA[
+    SELECT v.invenio_product_code, p.curr_mult_factor, p.curr_mult_type, p.constant_curr_mult
+    FROM opera.var_product_code_mapping_table v
+    LEFT JOIN opera.product_master_table p
+      ON p.tenant_id = v.tenant_id AND p.invenio_product_code = v.invenio_product_code
+    WHERE v.tenant_id = :tenant
+      AND NOT EXISTS (SELECT 1 FROM opera.helper_var_mult_factor_view m
+                      WHERE m.tenant_id = v.tenant_id AND m.invenio_product_code = v.invenio_product_code AND m.value_date = :cob)
+    ORDER BY v.invenio_product_code
+  ]]></sql>
+
+  <sql id="fallback_diff" db="target" export="full"><![CDATA[
+    SELECT m.invenio_product_code, p.curr_mult_type, p.constant_curr_mult, s.settle_value AS fx,
+           m.curr_mult AS view_curr_mult,
+           CASE WHEN lower(coalesce(p.curr_mult_type, '')) IN ('division', 'divide', 'div', '/')
+                THEN 1 / NULLIF(s.settle_value, 0) ELSE s.settle_value END AS old_fallback
+    FROM opera.helper_var_mult_factor_view m
+    JOIN opera.product_master_table p
+      ON p.tenant_id = m.tenant_id AND p.invenio_product_code = m.invenio_product_code
+    JOIN opera.underlying_settle_value_table s
+      ON s.tenant_id = p.tenant_id AND s.underlying_id = p.curr_mult_factor AND s.value_date = m.value_date
+    WHERE m.tenant_id = :tenant AND m.value_date = :cob
+      AND abs(m.curr_mult - CASE WHEN lower(coalesce(p.curr_mult_type, '')) IN ('division', 'divide', 'div', '/')
+                                 THEN 1 / NULLIF(s.settle_value, 0) ELSE s.settle_value END) > 0.000000001
+    ORDER BY m.invenio_product_code
+  ]]></sql>
+
+  <expect ref="view_rows" column="view_rows" min="100" reason="the view returns about 124 products (legacy) for a date that has FX prices"/>
+  <expect ref="view_rows" column="with_curr_mult" min="100" reason="curr_mult is filled where the FX price exists"/>
+  <expect ref="missing_products" rows="&lt;=5" reason="only products without an FX price that day may be missing (2 seen on UAT, 5 Nov)"/>
+  <expect ref="fallback_diff" rows="0" reason="the client statement fallback (fx_factor) equals the view, so the statement does not change"/>
+
+  <compress id="bundle" file="xoga713-var-mult-view-check.zip">
+    <include ref="view_rows"/><include ref="missing_products"/><include ref="fallback_diff"/>
+  </compress>
+</rules>
