@@ -1,0 +1,23 @@
+<rules name="xoga713-legacy-var-view-definitions-all">
+  <!-- The live definitions of ALL legacy VAR views (future, vanilla, accounting report, one per business unit) and the derivative_type spellings in the loaded table.
+       Found so far: the live cfs vanilla view differs from the 2025-11-29 DDL dump (extra amer_disc_* types, vol_id rule for names of 10 or more characters).
+       The new var_bu_rule must be generated from the LIVE text of every business unit. Run with the target-env flag (the second query reads PostgreSQL). Read-only. -->
+
+  <sql id="definitions" db="mysql-oprdb02" export="full" timeout="180"><![CDATA[
+    SELECT TABLE_NAME AS view_name, CHAR_LENGTH(VIEW_DEFINITION) AS definition_length, VIEW_DEFINITION AS definition
+    FROM information_schema.VIEWS
+    WHERE TABLE_SCHEMA = 'dbsystemuat'
+      AND TABLE_NAME REGEXP '^helper_var_(future_view|vanilla_view|accounting_report)_[a-z0-9]{2,4}$'
+    ORDER BY TABLE_NAME
+  ]]></sql>
+
+  <sql id="types_new" db="target" export="full" timeout="180"><![CDATA[
+    SELECT upper(business_unit) AS business_unit, derivative_type AS derivative_type_exact, count(*) AS row_count, min(value_date) AS first_date, max(value_date) AS last_date
+    FROM opera.var_accounting_table
+    GROUP BY upper(business_unit), derivative_type
+    ORDER BY 1, 2
+  ]]></sql>
+
+  <expect ref="definitions" rows="99" reason="three views for each of the 33 business units"/>
+  <compress id="bundle" file="xoga713-legacy-var-view-definitions-all.zip"><include ref="definitions"/><include ref="types_new"/></compress>
+</rules>
