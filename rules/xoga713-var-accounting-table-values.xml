@@ -1,0 +1,47 @@
+<rules name="xoga713-var-accounting-table-values">
+  <!-- Value level check of the loaded var_accounting_table against legacy var_accounting_table_cfs for ONE value date (default: the PostgreSQL CFS valuation date).
+       The diagnose run showed the cfs rows differ only in derivative_type letter case (legacy FUTURE, new future). This shows which side holds which spelling and whether the load changed it.
+       Read-only. Run with the target-env flag for the environment. -->
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+    <param name="vd" type="date" value="2026-11-06"/>
+  </parameters>
+
+  <sql id="types_legacy" db="mysql-oprdb02" export="full"><![CDATA[
+    SELECT BINARY derivative_type AS derivative_type_exact, count(*) AS row_count
+    FROM dbsystemuat.var_accounting_table_cfs WHERE value_date = :vd GROUP BY BINARY derivative_type ORDER BY 1
+  ]]></sql>
+  <sql id="types_new" db="target" export="full"><![CDATA[
+    SELECT derivative_type AS derivative_type_exact, count(*) AS row_count
+    FROM opera.var_accounting_table WHERE upper(business_unit) = 'CFS' AND tenant_id = :tenant AND value_date = :vd GROUP BY derivative_type ORDER BY 1
+  ]]></sql>
+
+  <sql id="legacy" db="mysql-oprdb02" timeout="300"><![CDATA[
+    SELECT upper(derivative_type) AS dtype, settlement_date, subportfolio, p1_name, contract_month, strike, derivative_type AS derivative_type_raw,
+           p1_settleprice, delta, gamma, vega, theta AS settle_theta, mtm_usd, mtm_nc, delta1 AS delta_2, gamma1 AS gamma_2, vega1 AS vega_2
+    FROM dbsystemuat.var_accounting_table_cfs WHERE value_date = :vd
+  ]]></sql>
+  <sql id="new" db="target" timeout="300"><![CDATA[
+    SELECT upper(derivative_type) AS dtype, settlement_date, subportfolio, p1_name, contract_month, strike, derivative_type AS derivative_type_raw,
+           p1_settleprice, delta, gamma, vega, settle_theta, mtm_usd, mtm_nc, delta_2, gamma_2, vega_2
+    FROM opera.var_accounting_table WHERE upper(business_unit) = 'CFS' AND tenant_id = :tenant AND value_date = :vd
+  ]]></sql>
+  <compare id="rows" source="legacy" target="new" export="full">
+    <key columns="dtype,settlement_date,subportfolio,p1_name,contract_month,strike"/>
+    <column name="p1_settleprice" relTol="0.000000001"/>
+    <column name="delta" relTol="0.000000001"/>
+    <column name="gamma" relTol="0.000000001"/>
+    <column name="vega" relTol="0.000000001"/>
+    <column name="settle_theta" relTol="0.000000001"/>
+    <column name="mtm_usd" relTol="0.000000001"/>
+    <column name="mtm_nc" relTol="0.000000001"/>
+    <column name="delta_2" relTol="0.000000001"/>
+    <column name="gamma_2" relTol="0.000000001"/>
+    <column name="vega_2" relTol="0.000000001"/>
+  </compare>
+
+  <expect ref="rows" only-source="0" reason="every legacy row of that date was loaded"/>
+  <expect ref="rows" only-target="0" reason="no extra row in the new table"/>
+  <expect ref="rows" different="0" reason="values equal; a derivative_type_raw difference means the spelling of derivative_type changed between legacy and the new table"/>
+  <compress id="bundle" file="xoga713-var-accounting-table-values.zip"><include ref="types_legacy"/><include ref="types_new"/><include ref="rows"/></compress>
+</rules>
