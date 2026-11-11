@@ -59,7 +59,14 @@
            (SELECT string_agg(a.attname, ',' ORDER BY a.attnum) FROM pg_attribute a WHERE a.attrelid = 'opera.helper_var_mult_factor_view'::regclass AND a.attnum > 0 AND NOT a.attisdropped) AS mult_view_columns,
            (SELECT (pg_get_viewdef(c.oid) LIKE '%lower(%derivative_type%')::int FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'opera' AND c.relname = 'helper_var_future_view' AND c.relkind = 'v') AS future_view_v2,
            (SELECT (pg_get_viewdef(c.oid) LIKE '%lower(%derivative_type%' AND pg_get_viewdef(c.oid) LIKE '%left6sp10%')::int FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'opera' AND c.relname = 'helper_var_vanilla_view' AND c.relkind = 'v') AS vanilla_view_v2,
+           (SELECT count(*) FROM pg_attribute a WHERE a.attrelid = 'opera.helper_var_accounting_report'::regclass AND a.attname = 'tenant_id' AND NOT a.attisdropped) AS accounting_has_tenant_id,
            (SELECT count(*) FROM opera.var_bu_rule WHERE (bu = 'frt') OR (bu = 'rmc' AND has_extra_greeks) OR (bu = 'cfs' AND vol_id_mode = 'left6sp10' AND 'amer_disc_up_out_call' = ANY (vanilla_derivative_types))) AS rule_v2_rows
+  ]]></sql>
+
+  <sql id="combined_var_probe" db="target" export="full" timeout="180"><![CDATA[
+    SELECT 1 AS probe_ok, max(settlement_date) AS max_settle
+    FROM opera.helper_var_accounting_report
+    WHERE tenant_id = (SELECT tenant_id FROM opera.valuation_date_table WHERE upper(business_unit) = 'CFS' LIMIT 1)
   ]]></sql>
 
   <sql id="source_data" db="target" export="full" timeout="120"><![CDATA[
@@ -99,6 +106,8 @@
   <expect ref="viewdefs" column="mult_view_columns" equals="tenant_id,invenio_product_code,value_date,lot_mult,curr_mult,mult_factor" reason="exact v2 column list"/>
   <expect ref="viewdefs" column="future_view_v2" equals="1" reason="the future view is v2 (case-insensitive derivative type), whether deployed by Liquibase or run by hand"/>
   <expect ref="viewdefs" column="vanilla_view_v2" equals="1" reason="the vanilla view is v2 (case-insensitive type, vol_id rule for cfs)"/>
+  <expect ref="viewdefs" column="accounting_has_tenant_id" equals="1" reason="the accounting view has tenant_id: the Combined VAR service filters it by tenant_id (combined-var.repository.js getAccountingMaxSettle), without it the UI run fails before it starts"/>
+  <expect ref="combined_var_probe" column="probe_ok" equals="1" reason="the exact statement of getAccountingMaxSettle runs without an error"/>
   <expect ref="viewdefs" column="rule_v2_rows" equals="3" reason="var_bu_rule has the v2 rows for frt, rmc (extra greeks) and cfs (amer_disc types, vol_id rule)"/>
   <expect ref="source_data" column="var_accounting_table_rows" min="1" reason="var_accounting_table feeds the future and vanilla views; 0 means load it with rules/xoga713-var-accounting-table-load.json"/>
   <expect ref="source_data" column="var_mapping_rows" min="100" reason="the VAR product mapping (about 124 rows in legacy)"/>
@@ -106,6 +115,6 @@
   <expect ref="accounting_rows" rows="&gt;=1" reason="the accounting view returns rows (needs var_accounting_table data)"/>
 
   <compress id="bundle" file="xoga713-var-objects-verify.zip">
-    <include ref="objects"/><include ref="changesets"/><include ref="rules_table"/><include ref="viewdefs"/><include ref="source_data"/><include ref="mult_rows"/><include ref="accounting_rows"/>
+    <include ref="objects"/><include ref="changesets"/><include ref="rules_table"/><include ref="viewdefs"/><include ref="combined_var_probe"/><include ref="source_data"/><include ref="mult_rows"/><include ref="accounting_rows"/>
   </compress>
 </rules>
