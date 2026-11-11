@@ -1,0 +1,30 @@
+<rules name="xoga713-var-producer-check">
+  <!-- The calculation engine (var_report_service.py) writes var_accounting_table from helper_settle_pricing_subportfoliovalues_view, which is a view over
+       helper_settle_p_and_g_view_cache_table WITHOUT business_unit, tenant or run_id. This shows what that cache holds (one business unit or many?)
+       and who wrote the rows of var_accounting_table (our load 'var-acct-load' or the engine). Run with the target-env flag. Read-only. -->
+
+  <sql id="cache" db="target" export="full" timeout="180"><![CDATA[
+    SELECT upper(business_unit) AS business_unit, tenant_id, value_date, count(*) AS row_count, min(created_timestamp) AS first_written, max(created_timestamp) AS last_written,
+           count(DISTINCT run_id) AS runs
+    FROM opera.helper_settle_p_and_g_view_cache_table
+    GROUP BY upper(business_unit), tenant_id, value_date
+    ORDER BY 1, 3
+  ]]></sql>
+
+  <sql id="writers" db="target" export="full" timeout="180"><![CDATA[
+    SELECT upper(business_unit) AS business_unit, coalesce(created_by, '-') AS created_by, min(value_date) AS first_date, max(value_date) AS last_date, count(*) AS row_count,
+           max(created_timestamp) AS last_written
+    FROM opera.var_accounting_table
+    GROUP BY upper(business_unit), coalesce(created_by, '-')
+    ORDER BY 1, 2
+  ]]></sql>
+
+  <sql id="view_vs_cache" db="target" export="full" timeout="180"><![CDATA[
+    SELECT (SELECT count(*) FROM opera.helper_settle_pricing_subportfoliovalues_view) AS view_rows,
+           (SELECT count(*) FROM opera.helper_settle_p_and_g_view_cache_table) AS cache_rows,
+           (SELECT count(DISTINCT upper(business_unit)) FROM opera.helper_settle_p_and_g_view_cache_table) AS business_units_in_cache
+  ]]></sql>
+
+  <expect ref="view_vs_cache" column="business_units_in_cache" max="1" reason="if the cache holds several business units, the engine (no business unit filter) writes ALL of them under the requested business unit"/>
+  <compress id="bundle" file="xoga713-var-producer-check.zip"><include ref="cache"/><include ref="writers"/><include ref="view_vs_cache"/></compress>
+</rules>
