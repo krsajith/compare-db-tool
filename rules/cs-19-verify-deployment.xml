@@ -1,0 +1,146 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Deployment check for the client statement changes of 12-Nov-2026, read-only, one run per environment:
+       run with the target environment: target-env postgres-dev, or target-env postgres-uat.
+     Every check that is a "problems" query returns a row only when something is wrong, so the expectation is 0 rows.
+       1 functions   statement functions carry the right code: position summaries v8 (per-client leg rounding list, no global v7 rule),
+                     refresh, position rows, cash inputs and cash summary match spot ids case-insensitively
+       2 view        helper_var_mult_factor_view matches spot ids case-insensitively
+       3 index       the lower(underlying_id) index on underlying_settle_value_table exists and is valid
+       4 data        no spot id in currency_spot_mapping_table or product_master_table differs from the price table only by letter case,
+                     and CM CRD finds its BRL spot
+       5 list        client_statement_leg_rounding_table exists and lists BFA for CFS
+       6 stats       tables rewritten by the double precision conversion (11-Nov) were analysed afterwards
+       7 cache       the CFS statement cache holds the value date -->
+<rules name="cs-19-verify-deployment">
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+    <param name="valueDate" type="date" value="2026-11-06"/>
+  </parameters>
+
+  <sql id="problems-functions" db="target" timeout="120" export="full"><![CDATA[
+    SELECT p.problem FROM (
+      SELECT 'fn_statement_position_summaries_v2 is not v8 (no leg rounding list)' AS problem
+       WHERE NOT EXISTS (SELECT 1 FROM pg_proc WHERE pronamespace = 'opera'::regnamespace AND proname = 'fn_statement_position_summaries_v2'
+                           AND position('client_statement_leg_rounding_table' in prosrc) > 0)
+      UNION ALL
+      SELECT 'fn_statement_position_summaries_v2 still has the global v7 rule (v_section = OTC_SWAPS AS v_leg_rounded)'
+       WHERE EXISTS (SELECT 1 FROM pg_proc WHERE pronamespace = 'opera'::regnamespace AND proname = 'fn_statement_position_summaries_v2'
+                       AND position('v_section = ''OTC_SWAPS'' AS v_leg_rounded' in prosrc) > 0)
+      UNION ALL
+      SELECT 'fn_refresh_client_statement_positions has no case-insensitive spot match'
+       WHERE NOT EXISTS (SELECT 1 FROM pg_proc WHERE pronamespace = 'opera'::regnamespace AND proname = 'fn_refresh_client_statement_positions'
+                           AND position('2026-11-12: case-insensitive' in prosrc) > 0)
+      UNION ALL
+      SELECT 'fn_client_statement_position_rows_v2 has no case-insensitive spot match'
+       WHERE NOT EXISTS (SELECT 1 FROM pg_proc WHERE pronamespace = 'opera'::regnamespace AND proname = 'fn_client_statement_position_rows_v2'
+                           AND position('2026-11-12: case-insensitive' in prosrc) > 0)
+      UNION ALL
+      SELECT 'fn_statement_cash_inputs_v2 has no case-insensitive spot match'
+       WHERE NOT EXISTS (SELECT 1 FROM pg_proc WHERE pronamespace = 'opera'::regnamespace AND proname = 'fn_statement_cash_inputs_v2'
+                           AND position('2026-11-12: case-insensitive' in prosrc) > 0)
+      UNION ALL
+      SELECT 'fn_statement_cash_summary_cached_v2 has no case-insensitive spot match'
+       WHERE NOT EXISTS (SELECT 1 FROM pg_proc WHERE pronamespace = 'opera'::regnamespace AND proname = 'fn_statement_cash_summary_cached_v2'
+                           AND position('2026-11-12: case-insensitive' in prosrc) > 0)
+      UNION ALL
+      SELECT 'helper_var_mult_factor_view does not match spot ids case-insensitively'
+       WHERE NOT EXISTS (SELECT 1 FROM pg_views WHERE schemaname = 'opera' AND viewname = 'helper_var_mult_factor_view'
+                           AND definition LIKE '%lower(%underlying_id%lower(%curr_mult_factor%')
+      UNION ALL
+      SELECT 'index idx_usv_tenant_lower_underlying_valdate is missing or invalid'
+       WHERE NOT EXISTS (SELECT 1 FROM pg_index x JOIN pg_class c ON c.oid = x.indexrelid
+                          WHERE c.relname = 'idx_usv_tenant_lower_underlying_valdate' AND x.indisvalid)
+    ) p
+  ]]></sql>
+
+  <sql id="function-versions" db="target" timeout="120" export="full"><![CDATA[
+    SELECT proname, md5(prosrc) AS src_md5, length(prosrc) AS src_length,
+           position('client_statement_leg_rounding_table' in prosrc) > 0 AS has_leg_rounding_list,
+           position('2026-11-12: case-insensitive' in prosrc) > 0 AS has_case_insensitive_spot
+    FROM pg_proc
+    WHERE pronamespace = 'opera'::regnamespace
+      AND (proname LIKE 'fn_statement%' OR proname LIKE 'fn_refresh_client_statement%' OR proname LIKE 'fn_client_statement%')
+    ORDER BY proname
+  ]]></sql>
+
+  <sql id="changesets" db="target" timeout="120" export="full"><![CDATA[
+    SELECT id, dateexecuted
+    FROM opera.databasechangelog
+    WHERE id LIKE 'fn_statement_position_summaries%' OR id LIKE 'create-client-statement-leg-rounding%'
+       OR id LIKE 'create-idx-usv%' OR id LIKE 'fn_refresh_client_statement%'
+    ORDER BY dateexecuted DESC
+  ]]></sql>
+
+  <sql id="index-info" db="target" timeout="120" export="full"><![CDATA[
+    SELECT i.indexname, x.indisvalid, pg_size_pretty(pg_relation_size(c.oid)) AS index_size, s.idx_scan, s.last_idx_scan
+    FROM pg_indexes i
+    JOIN pg_class c ON c.relname = i.indexname
+    JOIN pg_index x ON x.indexrelid = c.oid
+    LEFT JOIN pg_stat_user_indexes s ON s.schemaname = i.schemaname AND s.indexrelname = i.indexname
+    WHERE i.schemaname = 'opera' AND i.tablename = 'underlying_settle_value_table'
+    ORDER BY i.indexname
+  ]]></sql>
+
+  <sql id="spot-mapping-case" db="target" timeout="120" export="full"><![CDATA[
+    SELECT DISTINCT m.currency, m.spot AS mapping_spot, u.underlying_id AS price_spot
+    FROM opera.currency_spot_mapping_table m
+    JOIN (SELECT DISTINCT underlying_id FROM opera.underlying_settle_value_table WHERE tenant_id = :tenant AND value_date = :valueDate) u
+      ON lower(u.underlying_id) = lower(m.spot) AND u.underlying_id <> m.spot
+    WHERE m.tenant_id = :tenant
+  ]]></sql>
+  <sql id="product-curr-case" db="target" timeout="120" export="full"><![CDATA[
+    SELECT p.curr_mult_factor AS product_value, u.underlying_id AS price_spot, count(*) AS products
+    FROM opera.product_master_table p
+    JOIN (SELECT DISTINCT underlying_id FROM opera.underlying_settle_value_table WHERE tenant_id = :tenant AND value_date = :valueDate) u
+      ON lower(u.underlying_id) = lower(p.curr_mult_factor) AND u.underlying_id <> p.curr_mult_factor
+    GROUP BY 1, 2
+  ]]></sql>
+  <sql id="crd-spot" db="target" timeout="120" export="full"><![CDATA[
+    SELECT p.invenio_product_code, p.curr_mult_factor,
+           (SELECT max(u.settle_value) FROM opera.underlying_settle_value_table u
+             WHERE u.tenant_id = :tenant AND u.value_date = :valueDate AND lower(u.underlying_id) = lower(p.curr_mult_factor)) AS spot_found
+    FROM opera.product_master_table p WHERE p.invenio_product_code = 'CM CRD'
+  ]]></sql>
+
+  <sql id="leg-rounding-list" db="target" timeout="120" export="full"><![CDATA[
+    SELECT tenant_id, business_unit, client_code, created_by, created_timestamp
+    FROM opera.client_statement_leg_rounding_table
+    ORDER BY tenant_id, business_unit, client_code
+  ]]></sql>
+  <sql id="problems-list" db="target" timeout="120" export="full"><![CDATA[
+    SELECT 'BFA is not on the leg rounding list for CFS' AS problem
+     WHERE NOT EXISTS (SELECT 1 FROM opera.client_statement_leg_rounding_table
+                        WHERE tenant_id = :tenant AND business_unit = 'CFS' AND upper(btrim(client_code)) = 'BFA')
+  ]]></sql>
+
+  <sql id="problems-stats" db="target" timeout="120" export="full"><![CDATA[
+    SELECT relname, last_analyze, last_autoanalyze
+    FROM pg_stat_user_tables
+    WHERE schemaname = 'opera'
+      AND relname IN ('cloned_deal_ticket_table', 'deal_ticket_table', 'option_expiry_deals_table',
+                      'underlying_settle_value_table', 'cloned_security_info_table', 'latest_active_lot')
+      AND coalesce(greatest(last_analyze, last_autoanalyze), timestamp '1970-01-01') < timestamp '2026-11-11 12:00:00'
+  ]]></sql>
+
+  <sql id="cache-state" db="target" timeout="120" export="full"><![CDATA[
+    SELECT value_date, count(*) AS rows_in_cache, count(DISTINCT client_code) AS clients, max(updated_timestamp) AS last_updated
+    FROM opera.helper_client_statement_report_view_cache_table
+    WHERE tenant_id = :tenant AND business_unit = 'CFS'
+    GROUP BY value_date
+    ORDER BY value_date DESC
+  ]]></sql>
+
+  <expect ref="problems-functions" rows="0" reason="functions, view and index carry the 12-Nov code (v8, case-insensitive spot ids, lower index)"/>
+  <expect ref="spot-mapping-case" rows="0" reason="mapping spot ids match the price table exactly"/>
+  <expect ref="product-curr-case" rows="0" reason="product curr_mult_factor matches the price table exactly"/>
+  <expect ref="crd-spot" column="spot_found" min="1" reason="CM CRD finds its BRL spot (about 5.46)"/>
+  <expect ref="leg-rounding-list" rows="&gt;=1" reason="the leg rounding list exists and is not empty"/>
+  <expect ref="problems-list" rows="0" reason="BFA is on the list"/>
+  <expect ref="problems-stats" rows="0" reason="big tables were analysed after the 11-Nov type conversion"/>
+  <expect ref="cache-state" rows="&gt;=1" reason="the statement cache holds data"/>
+  <compress id="bundle" file="cs-19-verify-deployment.zip">
+    <include ref="problems-functions"/><include ref="function-versions"/><include ref="changesets"/><include ref="index-info"/>
+    <include ref="spot-mapping-case"/><include ref="product-curr-case"/><include ref="crd-spot"/>
+    <include ref="leg-rounding-list"/><include ref="problems-list"/><include ref="problems-stats"/><include ref="cache-state"/>
+  </compress>
+</rules>
