@@ -22,7 +22,7 @@
     LEFT JOIN dbsystemuat.security_info_table_cfs si ON si.security_id = d.security_id
     LEFT JOIN dbsystemuat.historical_security_settlement_value_table_cfs h ON h.security_id = d.security_id AND h.value_date = :valueDate
     LEFT JOIN dbsystemuat.futures_price_table fp ON fp.underlying_id = si.underlying1_id AND fp.value_date = si.maturity_date
-    WHERE (d.contract_number LIKE 'NFO\_%' OR d.contract_number LIKE 'LIB\_%' OR d.contract_number LIKE 'FMP\_%' OR d.contract_number LIKE 'AMC\_%' OR d.contract_number LIKE 'BFA\_%') AND si.derivative_type = 'future'
+    WHERE (d.contract_number LIKE 'NFO_%' OR d.contract_number LIKE 'LIB_%' OR d.contract_number LIKE 'FMP_%' OR d.contract_number LIKE 'AMC_%' OR d.contract_number LIKE 'BFA_%') AND si.derivative_type = 'future'
       AND d.transaction_date < :valueDate AND d.counterparty_parent <> 'JPM9A400' AND d.subportfolio LIKE 'RMS%'
       AND ((cs.maturity_date IS NULL AND d.netting_status <> 'fully_netted')
            OR (d.netting_status = 'fully_netted' AND d.netting_date > :valueDate)
@@ -42,7 +42,7 @@
     <column name="traded_price" absTol="0.000000001"/>
     <column name="active_lots" absTol="0.000000001"/>
     <column name="settle_price" absTol="0.000000001"/>
-    <breakdown columns="contract_number" top="200"/>
+    <breakdown columns="contract_number" top="100"/>
   </compare>
   <expect ref="s1s2-legs" different="0" only-source="0" only-target="0" duplicates="0" reason="legacy and new legs equal"/>
   <compress id="bundle" file="cs-15-swap-legs-legacy-vs-new-sample.zip">
