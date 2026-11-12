@@ -1,0 +1,175 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Cash balance refresh slow after 11 and 12 Nov 2026: do the live definitions match the code in Liquibase (transaction-core 936c67f), and are the tables healthy?
+     Read-only, one run per environment, use the target environment flag: target-env postgres-uat (or postgres-dev). Never production without the user asking.
+     Every problems query returns a row only when something is wrong, so each expectation is 0 rows. The list queries show the evidence.
+       1 function   fn_cash_balance_report_for_scope: exactly one overload, body md5 equals the Liquibase double-lots body (lf line ends), original_lots returned as numeric
+       2 views      deal_ticket_active_lots_view reads latest_active_lot; deal_ticket_table_with_fy_premium_view reads that view and keeps the XOGA-65 fixing scope
+       3 types      lots and prices of cloned_deal_ticket_table are double precision after the typefix
+       4 changesets which changesets Liquibase ran, in order
+       5 tables     the tables the function reads were analysed after the typefix, carry no heavy dead tuple load; indexes of the hot tables
+     Expected body md5 b8212096... length 23925 is the double-lots changeset; the older full-premium body is ed2d88a2... length 23931 (typefix function not applied).
+     If the function is changed again in Liquibase, update the two expected values in problems-function. -->
+<rules name="cash-refresh-16-definitions-and-health-cfs">
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+    <param name="bu" type="string" value="CFS"/>
+    <param name="analyzedAfter" type="timestamp" value="2026-11-11 12:00:00"/>
+  </parameters>
+
+  <sql id="function-live" db="target" timeout="120" export="full"><![CDATA[
+    SELECT p.oid::regprocedure::text AS signature,
+           length(replace(p.prosrc, chr(13), '')) AS body_length,
+           md5(replace(p.prosrc, chr(13), '')) AS body_md5,
+           position('cbf_s3_lots' in p.prosrc) > 0 AS staged_body,
+           position('cbf_s5_fxin' in p.prosrc) > 0 AS has_s5,
+           pg_get_function_result(p.oid) LIKE '%original_lots numeric,%' AS lots_unbounded_numeric,
+           pg_get_function_result(p.oid) LIKE '%original_lots numeric(18,4)%' AS lots_old_numeric_18_4
+    FROM pg_proc p
+    WHERE p.pronamespace = 'opera'::regnamespace AND p.proname = 'fn_cash_balance_report_for_scope'
+    ORDER BY 1
+  ]]></sql>
+
+  <sql id="problems-function" db="target" timeout="120" export="full"><![CDATA[
+    SELECT 'overloads of fn_cash_balance_report_for_scope: ' || count(*) || ' (expected 1)' AS problem
+      FROM pg_proc WHERE pronamespace = 'opera'::regnamespace AND proname = 'fn_cash_balance_report_for_scope'
+    HAVING count(*) <> 1
+    UNION ALL
+    SELECT 'body md5 ' || md5(replace(prosrc, chr(13), '')) || ' length ' || length(replace(prosrc, chr(13), ''))
+           || ' is not the double-lots body of Liquibase'
+           || CASE WHEN md5(replace(prosrc, chr(13), '')) = 'ed2d88a2d77b3b728742db3ba15aa57e'
+                   THEN ' (it is the OLDER full-premium body: typefix function not applied)' ELSE '' END
+      FROM pg_proc WHERE pronamespace = 'opera'::regnamespace AND proname = 'fn_cash_balance_report_for_scope'
+       AND md5(replace(prosrc, chr(13), '')) <> 'b821209631a7d0756192f210a530a726'
+    UNION ALL
+    SELECT 'result column original_lots is not unbounded numeric: ' || pg_get_function_result(oid)
+      FROM pg_proc WHERE pronamespace = 'opera'::regnamespace AND proname = 'fn_cash_balance_report_for_scope'
+       AND pg_get_function_result(oid) NOT LIKE '%original_lots numeric,%'
+  ]]></sql>
+
+  <sql id="views-live" db="target" timeout="120" export="full"><![CDATA[
+    SELECT v.viewname, md5(pg_get_viewdef(to_regclass('opera.' || v.viewname), true)) AS def_md5,
+           length(pg_get_viewdef(to_regclass('opera.' || v.viewname), true)) AS def_length,
+           position('latest_active_lot' in pg_get_viewdef(to_regclass('opera.' || v.viewname), true)) > 0 AS reads_latest_active_lot,
+           position('deal_ticket_active_lots_view' in pg_get_viewdef(to_regclass('opera.' || v.viewname), true)) > 0 AS reads_active_lots_view,
+           position('deal_active_lots_table' in pg_get_viewdef(to_regclass('opera.' || v.viewname), true)) > 0 AS reads_lots_history
+    FROM (VALUES ('deal_ticket_active_lots_view'), ('deal_ticket_table_with_fy_premium_view'), ('valuation_financial_year_view'),
+                 ('helper_otc_multiplier_view'), ('curr_mult_view'), ('murex_nc_factor_view'), ('helper_invenio_product_code'),
+                 ('cash_balance_currency_mapping_view'), ('helper_cash_balance_report_view')) AS v(viewname)
+    ORDER BY 1
+  ]]></sql>
+
+  <sql id="problems-views" db="target" timeout="120" export="full"><![CDATA[
+    SELECT 'deal_ticket_active_lots_view does not exist' AS problem WHERE to_regclass('opera.deal_ticket_active_lots_view') IS NULL
+    UNION ALL
+    SELECT 'deal_ticket_active_lots_view does not read latest_active_lot (PR 292 not applied or overwritten)'
+     WHERE to_regclass('opera.deal_ticket_active_lots_view') IS NOT NULL
+       AND position('latest_active_lot' in pg_get_viewdef(to_regclass('opera.deal_ticket_active_lots_view'), true)) = 0
+    UNION ALL
+    SELECT 'deal_ticket_table_with_fy_premium_view does not exist' WHERE to_regclass('opera.deal_ticket_table_with_fy_premium_view') IS NULL
+    UNION ALL
+    SELECT 'deal_ticket_table_with_fy_premium_view reads neither deal_ticket_active_lots_view nor latest_active_lot'
+     WHERE to_regclass('opera.deal_ticket_table_with_fy_premium_view') IS NOT NULL
+       AND position('deal_ticket_active_lots_view' in pg_get_viewdef(to_regclass('opera.deal_ticket_table_with_fy_premium_view'), true)) = 0
+       AND position('latest_active_lot' in pg_get_viewdef(to_regclass('opera.deal_ticket_table_with_fy_premium_view'), true)) = 0
+    UNION ALL
+    SELECT 'deal_ticket_table_with_fy_premium_view lost the XOGA-65 fixing scope (og2, ogp, rba, rbc, usg)'
+     WHERE to_regclass('opera.deal_ticket_table_with_fy_premium_view') IS NOT NULL
+       AND position('''og2''' in pg_get_viewdef(to_regclass('opera.deal_ticket_table_with_fy_premium_view'), true)) = 0
+  ]]></sql>
+
+  <sql id="column-types" db="target" timeout="120" export="full"><![CDATA[
+    SELECT c.relname AS table_name, a.attname AS column_name, format_type(a.atttypid, a.atttypmod) AS data_type
+    FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid
+    WHERE c.relnamespace = 'opera'::regnamespace AND c.relname = 'cloned_deal_ticket_table'
+      AND a.attname IN ('premium', 'premium_1', 'original_lots', 'active_lots', 'netted_lots', 'lots_to_be_netted', 'price_1', 'price_2')
+      AND NOT a.attisdropped
+    ORDER BY a.attname
+  ]]></sql>
+
+  <sql id="problems-types" db="target" timeout="120" export="full"><![CDATA[
+    SELECT c.relname || '.' || a.attname || ' is ' || format_type(a.atttypid, a.atttypmod) || ' (expected double precision after the typefix)' AS problem
+    FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid
+    WHERE c.relnamespace = 'opera'::regnamespace AND c.relname = 'cloned_deal_ticket_table'
+      AND a.attname IN ('premium', 'original_lots', 'active_lots', 'netted_lots')
+      AND NOT a.attisdropped AND format_type(a.atttypid, a.atttypmod) <> 'double precision'
+  ]]></sql>
+
+  <sql id="changesets" db="target" timeout="120" export="full"><![CDATA[
+    SELECT orderexecuted, id, exectype, dateexecuted
+    FROM opera.databasechangelog
+    WHERE id LIKE 'create-fn-cash-balance-report%' OR id LIKE '%typefix%' OR id LIKE '%active-lots-view%'
+       OR id LIKE '%fy-premium-view%' OR id LIKE '%latest-active-lot%' OR id LIKE '%latest_active_lot%'
+    ORDER BY orderexecuted
+  ]]></sql>
+
+  <sql id="table-health" db="target" timeout="120" export="full"><![CDATA[
+    SELECT s.relname, s.n_live_tup, s.n_dead_tup, s.last_analyze, s.last_autoanalyze, s.last_vacuum, s.last_autovacuum,
+           pg_size_pretty(pg_total_relation_size(s.relid)) AS total_size
+    FROM pg_stat_user_tables s
+    WHERE s.schemaname = 'opera'
+      AND s.relname IN ('cloned_deal_ticket_table', 'cloned_security_info_table', 'deal_active_lots_table', 'latest_active_lot',
+                        'deal_ticket_table', 'fixing_table', 'premium_fy_table', 'financial_year_table', 'valuation_date_table',
+                        'futures_price_table', 'underlying_list_table', 'product_master_table', 'underlying_settle_value_table',
+                        'netting_id_table', 'rms_premium_paid_table', 'security_info_table', 'security_last_actual_value_table',
+                        'security_settlement_value_table', 'underlying_actual_value_table')
+    ORDER BY s.relname
+  ]]></sql>
+
+  <sql id="problems-health" db="target" timeout="120" export="full"><![CDATA[
+    SELECT s.relname || ': analysed ' || coalesce(greatest(s.last_analyze, s.last_autoanalyze)::text, 'never')
+           || ' (before the typefix of 11 Nov)' AS problem
+    FROM pg_stat_user_tables s
+    WHERE s.schemaname = 'opera'
+      AND s.relname IN ('cloned_deal_ticket_table', 'deal_ticket_table', 'option_expiry_deals_table', 'latest_active_lot', 'cloned_security_info_table')
+      AND coalesce(greatest(s.last_analyze, s.last_autoanalyze), timestamp '1970-01-01') < :analyzedAfter
+    UNION ALL
+    SELECT s.relname || ': ' || s.n_dead_tup || ' dead tuples against ' || s.n_live_tup || ' live (vacuum needed)'
+    FROM pg_stat_user_tables s
+    WHERE s.schemaname = 'opera'
+      AND s.relname IN ('cloned_deal_ticket_table', 'deal_ticket_table', 'latest_active_lot', 'premium_fy_table', 'fixing_table', 'deal_active_lots_table')
+      AND s.n_dead_tup > greatest(10000, 0.1 * s.n_live_tup)
+  ]]></sql>
+
+  <sql id="indexes" db="target" timeout="120" export="full"><![CDATA[
+    SELECT i.tablename, i.indexname, x.indisvalid, pg_size_pretty(pg_relation_size(c.oid)) AS index_size, i.indexdef
+    FROM pg_indexes i
+    JOIN pg_class c ON c.relname = i.indexname AND c.relnamespace = 'opera'::regnamespace
+    JOIN pg_index x ON x.indexrelid = c.oid
+    WHERE i.schemaname = 'opera'
+      AND i.tablename IN ('latest_active_lot', 'cloned_deal_ticket_table', 'premium_fy_table', 'fixing_table', 'deal_active_lots_table')
+    ORDER BY i.tablename, i.indexname
+  ]]></sql>
+
+  <sql id="problems-indexes" db="target" timeout="120" export="full"><![CDATA[
+    SELECT 'latest_active_lot has no valid index on (tenant_id, business_unit, trade_id)' AS problem
+    WHERE NOT EXISTS (SELECT 1 FROM pg_indexes i JOIN pg_class c ON c.relname = i.indexname AND c.relnamespace = 'opera'::regnamespace
+                        JOIN pg_index x ON x.indexrelid = c.oid
+                       WHERE i.schemaname = 'opera' AND i.tablename = 'latest_active_lot' AND x.indisvalid
+                         AND i.indexdef LIKE '%(tenant_id, business_unit, trade_id)%')
+    UNION ALL
+    SELECT 'cloned_deal_ticket_table has no valid index that starts with tenant_id and business_unit'
+    WHERE NOT EXISTS (SELECT 1 FROM pg_indexes i JOIN pg_class c ON c.relname = i.indexname AND c.relnamespace = 'opera'::regnamespace
+                        JOIN pg_index x ON x.indexrelid = c.oid
+                       WHERE i.schemaname = 'opera' AND i.tablename = 'cloned_deal_ticket_table' AND x.indisvalid
+                         AND i.indexdef LIKE '%(tenant_id, business_unit%')
+    UNION ALL
+    SELECT 'invalid index ' || i.indexname || ' on ' || i.tablename
+    FROM pg_indexes i JOIN pg_class c ON c.relname = i.indexname AND c.relnamespace = 'opera'::regnamespace
+                      JOIN pg_index x ON x.indexrelid = c.oid
+    WHERE i.schemaname = 'opera' AND NOT x.indisvalid
+      AND i.tablename IN ('latest_active_lot', 'cloned_deal_ticket_table', 'premium_fy_table', 'fixing_table', 'deal_active_lots_table')
+  ]]></sql>
+
+  <expect ref="function-live" rows="1" reason="exactly one fn_cash_balance_report_for_scope"/>
+  <expect ref="problems-function" rows="0" reason="live function body equals the double-lots body in Liquibase"/>
+  <expect ref="problems-views" rows="0" reason="the two changed views carry the PR 292 definitions"/>
+  <expect ref="problems-types" rows="0" reason="lots and premium are double precision after the typefix"/>
+  <expect ref="problems-health" rows="0" reason="tables analysed after the typefix, no heavy dead tuple load"/>
+  <expect ref="problems-indexes" rows="0" reason="the hot tables kept their tenant-leading indexes"/>
+
+  <compress id="bundle" file="cash-refresh-16-definitions-and-health.zip">
+    <include ref="function-live"/><include ref="problems-function"/><include ref="views-live"/><include ref="problems-views"/>
+    <include ref="column-types"/><include ref="problems-types"/><include ref="changesets"/>
+    <include ref="table-health"/><include ref="problems-health"/><include ref="indexes"/><include ref="problems-indexes"/>
+  </compress>
+</rules>

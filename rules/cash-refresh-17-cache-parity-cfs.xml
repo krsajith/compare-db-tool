@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Cash balance refresh: is latest_active_lot (the cache the active lots view reads since PR 292) the same, trade by trade, as what the view used to compute?
+     Old: the latest deal_active_lots_table row per trade with value_date up to the business unit valuation date (zero lots kept).
+     New: the cache table. Read-only. Heavier than rule 16 (reads the lots history of one business unit), so run it on its own and in a quiet window.
+     Use the target environment flag: target-env postgres-uat (or postgres-dev). Both queries use one database, so the comparison runs inside it (engine db) and only counts leave.
+     Expect: nothing only in the old result (cache missing a trade, so the join drops it or the report is wrong), nothing only in the cache, no different lots, no duplicate trade.
+     Run it first with the export flag none, read SUMMARY.md and FINDINGS.md, then full only if you need the keys. -->
+<rules name="cash-refresh-17-cache-parity-cfs">
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+    <param name="bu" type="string" value="CFS"/>
+  </parameters>
+
+  <sql id="old-window" db="target" timeout="600"><![CDATA[
+    SELECT l.trade_id, l.active_lots
+    FROM (SELECT a.trade_id, a.active_lots,
+                 row_number() OVER (PARTITION BY a.trade_id ORDER BY a.value_date DESC) AS rn
+          FROM opera.deal_active_lots_table a
+          JOIN opera.valuation_date_table v ON v.tenant_id = a.tenant_id AND v.business_unit = a.business_unit
+          WHERE a.tenant_id = :tenant AND a.business_unit = :bu AND a.value_date <= v.value_date) l
+    WHERE l.rn = 1
+  ]]></sql>
+
+  <sql id="cache" db="target" timeout="600"><![CDATA[
+    SELECT c.trade_id, c.active_lots
+    FROM opera.latest_active_lot c
+    WHERE c.tenant_id = :tenant AND c.business_unit = :bu
+  ]]></sql>
+
+  <compare id="lots" source="old-window" target="cache" engine="db" export="sample">
+    <key columns="trade_id"/>
+    <column name="active_lots" absTol="0.0001"/>
+  </compare>
+
+  <expect ref="lots" only-source="0" reason="every trade with a lots row up to the valuation date is in the cache"/>
+  <expect ref="lots" only-target="0" reason="the cache holds no trade that the history does not give"/>
+  <expect ref="lots" different="0" reason="same latest active lots per trade"/>
+  <expect ref="lots" duplicates="0" reason="one row per trade on both sides"/>
+
+  <compress id="bundle" file="cash-refresh-17-cache-parity.zip"><include ref="lots"/></compress>
+</rules>
