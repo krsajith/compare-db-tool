@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Per-leg MTM USD, legacy rebuilt on MySQL vs the new cache, all CFS swap legs of 06-Nov, read-only, 12-Nov-2026.
+     Why: cs-15 compared lots, traded price and settle price only. The leg's mtm_usd and the factors behind it (multiplier from
+     product_master_table via helper_otc_multiplier_view, NC factor, FX NC factor) were never compared for the clients whose legacy
+     PDFs print exact sums. The legacy view computes mtm_usd = (settle_price - premium) x active_lots x mult_factor x nc_factor x
+     fx_nc_factor x -1 (active_lots stored as minus the deal lots). If any leg differs here, the 190 rows prediction is wrong.
+     The FX factor view reads today's valuation date, so only non-USD legs can differ for that reason. -->
+<rules name="cs-18-leg-mtm-legacy-vs-new-cfs">
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+    <param name="valueDate" type="date" value="2026-11-06"/>
+  </parameters>
+  <sql id="l-legs" db="mysql-oprdb02" timeout="900" export="full"><![CDATA[
+    SELECT d.trade_id, d.contract_number, d.premium AS traded_price, -1 * a.active_lots AS active_lots,
+           CASE WHEN si.derivative_type IN ('future', 'cs_future') AND :valueDate > si.maturity_date THEN fp.last_price
+                ELSE h.settle_price END AS settle_price,
+           m.mult_factor AS mult_factor, m.nc_factor AS nc_factor, fx.fx_nc_factor AS fx_nc_factor,
+           ((((((CASE WHEN si.derivative_type IN ('future', 'cs_future') AND :valueDate > si.maturity_date THEN fp.last_price
+                      ELSE h.settle_price END) - d.premium) * (-1 * a.active_lots)) * m.mult_factor) * m.nc_factor)
+             * IFNULL(fx.fx_nc_factor, 1)) * -1) AS mtm_usd
+    FROM dbsystemuat.cloned_deal_ticket_table_cfs d
+    JOIN (SELECT x.trade_id, x.active_lots FROM dbsystemuat.deal_active_lots_table_cfs x
+          JOIN (SELECT trade_id, max(value_date) AS value_date FROM dbsystemuat.deal_active_lots_table_cfs
+                WHERE value_date <= :valueDate GROUP BY trade_id) mx ON mx.trade_id = x.trade_id AND mx.value_date = x.value_date) a
+      ON a.trade_id = d.trade_id
+    LEFT JOIN dbsystemuat.cloned_security_info_table_cfs cs ON cs.security_id = d.security_id
+    LEFT JOIN dbsystemuat.security_info_table_cfs si ON si.security_id = d.security_id
+    LEFT JOIN dbsystemuat.historical_security_settlement_value_table_cfs h ON h.security_id = d.security_id AND h.value_date = :valueDate
+    LEFT JOIN dbsystemuat.futures_price_table fp ON fp.underlying_id = si.underlying1_id AND fp.value_date = si.maturity_date
+    LEFT JOIN dbsystemuat.helper_otc_multiplier_view m ON m.invenio_product_code = cs.product_code
+    LEFT JOIN dbsystemuat.fx_nc_factor_view_cfs fx ON fx.trade_id = d.trade_id
+    WHERE si.derivative_type = 'future'
+      AND d.transaction_date < :valueDate AND d.counterparty_parent <> 'JPM9A400' AND d.subportfolio LIKE 'RMS%'
+      AND ((cs.maturity_date IS NULL AND d.netting_status <> 'fully_netted')
+           OR (d.netting_status = 'fully_netted' AND d.netting_date > :valueDate)
+           OR (:valueDate <= cs.maturity_date AND d.netting_status IN ('not_netted', 'partially_netted')))
+  ]]></sql>
+  <sql id="n-legs" db="postgres-uat" timeout="300" export="full"><![CDATA[
+    SELECT c.trade_id, c.contract_number, c.traded_price, c.active_lots, c.settle_price,
+           c.mult_factor, c.nc_factor, c.fx_nc_factor, c.mtm_usd
+    FROM opera.helper_client_statement_report_view_cache_table c
+    WHERE c.tenant_id = :tenant AND c.business_unit = 'CFS' AND c.value_date = :valueDate AND c.derivative_type = 'future'
+  ]]></sql>
+  <compare id="legs-mtm" source="l-legs" target="n-legs">
+    <key columns="trade_id"/>
+    <column name="traded_price" absTol="0.000000001"/>
+    <column name="active_lots" absTol="0.000000001"/>
+    <column name="settle_price" absTol="0.000000001"/>
+    <column name="mult_factor" absTol="0.000000001"/>
+    <column name="nc_factor" absTol="0.000000001"/>
+    <column name="fx_nc_factor" absTol="0.000000001"/>
+    <column name="mtm_usd" absTol="0.000001"/>
+    <breakdown columns="contract_number" top="100"/>
+  </compare>
+  <expect ref="legs-mtm" matched=">=1" reason="CFS swap legs compared"/>
+  <compress id="bundle" file="cs-18-leg-mtm-legacy-vs-new.zip">
+    <include ref="legs-mtm"/>
+  </compress>
+</rules>
