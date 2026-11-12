@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Funnel S1/S2 for the clients whose legacy PDFs print the EXACT sum of swap legs (NFO, LIB, FMP, AMC), with BFA (prints
+     the sum of legs rounded to cents) as the control. The MATLAB source rounds every leg (generate_client_statements.m
+     :1359/:1362) and consolidatedata adds them (nansum), for every client; so where legacy prints exact sums its legs must
+     differ from the new cache. Legacy legs are rebuilt on MySQL with the view's rules for the value date (lots x -1 as the
+     view stores them) and compared leg by leg with the new cache. Read-only. -->
+<rules name="cs-15-swap-legs-legacy-vs-new-sample-cfs">
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+    <param name="valueDate" type="date" value="2026-11-06"/>
+  </parameters>
+  <sql id="l-legs" db="mysql-oprdb02" timeout="300" export="full"><![CDATA[
+    SELECT d.trade_id, d.contract_number, d.security_id, d.premium AS traded_price, -1 * a.active_lots AS active_lots,
+           CASE WHEN si.derivative_type IN ('future', 'cs_future') AND :valueDate > si.maturity_date THEN fp.last_price
+                ELSE h.settle_price END AS settle_price
+    FROM dbsystemuat.cloned_deal_ticket_table_cfs d
+    JOIN (SELECT x.trade_id, x.active_lots FROM dbsystemuat.deal_active_lots_table_cfs x
+          JOIN (SELECT trade_id, max(value_date) AS value_date FROM dbsystemuat.deal_active_lots_table_cfs
+                WHERE value_date <= :valueDate GROUP BY trade_id) m ON m.trade_id = x.trade_id AND m.value_date = x.value_date) a
+      ON a.trade_id = d.trade_id
+    LEFT JOIN dbsystemuat.cloned_security_info_table_cfs cs ON cs.security_id = d.security_id
+    LEFT JOIN dbsystemuat.security_info_table_cfs si ON si.security_id = d.security_id
+    LEFT JOIN dbsystemuat.historical_security_settlement_value_table_cfs h ON h.security_id = d.security_id AND h.value_date = :valueDate
+    LEFT JOIN dbsystemuat.futures_price_table fp ON fp.underlying_id = si.underlying1_id AND fp.value_date = si.maturity_date
+    WHERE (d.contract_number LIKE 'NFO\_%' OR d.contract_number LIKE 'LIB\_%' OR d.contract_number LIKE 'FMP\_%' OR d.contract_number LIKE 'AMC\_%' OR d.contract_number LIKE 'BFA\_%') AND si.derivative_type = 'future'
+      AND d.transaction_date < :valueDate AND d.counterparty_parent <> 'JPM9A400' AND d.subportfolio LIKE 'RMS%'
+      AND ((cs.maturity_date IS NULL AND d.netting_status <> 'fully_netted')
+           OR (d.netting_status = 'fully_netted' AND d.netting_date > :valueDate)
+           OR (:valueDate <= cs.maturity_date AND d.netting_status IN ('not_netted', 'partially_netted')))
+  ]]></sql>
+  <sql id="n-legs" db="postgres-uat" timeout="300" export="full"><![CDATA[
+    SELECT c.trade_id, c.contract_number, d.security_id, c.traded_price, c.active_lots, c.settle_price
+    FROM opera.helper_client_statement_report_view_cache_table c
+    JOIN opera.cloned_deal_ticket_table d
+      ON d.tenant_id = c.tenant_id AND d.business_unit = c.business_unit AND d.trade_id = c.trade_id AND d.is_latest_version = 1
+    WHERE c.tenant_id = :tenant AND c.business_unit = 'CFS' AND c.value_date = :valueDate AND c.client_code IN ('NFO', 'LIB', 'FMP', 'AMC', 'BFA') AND c.derivative_type = 'future'
+  ]]></sql>
+  <compare id="s1s2-legs" source="l-legs" target="n-legs">
+    <key columns="trade_id"/>
+    <column name="contract_number"/>
+    <column name="security_id"/>
+    <column name="traded_price" absTol="0.000000001"/>
+    <column name="active_lots" absTol="0.000000001"/>
+    <column name="settle_price" absTol="0.000000001"/>
+    <breakdown columns="contract_number" top="200"/>
+  </compare>
+  <expect ref="s1s2-legs" different="0" only-source="0" only-target="0" duplicates="0" reason="legacy and new legs equal"/>
+  <compress id="bundle" file="cs-15-swap-legs-legacy-vs-new-sample.zip">
+    <include ref="l-legs"/><include ref="n-legs"/><include ref="s1s2-legs"/>
+  </compress>
+</rules>
