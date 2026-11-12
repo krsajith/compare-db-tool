@@ -23,8 +23,8 @@
       },
       "preconditions": [
         {
-          "sql": "SELECT format_type(atttypid, atttypmod) FROM pg_attribute WHERE attrelid = 'opera.cloned_deal_ticket_table'::regclass AND attname = 'premium'",
-          "expect": "double precision",
+          "sql": "SELECT count(*) FROM pg_attribute WHERE attrelid = 'opera.cloned_deal_ticket_table'::regclass AND attname = 'premium' AND NOT attisdropped AND atttypid = 'float8'::regtype",
+          "expect": "1",
           "reason": "the table rebuild (typefix 20261111) ran, so the columns can hold the full value"
         },
         {
