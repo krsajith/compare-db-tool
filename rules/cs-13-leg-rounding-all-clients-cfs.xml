@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Swap row rounding, all CFS clients, read-only (06-Nov-2026). cs-12 proved for BFA (45 of 45 rows): legacy prints the sum of
+     the legs each rounded to cents (generate_client_statements.m :954, then consolidatedata :970), new the exact sum
+     (fn_statement_position_summaries_v6, main block). This lists, per client, the swap rows (legs grouped as MATLAB does:
+     contract without the trailing A/B/C/R, traded price, EDSP) where the two sums differ, so the change can be checked against
+     the clients that match legacy today before it is made. -->
+<rules name="cs-13-leg-rounding-all-clients-cfs">
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+    <param name="valueDate" type="date" value="2026-11-06"/>
+  </parameters>
+  <sql id="rows-per-client" db="postgres-uat" timeout="300" export="full"><![CDATA[
+    WITH legs AS (
+        SELECT c.client_code, regexp_replace(c.contract_number, '[ABCR]$', '') AS contract_key,
+               round(c.traded_price::numeric, 6) AS price, round(c.future_price::numeric, 6) AS edsp,
+               c.mtm_usd::numeric AS mtm_usd
+        FROM opera.helper_client_statement_report_view_cache_table c
+        WHERE c.tenant_id = :tenant AND c.business_unit = 'CFS' AND c.value_date = :valueDate AND c.derivative_type = 'future'
+    ), r AS (
+        SELECT client_code, contract_key, price, edsp, count(*) AS legs,
+               round(sum(mtm_usd), 2) AS exact_sum, sum(round(mtm_usd, 2)) AS leg_rounded_sum
+        FROM legs GROUP BY 1, 2, 3, 4
+    )
+    SELECT client_code, count(*) AS swap_rows, count(*) FILTER (WHERE exact_sum <> leg_rounded_sum) AS rows_that_would_change,
+           sum(leg_rounded_sum - exact_sum) AS total_change, max(legs) AS max_legs_in_a_row
+    FROM r GROUP BY 1
+    ORDER BY 3 DESC, 1
+  ]]></sql>
+  <sql id="rows-that-change" db="postgres-uat" timeout="300" export="full"><![CDATA[
+    WITH legs AS (
+        SELECT c.client_code, regexp_replace(c.contract_number, '[ABCR]$', '') AS contract_key,
+               round(c.traded_price::numeric, 6) AS price, round(c.future_price::numeric, 6) AS edsp,
+               c.mtm_usd::numeric AS mtm_usd
+        FROM opera.helper_client_statement_report_view_cache_table c
+        WHERE c.tenant_id = :tenant AND c.business_unit = 'CFS' AND c.value_date = :valueDate AND c.derivative_type = 'future'
+    )
+    SELECT client_code, contract_key, price, edsp, count(*) AS legs,
+           round(sum(mtm_usd), 2) AS exact_sum, sum(round(mtm_usd, 2)) AS leg_rounded_sum
+    FROM legs GROUP BY 1, 2, 3, 4
+    HAVING round(sum(mtm_usd), 2) <> sum(round(mtm_usd, 2))
+    ORDER BY 1, 2, 3
+  ]]></sql>
+  <expect ref="rows-per-client" rows=">=1" reason="CFS swap rows exist on the value date"/>
+  <compress id="bundle" file="cs-13-leg-rounding-all-clients.zip">
+    <include ref="rows-per-client"/><include ref="rows-that-change"/>
+  </compress>
+</rules>
