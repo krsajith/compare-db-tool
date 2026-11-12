@@ -1,0 +1,581 @@
+{
+  "name": "typefix-20261111-stage-mysql-uat",
+  "db": "postgres-uat",
+  "backupSchema": "parity_work",
+  "ticket": "typefix-20261111",
+  "description": "Typefix 20261111, step 1 of 2: stages the legacy MySQL values of the deal columns that numeric(18,4) cut (original_lots, premium, spcl_rate, active_lots, netted_lots from cloned_deal_ticket_table_<bu>; lots_to_be_netted from the latest deal_ticket_table_<bu> version, as the migration loader load_09_logical.ps1 takes them) into opera.typefix_20261111_src, one step per business unit. Only trades with a value that has more than 4 decimals are read. Insert only; each BU scope must be empty before. The staging table is created first in DBeaver (see typefix-20261111-reload-uat.json). Step 2: typefix-20261111-reload-uat.json.",
+  "steps": [
+    {
+      "id": "src-bkr",
+      "table": "opera.typefix_20261111_src",
+      "where": "business_unit = 'BKR'",
+      "key": [
+        "business_unit",
+        "trade_id"
+      ],
+      "source": {
+        "db": "mysql-oprdb02",
+        "sql": "SELECT s.trade_id, s.original_lots, s.premium, s.spcl_rate, s.active_lots, s.netted_lots, d.lots_to_be_netted FROM dbsystemuat.cloned_deal_ticket_table_bkr s LEFT JOIN (SELECT x.trade_id, x.lots_to_be_netted, ROW_NUMBER() OVER (PARTITION BY x.trade_id ORDER BY x.version_no DESC) AS rn FROM dbsystemuat.deal_ticket_table_bkr x) d ON d.trade_id = s.trade_id AND d.rn = 1 WHERE s.premium <> ROUND(s.premium, 4) OR s.original_lots <> ROUND(s.original_lots, 4) OR s.spcl_rate <> ROUND(s.spcl_rate, 4) OR s.active_lots <> ROUND(s.active_lots, 4) OR s.netted_lots <> ROUND(s.netted_lots, 4) OR d.lots_to_be_netted <> ROUND(d.lots_to_be_netted, 4)"
+      },
+      "constants": {
+        "business_unit": "BKR",
+        "loaded_at": "$now"
+      },
+      "expect": {
+        "targetBefore": "0",
+        "source": ">=0",
+        "inserted": ">=0"
+      }
+    },
+    {
+      "id": "src-cfs",
+      "table": "opera.typefix_20261111_src",
+      "where": "business_unit = 'CFS'",
+      "key": [
+        "business_unit",
+        "trade_id"
+      ],
+      "source": {
+        "db": "mysql-oprdb02",
+        "sql": "SELECT s.trade_id, s.original_lots, s.premium, s.spcl_rate, s.active_lots, s.netted_lots, d.lots_to_be_netted FROM dbsystemuat.cloned_deal_ticket_table_cfs s LEFT JOIN (SELECT x.trade_id, x.lots_to_be_netted, ROW_NUMBER() OVER (PARTITION BY x.trade_id ORDER BY x.version_no DESC) AS rn FROM dbsystemuat.deal_ticket_table_cfs x) d ON d.trade_id = s.trade_id AND d.rn = 1 WHERE s.premium <> ROUND(s.premium, 4) OR s.original_lots <> ROUND(s.original_lots, 4) OR s.spcl_rate <> ROUND(s.spcl_rate, 4) OR s.active_lots <> ROUND(s.active_lots, 4) OR s.netted_lots <> ROUND(s.netted_lots, 4) OR d.lots_to_be_netted <> ROUND(d.lots_to_be_netted, 4)"
+      },
+      "constants": {
+        "business_unit": "CFS",
+        "loaded_at": "$now"
+      },
+      "expect": {
+        "targetBefore": "0",
+        "source": ">=0",
+        "inserted": ">=0"
+      }
+    },
+    {
+      "id": "src-cto",
+      "table": "opera.typefix_20261111_src",
+      "where": "business_unit = 'CTO'",
+      "key": [
+        "business_unit",
+        "trade_id"
+      ],
+      "source": {
+        "db": "mysql-oprdb02",
+        "sql": "SELECT s.trade_id, s.original_lots, s.premium, s.spcl_rate, s.active_lots, s.netted_lots, d.lots_to_be_netted FROM dbsystemuat.cloned_deal_ticket_table_cto s LEFT JOIN (SELECT x.trade_id, x.lots_to_be_netted, ROW_NUMBER() OVER (PARTITION BY x.trade_id ORDER BY x.version_no DESC) AS rn FROM dbsystemuat.deal_ticket_table_cto x) d ON d.trade_id = s.trade_id AND d.rn = 1 WHERE s.premium <> ROUND(s.premium, 4) OR s.original_lots <> ROUND(s.original_lots, 4) OR s.spcl_rate <> ROUND(s.spcl_rate, 4) OR s.active_lots <> ROUND(s.active_lots, 4) OR s.netted_lots <> ROUND(s.netted_lots, 4) OR d.lots_to_be_netted <> ROUND(d.lots_to_be_netted, 4)"
+      },
+      "constants": {
+        "business_unit": "CTO",
+        "loaded_at": "$now"
+      },
+      "expect": {
+        "targetBefore": "0",
+        "source": ">=0",
+        "inserted": ">=0"
+      }
+    },
+    {
+      "id": "src-ebo",
+      "table": "opera.typefix_20261111_src",
+      "where": "business_unit = 'EBO'",
+      "key": [
+        "business_unit",
+        "trade_id"
+      ],
+      "source": {
+        "db": "mysql-oprdb02",
+        "sql": "SELECT s.trade_id, s.original_lots, s.premium, s.spcl_rate, s.active_lots, s.netted_lots, d.lots_to_be_netted FROM dbsystemuat.cloned_deal_ticket_table_ebo s LEFT JOIN (SELECT x.trade_id, x.lots_to_be_netted, ROW_NUMBER() OVER (PARTITION BY x.trade_id ORDER BY x.version_no DESC) AS rn FROM dbsystemuat.deal_ticket_table_ebo x) d ON d.trade_id = s.trade_id AND d.rn = 1 WHERE s.premium <> ROUND(s.premium, 4) OR s.original_lots <> ROUND(s.original_lots, 4) OR s.spcl_rate <> ROUND(s.spcl_rate, 4) OR s.active_lots <> ROUND(s.active_lots, 4) OR s.netted_lots <> ROUND(s.netted_lots, 4) OR d.lots_to_be_netted <> ROUND(d.lots_to_be_netted, 4)"
+      },
+      "constants": {
+        "business_unit": "EBO",
+        "loaded_at": "$now"
+      },
+      "expect": {
+        "targetBefore": "0",
+        "source": ">=0",
+        "inserted": ">=0"
+      }
+    },
+    {
+      "id": "src-gpc",
+      "table": "opera.typefix_20261111_src",
+      "where": "business_unit = 'GPC'",
+      "key": [
+        "business_unit",
+        "trade_id"
+      ],
+      "source": {
+        "db": "mysql-oprdb02",
+        "sql": "SELECT s.trade_id, s.original_lots, s.premium, s.spcl_rate, s.active_lots, s.netted_lots, d.lots_to_be_netted FROM dbsystemuat.cloned_deal_ticket_table_gpc s LEFT JOIN (SELECT x.trade_id, x.lots_to_be_netted, ROW_NUMBER() OVER (PARTITION BY x.trade_id ORDER BY x.version_no DESC) AS rn FROM dbsystemuat.deal_ticket_table_gpc x) d ON d.trade_id = s.trade_id AND d.rn = 1 WHERE s.premium <> ROUND(s.premium, 4) OR s.original_lots <> ROUND(s.original_lots, 4) OR s.spcl_rate <> ROUND(s.spcl_rate, 4) OR s.active_lots <> ROUND(s.active_lots, 4) OR s.netted_lots <> ROUND(s.netted_lots, 4) OR d.lots_to_be_netted <> ROUND(d.lots_to_be_netted, 4)"
+      },
+      "constants": {
+        "business_unit": "GPC",
+        "loaded_at": "$now"
+      },
+      "expect": {
+        "targetBefore": "0",
+        "source": ">=0",
+        "inserted": ">=0"
+      }
+    },
+    {
+      "id": "src-grn",
+      "table": "opera.typefix_20261111_src",
+      "where": "business_unit = 'GRN'",
+      "key": [
+        "business_unit",
+        "trade_id"
+      ],
+      "source": {
+        "db": "mysql-oprdb02",
+        "sql": "SELECT s.trade_id, s.original_lots, s.premium, s.spcl_rate, s.active_lots, s.netted_lots, d.lots_to_be_netted FROM dbsystemuat.cloned_deal_ticket_table_grn s LEFT JOIN (SELECT x.trade_id, x.lots_to_be_netted, ROW_NUMBER() OVER (PARTITION BY x.trade_id ORDER BY x.version_no DESC) AS rn FROM dbsystemuat.deal_ticket_table_grn x) d ON d.trade_id = s.trade_id AND d.rn = 1 WHERE s.premium <> ROUND(s.premium, 4) OR s.original_lots <> ROUND(s.original_lots, 4) OR s.spcl_rate <> ROUND(s.spcl_rate, 4) OR s.active_lots <> ROUND(s.active_lots, 4) OR s.netted_lots <> ROUND(s.netted_lots, 4) OR d.lots_to_be_netted <> ROUND(d.lots_to_be_netted, 4)"
+      },
+      "constants": {
+        "business_unit": "GRN",
+        "loaded_at": "$now"
+      },
+      "expect": {
+        "targetBefore": "0",
+        "source": ">=0",
+        "inserted": ">=0"
+      }
+    },
+    {
+      "id": "src-og2",
+      "table": "opera.typefix_20261111_src",
+      "where": "business_unit = 'OG2'",
+      "key": [
+        "business_unit",
+        "trade_id"
+      ],
+      "source": {
+        "db": "mysql-oprdb02",
+        "sql": "SELECT s.trade_id, s.original_lots, s.premium, s.spcl_rate, s.active_lots, s.netted_lots, d.lots_to_be_netted FROM dbsystemuat.cloned_deal_ticket_table_og2 s LEFT JOIN (SELECT x.trade_id, x.lots_to_be_netted, ROW_NUMBER() OVER (PARTITION BY x.trade_id ORDER BY x.version_no DESC) AS rn FROM dbsystemuat.deal_ticket_table_og2 x) d ON d.trade_id = s.trade_id AND d.rn = 1 WHERE s.premium <> ROUND(s.premium, 4) OR s.original_lots <> ROUND(s.original_lots, 4) OR s.spcl_rate <> ROUND(s.spcl_rate, 4) OR s.active_lots <> ROUND(s.active_lots, 4) OR s.netted_lots <> ROUND(s.netted_lots, 4) OR d.lots_to_be_netted <> ROUND(d.lots_to_be_netted, 4)"
+      },
+      "constants": {
+        "business_unit": "OG2",
+        "loaded_at": "$now"
+      },
+      "expect": {
+        "targetBefore": "0",
+        "source": ">=0",
+        "inserted": ">=0"
+      }
+    },
+    {
+      "id": "src-ogp",
+      "table": "opera.typefix_20261111_src",
+      "where": "business_unit = 'OGP'",
+      "key": [
+        "business_unit",
+        "trade_id"
+      ],
+      "source": {
+        "db": "mysql-oprdb02",
+        "sql": "SELECT s.trade_id, s.original_lots, s.premium, s.spcl_rate, s.active_lots, s.netted_lots, d.lots_to_be_netted FROM dbsystemuat.cloned_deal_ticket_table_ogp s LEFT JOIN (SELECT x.trade_id, x.lots_to_be_netted, ROW_NUMBER() OVER (PARTITION BY x.trade_id ORDER BY x.version_no DESC) AS rn FROM dbsystemuat.deal_ticket_table_ogp x) d ON d.trade_id = s.trade_id AND d.rn = 1 WHERE s.premium <> ROUND(s.premium, 4) OR s.original_lots <> ROUND(s.original_lots, 4) OR s.spcl_rate <> ROUND(s.spcl_rate, 4) OR s.active_lots <> ROUND(s.active_lots, 4) OR s.netted_lots <> ROUND(s.netted_lots, 4) OR d.lots_to_be_netted <> ROUND(d.lots_to_be_netted, 4)"
+      },
+      "constants": {
+        "business_unit": "OGP",
+        "loaded_at": "$now"
+      },
+      "expect": {
+        "targetBefore": "0",
+        "source": ">=0",
+        "inserted": ">=0"
+      }
+    },
+    {
+      "id": "src-orm",
+      "table": "opera.typefix_20261111_src",
+      "where": "business_unit = 'ORM'",
+      "key": [
+        "business_unit",
+        "trade_id"
+      ],
+      "source": {
+        "db": "mysql-oprdb02",
+        "sql": "SELECT s.trade_id, s.original_lots, s.premium, s.spcl_rate, s.active_lots, s.netted_lots, d.lots_to_be_netted FROM dbsystemuat.cloned_deal_ticket_table_orm s LEFT JOIN (SELECT x.trade_id, x.lots_to_be_netted, ROW_NUMBER() OVER (PARTITION BY x.trade_id ORDER BY x.version_no DESC) AS rn FROM dbsystemuat.deal_ticket_table_orm x) d ON d.trade_id = s.trade_id AND d.rn = 1 WHERE s.premium <> ROUND(s.premium, 4) OR s.original_lots <> ROUND(s.original_lots, 4) OR s.spcl_rate <> ROUND(s.spcl_rate, 4) OR s.active_lots <> ROUND(s.active_lots, 4) OR s.netted_lots <> ROUND(s.netted_lots, 4) OR d.lots_to_be_netted <> ROUND(d.lots_to_be_netted, 4)"
+      },
+      "constants": {
+        "business_unit": "ORM",
+        "loaded_at": "$now"
+      },
+      "expect": {
+        "targetBefore": "0",
+        "source": ">=0",
+        "inserted": ">=0"
+      }
+    },
+    {
+      "id": "src-osg",
+      "table": "opera.typefix_20261111_src",
+      "where": "business_unit = 'OSG'",
+      "key": [
+        "business_unit",
+        "trade_id"
+      ],
+      "source": {
+        "db": "mysql-oprdb02",
+        "sql": "SELECT s.trade_id, s.original_lots, s.premium, s.spcl_rate, s.active_lots, s.netted_lots, d.lots_to_be_netted FROM dbsystemuat.cloned_deal_ticket_table_osg s LEFT JOIN (SELECT x.trade_id, x.lots_to_be_netted, ROW_NUMBER() OVER (PARTITION BY x.trade_id ORDER BY x.version_no DESC) AS rn FROM dbsystemuat.deal_ticket_table_osg x) d ON d.trade_id = s.trade_id AND d.rn = 1 WHERE s.premium <> ROUND(s.premium, 4) OR s.original_lots <> ROUND(s.original_lots, 4) OR s.spcl_rate <> ROUND(s.spcl_rate, 4) OR s.active_lots <> ROUND(s.active_lots, 4) OR s.netted_lots <> ROUND(s.netted_lots, 4) OR d.lots_to_be_netted <> ROUND(d.lots_to_be_netted, 4)"
+      },
+      "constants": {
+        "business_unit": "OSG",
+        "loaded_at": "$now"
+      },
+      "expect": {
+        "targetBefore": "0",
+        "source": ">=0",
+        "inserted": ">=0"
+      }
+    },
+    {
+      "id": "src-pf6",
+      "table": "opera.typefix_20261111_src",
+      "where": "business_unit = 'PF6'",
+      "key": [
+        "business_unit",
+        "trade_id"
+      ],
+      "source": {
+        "db": "mysql-oprdb02",
+        "sql": "SELECT s.trade_id, s.original_lots, s.premium, s.spcl_rate, s.active_lots, s.netted_lots, d.lots_to_be_netted FROM dbsystemuat.cloned_deal_ticket_table_pf6 s LEFT JOIN (SELECT x.trade_id, x.lots_to_be_netted, ROW_NUMBER() OVER (PARTITION BY x.trade_id ORDER BY x.version_no DESC) AS rn FROM dbsystemuat.deal_ticket_table_pf6 x) d ON d.trade_id = s.trade_id AND d.rn = 1 WHERE s.premium <> ROUND(s.premium, 4) OR s.original_lots <> ROUND(s.original_lots, 4) OR s.spcl_rate <> ROUND(s.spcl_rate, 4) OR s.active_lots <> ROUND(s.active_lots, 4) OR s.netted_lots <> ROUND(s.netted_lots, 4) OR d.lots_to_be_netted <> ROUND(d.lots_to_be_netted, 4)"
+      },
+      "constants": {
+        "business_unit": "PF6",
+        "loaded_at": "$now"
+      },
+      "expect": {
+        "targetBefore": "0",
+        "source": ">=0",
+        "inserted": ">=0"
+      }
+    },
+    {
+      "id": "src-pf9",
+      "table": "opera.typefix_20261111_src",
+      "where": "business_unit = 'PF9'",
+      "key": [
+        "business_unit",
+        "trade_id"
+      ],
+      "source": {
+        "db": "mysql-oprdb02",
+        "sql": "SELECT s.trade_id, s.original_lots, s.premium, s.spcl_rate, s.active_lots, s.netted_lots, d.lots_to_be_netted FROM dbsystemuat.cloned_deal_ticket_table_pf9 s LEFT JOIN (SELECT x.trade_id, x.lots_to_be_netted, ROW_NUMBER() OVER (PARTITION BY x.trade_id ORDER BY x.version_no DESC) AS rn FROM dbsystemuat.deal_ticket_table_pf9 x) d ON d.trade_id = s.trade_id AND d.rn = 1 WHERE s.premium <> ROUND(s.premium, 4) OR s.original_lots <> ROUND(s.original_lots, 4) OR s.spcl_rate <> ROUND(s.spcl_rate, 4) OR s.active_lots <> ROUND(s.active_lots, 4) OR s.netted_lots <> ROUND(s.netted_lots, 4) OR d.lots_to_be_netted <> ROUND(d.lots_to_be_netted, 4)"
+      },
+      "constants": {
+        "business_unit": "PF9",
+        "loaded_at": "$now"
+      },
+      "expect": {
+        "targetBefore": "0",
+        "source": ">=0",
+        "inserted": ">=0"
+      }
+    },
+    {
+      "id": "src-pg7",
+      "table": "opera.typefix_20261111_src",
+      "where": "business_unit = 'PG7'",
+      "key": [
+        "business_unit",
+        "trade_id"
+      ],
+      "source": {
+        "db": "mysql-oprdb02",
+        "sql": "SELECT s.trade_id, s.original_lots, s.premium, s.spcl_rate, s.active_lots, s.netted_lots, d.lots_to_be_netted FROM dbsystemuat.cloned_deal_ticket_table_pg7 s LEFT JOIN (SELECT x.trade_id, x.lots_to_be_netted, ROW_NUMBER() OVER (PARTITION BY x.trade_id ORDER BY x.version_no DESC) AS rn FROM dbsystemuat.deal_ticket_table_pg7 x) d ON d.trade_id = s.trade_id AND d.rn = 1 WHERE s.premium <> ROUND(s.premium, 4) OR s.original_lots <> ROUND(s.original_lots, 4) OR s.spcl_rate <> ROUND(s.spcl_rate, 4) OR s.active_lots <> ROUND(s.active_lots, 4) OR s.netted_lots <> ROUND(s.netted_lots, 4) OR d.lots_to_be_netted <> ROUND(d.lots_to_be_netted, 4)"
+      },
+      "constants": {
+        "business_unit": "PG7",
+        "loaded_at": "$now"
+      },
+      "expect": {
+        "targetBefore": "0",
+        "source": ">=0",
+        "inserted": ">=0"
+      }
+    },
+    {
+      "id": "src-pg8",
+      "table": "opera.typefix_20261111_src",
+      "where": "business_unit = 'PG8'",
+      "key": [
+        "business_unit",
+        "trade_id"
+      ],
+      "source": {
+        "db": "mysql-oprdb02",
+        "sql": "SELECT s.trade_id, s.original_lots, s.premium, s.spcl_rate, s.active_lots, s.netted_lots, d.lots_to_be_netted FROM dbsystemuat.cloned_deal_ticket_table_pg8 s LEFT JOIN (SELECT x.trade_id, x.lots_to_be_netted, ROW_NUMBER() OVER (PARTITION BY x.trade_id ORDER BY x.version_no DESC) AS rn FROM dbsystemuat.deal_ticket_table_pg8 x) d ON d.trade_id = s.trade_id AND d.rn = 1 WHERE s.premium <> ROUND(s.premium, 4) OR s.original_lots <> ROUND(s.original_lots, 4) OR s.spcl_rate <> ROUND(s.spcl_rate, 4) OR s.active_lots <> ROUND(s.active_lots, 4) OR s.netted_lots <> ROUND(s.netted_lots, 4) OR d.lots_to_be_netted <> ROUND(d.lots_to_be_netted, 4)"
+      },
+      "constants": {
+        "business_unit": "PG8",
+        "loaded_at": "$now"
+      },
+      "expect": {
+        "targetBefore": "0",
+        "source": ">=0",
+        "inserted": ">=0"
+      }
+    },
+    {
+      "id": "src-qf1",
+      "table": "opera.typefix_20261111_src",
+      "where": "business_unit = 'QF1'",
+      "key": [
+        "business_unit",
+        "trade_id"
+      ],
+      "source": {
+        "db": "mysql-oprdb02",
+        "sql": "SELECT s.trade_id, s.original_lots, s.premium, s.spcl_rate, s.active_lots, s.netted_lots, d.lots_to_be_netted FROM dbsystemuat.cloned_deal_ticket_table_qf1 s LEFT JOIN (SELECT x.trade_id, x.lots_to_be_netted, ROW_NUMBER() OVER (PARTITION BY x.trade_id ORDER BY x.version_no DESC) AS rn FROM dbsystemuat.deal_ticket_table_qf1 x) d ON d.trade_id = s.trade_id AND d.rn = 1 WHERE s.premium <> ROUND(s.premium, 4) OR s.original_lots <> ROUND(s.original_lots, 4) OR s.spcl_rate <> ROUND(s.spcl_rate, 4) OR s.active_lots <> ROUND(s.active_lots, 4) OR s.netted_lots <> ROUND(s.netted_lots, 4) OR d.lots_to_be_netted <> ROUND(d.lots_to_be_netted, 4)"
+      },
+      "constants": {
+        "business_unit": "QF1",
+        "loaded_at": "$now"
+      },
+      "expect": {
+        "targetBefore": "0",
+        "source": ">=0",
+        "inserted": ">=0"
+      }
+    },
+    {
+      "id": "src-qf2",
+      "table": "opera.typefix_20261111_src",
+      "where": "business_unit = 'QF2'",
+      "key": [
+        "business_unit",
+        "trade_id"
+      ],
+      "source": {
+        "db": "mysql-oprdb02",
+        "sql": "SELECT s.trade_id, s.original_lots, s.premium, s.spcl_rate, s.active_lots, s.netted_lots, d.lots_to_be_netted FROM dbsystemuat.cloned_deal_ticket_table_qf2 s LEFT JOIN (SELECT x.trade_id, x.lots_to_be_netted, ROW_NUMBER() OVER (PARTITION BY x.trade_id ORDER BY x.version_no DESC) AS rn FROM dbsystemuat.deal_ticket_table_qf2 x) d ON d.trade_id = s.trade_id AND d.rn = 1 WHERE s.premium <> ROUND(s.premium, 4) OR s.original_lots <> ROUND(s.original_lots, 4) OR s.spcl_rate <> ROUND(s.spcl_rate, 4) OR s.active_lots <> ROUND(s.active_lots, 4) OR s.netted_lots <> ROUND(s.netted_lots, 4) OR d.lots_to_be_netted <> ROUND(d.lots_to_be_netted, 4)"
+      },
+      "constants": {
+        "business_unit": "QF2",
+        "loaded_at": "$now"
+      },
+      "expect": {
+        "targetBefore": "0",
+        "source": ">=0",
+        "inserted": ">=0"
+      }
+    },
+    {
+      "id": "src-qf3",
+      "table": "opera.typefix_20261111_src",
+      "where": "business_unit = 'QF3'",
+      "key": [
+        "business_unit",
+        "trade_id"
+      ],
+      "source": {
+        "db": "mysql-oprdb02",
+        "sql": "SELECT s.trade_id, s.original_lots, s.premium, s.spcl_rate, s.active_lots, s.netted_lots, d.lots_to_be_netted FROM dbsystemuat.cloned_deal_ticket_table_qf3 s LEFT JOIN (SELECT x.trade_id, x.lots_to_be_netted, ROW_NUMBER() OVER (PARTITION BY x.trade_id ORDER BY x.version_no DESC) AS rn FROM dbsystemuat.deal_ticket_table_qf3 x) d ON d.trade_id = s.trade_id AND d.rn = 1 WHERE s.premium <> ROUND(s.premium, 4) OR s.original_lots <> ROUND(s.original_lots, 4) OR s.spcl_rate <> ROUND(s.spcl_rate, 4) OR s.active_lots <> ROUND(s.active_lots, 4) OR s.netted_lots <> ROUND(s.netted_lots, 4) OR d.lots_to_be_netted <> ROUND(d.lots_to_be_netted, 4)"
+      },
+      "constants": {
+        "business_unit": "QF3",
+        "loaded_at": "$now"
+      },
+      "expect": {
+        "targetBefore": "0",
+        "source": ">=0",
+        "inserted": ">=0"
+      }
+    },
+    {
+      "id": "src-qf4",
+      "table": "opera.typefix_20261111_src",
+      "where": "business_unit = 'QF4'",
+      "key": [
+        "business_unit",
+        "trade_id"
+      ],
+      "source": {
+        "db": "mysql-oprdb02",
+        "sql": "SELECT s.trade_id, s.original_lots, s.premium, s.spcl_rate, s.active_lots, s.netted_lots, d.lots_to_be_netted FROM dbsystemuat.cloned_deal_ticket_table_qf4 s LEFT JOIN (SELECT x.trade_id, x.lots_to_be_netted, ROW_NUMBER() OVER (PARTITION BY x.trade_id ORDER BY x.version_no DESC) AS rn FROM dbsystemuat.deal_ticket_table_qf4 x) d ON d.trade_id = s.trade_id AND d.rn = 1 WHERE s.premium <> ROUND(s.premium, 4) OR s.original_lots <> ROUND(s.original_lots, 4) OR s.spcl_rate <> ROUND(s.spcl_rate, 4) OR s.active_lots <> ROUND(s.active_lots, 4) OR s.netted_lots <> ROUND(s.netted_lots, 4) OR d.lots_to_be_netted <> ROUND(d.lots_to_be_netted, 4)"
+      },
+      "constants": {
+        "business_unit": "QF4",
+        "loaded_at": "$now"
+      },
+      "expect": {
+        "targetBefore": "0",
+        "source": ">=0",
+        "inserted": ">=0"
+      }
+    },
+    {
+      "id": "src-qf5",
+      "table": "opera.typefix_20261111_src",
+      "where": "business_unit = 'QF5'",
+      "key": [
+        "business_unit",
+        "trade_id"
+      ],
+      "source": {
+        "db": "mysql-oprdb02",
+        "sql": "SELECT s.trade_id, s.original_lots, s.premium, s.spcl_rate, s.active_lots, s.netted_lots, d.lots_to_be_netted FROM dbsystemuat.cloned_deal_ticket_table_qf5 s LEFT JOIN (SELECT x.trade_id, x.lots_to_be_netted, ROW_NUMBER() OVER (PARTITION BY x.trade_id ORDER BY x.version_no DESC) AS rn FROM dbsystemuat.deal_ticket_table_qf5 x) d ON d.trade_id = s.trade_id AND d.rn = 1 WHERE s.premium <> ROUND(s.premium, 4) OR s.original_lots <> ROUND(s.original_lots, 4) OR s.spcl_rate <> ROUND(s.spcl_rate, 4) OR s.active_lots <> ROUND(s.active_lots, 4) OR s.netted_lots <> ROUND(s.netted_lots, 4) OR d.lots_to_be_netted <> ROUND(d.lots_to_be_netted, 4)"
+      },
+      "constants": {
+        "business_unit": "QF5",
+        "loaded_at": "$now"
+      },
+      "expect": {
+        "targetBefore": "0",
+        "source": ">=0",
+        "inserted": ">=0"
+      }
+    },
+    {
+      "id": "src-rba",
+      "table": "opera.typefix_20261111_src",
+      "where": "business_unit = 'RBA'",
+      "key": [
+        "business_unit",
+        "trade_id"
+      ],
+      "source": {
+        "db": "mysql-oprdb02",
+        "sql": "SELECT s.trade_id, s.original_lots, s.premium, s.spcl_rate, s.active_lots, s.netted_lots, d.lots_to_be_netted FROM dbsystemuat.cloned_deal_ticket_table_rba s LEFT JOIN (SELECT x.trade_id, x.lots_to_be_netted, ROW_NUMBER() OVER (PARTITION BY x.trade_id ORDER BY x.version_no DESC) AS rn FROM dbsystemuat.deal_ticket_table_rba x) d ON d.trade_id = s.trade_id AND d.rn = 1 WHERE s.premium <> ROUND(s.premium, 4) OR s.original_lots <> ROUND(s.original_lots, 4) OR s.spcl_rate <> ROUND(s.spcl_rate, 4) OR s.active_lots <> ROUND(s.active_lots, 4) OR s.netted_lots <> ROUND(s.netted_lots, 4) OR d.lots_to_be_netted <> ROUND(d.lots_to_be_netted, 4)"
+      },
+      "constants": {
+        "business_unit": "RBA",
+        "loaded_at": "$now"
+      },
+      "expect": {
+        "targetBefore": "0",
+        "source": ">=0",
+        "inserted": ">=0"
+      }
+    },
+    {
+      "id": "src-rbc",
+      "table": "opera.typefix_20261111_src",
+      "where": "business_unit = 'RBC'",
+      "key": [
+        "business_unit",
+        "trade_id"
+      ],
+      "source": {
+        "db": "mysql-oprdb02",
+        "sql": "SELECT s.trade_id, s.original_lots, s.premium, s.spcl_rate, s.active_lots, s.netted_lots, d.lots_to_be_netted FROM dbsystemuat.cloned_deal_ticket_table_rbc s LEFT JOIN (SELECT x.trade_id, x.lots_to_be_netted, ROW_NUMBER() OVER (PARTITION BY x.trade_id ORDER BY x.version_no DESC) AS rn FROM dbsystemuat.deal_ticket_table_rbc x) d ON d.trade_id = s.trade_id AND d.rn = 1 WHERE s.premium <> ROUND(s.premium, 4) OR s.original_lots <> ROUND(s.original_lots, 4) OR s.spcl_rate <> ROUND(s.spcl_rate, 4) OR s.active_lots <> ROUND(s.active_lots, 4) OR s.netted_lots <> ROUND(s.netted_lots, 4) OR d.lots_to_be_netted <> ROUND(d.lots_to_be_netted, 4)"
+      },
+      "constants": {
+        "business_unit": "RBC",
+        "loaded_at": "$now"
+      },
+      "expect": {
+        "targetBefore": "0",
+        "source": ">=0",
+        "inserted": ">=0"
+      }
+    },
+    {
+      "id": "src-rbh",
+      "table": "opera.typefix_20261111_src",
+      "where": "business_unit = 'RBH'",
+      "key": [
+        "business_unit",
+        "trade_id"
+      ],
+      "source": {
+        "db": "mysql-oprdb02",
+        "sql": "SELECT s.trade_id, s.original_lots, s.premium, s.spcl_rate, s.active_lots, s.netted_lots, d.lots_to_be_netted FROM dbsystemuat.cloned_deal_ticket_table_rbh s LEFT JOIN (SELECT x.trade_id, x.lots_to_be_netted, ROW_NUMBER() OVER (PARTITION BY x.trade_id ORDER BY x.version_no DESC) AS rn FROM dbsystemuat.deal_ticket_table_rbh x) d ON d.trade_id = s.trade_id AND d.rn = 1 WHERE s.premium <> ROUND(s.premium, 4) OR s.original_lots <> ROUND(s.original_lots, 4) OR s.spcl_rate <> ROUND(s.spcl_rate, 4) OR s.active_lots <> ROUND(s.active_lots, 4) OR s.netted_lots <> ROUND(s.netted_lots, 4) OR d.lots_to_be_netted <> ROUND(d.lots_to_be_netted, 4)"
+      },
+      "constants": {
+        "business_unit": "RBH",
+        "loaded_at": "$now"
+      },
+      "expect": {
+        "targetBefore": "0",
+        "source": ">=0",
+        "inserted": ">=0"
+      }
+    },
+    {
+      "id": "src-rmc",
+      "table": "opera.typefix_20261111_src",
+      "where": "business_unit = 'RMC'",
+      "key": [
+        "business_unit",
+        "trade_id"
+      ],
+      "source": {
+        "db": "mysql-oprdb02",
+        "sql": "SELECT s.trade_id, s.original_lots, s.premium, s.spcl_rate, s.active_lots, s.netted_lots, d.lots_to_be_netted FROM dbsystemuat.cloned_deal_ticket_table_rmc s LEFT JOIN (SELECT x.trade_id, x.lots_to_be_netted, ROW_NUMBER() OVER (PARTITION BY x.trade_id ORDER BY x.version_no DESC) AS rn FROM dbsystemuat.deal_ticket_table_rmc x) d ON d.trade_id = s.trade_id AND d.rn = 1 WHERE s.premium <> ROUND(s.premium, 4) OR s.original_lots <> ROUND(s.original_lots, 4) OR s.spcl_rate <> ROUND(s.spcl_rate, 4) OR s.active_lots <> ROUND(s.active_lots, 4) OR s.netted_lots <> ROUND(s.netted_lots, 4) OR d.lots_to_be_netted <> ROUND(d.lots_to_be_netted, 4)"
+      },
+      "constants": {
+        "business_unit": "RMC",
+        "loaded_at": "$now"
+      },
+      "expect": {
+        "targetBefore": "0",
+        "source": ">=0",
+        "inserted": ">=0"
+      }
+    },
+    {
+      "id": "src-stg",
+      "table": "opera.typefix_20261111_src",
+      "where": "business_unit = 'STG'",
+      "key": [
+        "business_unit",
+        "trade_id"
+      ],
+      "source": {
+        "db": "mysql-oprdb02",
+        "sql": "SELECT s.trade_id, s.original_lots, s.premium, s.spcl_rate, s.active_lots, s.netted_lots, d.lots_to_be_netted FROM dbsystemuat.cloned_deal_ticket_table_stg s LEFT JOIN (SELECT x.trade_id, x.lots_to_be_netted, ROW_NUMBER() OVER (PARTITION BY x.trade_id ORDER BY x.version_no DESC) AS rn FROM dbsystemuat.deal_ticket_table_stg x) d ON d.trade_id = s.trade_id AND d.rn = 1 WHERE s.premium <> ROUND(s.premium, 4) OR s.original_lots <> ROUND(s.original_lots, 4) OR s.spcl_rate <> ROUND(s.spcl_rate, 4) OR s.active_lots <> ROUND(s.active_lots, 4) OR s.netted_lots <> ROUND(s.netted_lots, 4) OR d.lots_to_be_netted <> ROUND(d.lots_to_be_netted, 4)"
+      },
+      "constants": {
+        "business_unit": "STG",
+        "loaded_at": "$now"
+      },
+      "expect": {
+        "targetBefore": "0",
+        "source": ">=0",
+        "inserted": ">=0"
+      }
+    },
+    {
+      "id": "src-tsy",
+      "table": "opera.typefix_20261111_src",
+      "where": "business_unit = 'TSY'",
+      "key": [
+        "business_unit",
+        "trade_id"
+      ],
+      "source": {
+        "db": "mysql-oprdb02",
+        "sql": "SELECT s.trade_id, s.original_lots, s.premium, s.spcl_rate, s.active_lots, s.netted_lots, d.lots_to_be_netted FROM dbsystemuat.cloned_deal_ticket_table_tsy s LEFT JOIN (SELECT x.trade_id, x.lots_to_be_netted, ROW_NUMBER() OVER (PARTITION BY x.trade_id ORDER BY x.version_no DESC) AS rn FROM dbsystemuat.deal_ticket_table_tsy x) d ON d.trade_id = s.trade_id AND d.rn = 1 WHERE s.premium <> ROUND(s.premium, 4) OR s.original_lots <> ROUND(s.original_lots, 4) OR s.spcl_rate <> ROUND(s.spcl_rate, 4) OR s.active_lots <> ROUND(s.active_lots, 4) OR s.netted_lots <> ROUND(s.netted_lots, 4) OR d.lots_to_be_netted <> ROUND(d.lots_to_be_netted, 4)"
+      },
+      "constants": {
+        "business_unit": "TSY",
+        "loaded_at": "$now"
+      },
+      "expect": {
+        "targetBefore": "0",
+        "source": ">=0",
+        "inserted": ">=0"
+      }
+    },
+    {
+      "id": "src-usg",
+      "table": "opera.typefix_20261111_src",
+      "where": "business_unit = 'USG'",
+      "key": [
+        "business_unit",
+        "trade_id"
+      ],
+      "source": {
+        "db": "mysql-oprdb02",
+        "sql": "SELECT s.trade_id, s.original_lots, s.premium, s.spcl_rate, s.active_lots, s.netted_lots, d.lots_to_be_netted FROM dbsystemuat.cloned_deal_ticket_table_usg s LEFT JOIN (SELECT x.trade_id, x.lots_to_be_netted, ROW_NUMBER() OVER (PARTITION BY x.trade_id ORDER BY x.version_no DESC) AS rn FROM dbsystemuat.deal_ticket_table_usg x) d ON d.trade_id = s.trade_id AND d.rn = 1 WHERE s.premium <> ROUND(s.premium, 4) OR s.original_lots <> ROUND(s.original_lots, 4) OR s.spcl_rate <> ROUND(s.spcl_rate, 4) OR s.active_lots <> ROUND(s.active_lots, 4) OR s.netted_lots <> ROUND(s.netted_lots, 4) OR d.lots_to_be_netted <> ROUND(d.lots_to_be_netted, 4)"
+      },
+      "constants": {
+        "business_unit": "USG",
+        "loaded_at": "$now"
+      },
+      "expect": {
+        "targetBefore": "0",
+        "source": ">=0",
+        "inserted": ">=0"
+      }
+    }
+  ]
+}
