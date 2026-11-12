@@ -3,8 +3,17 @@
   "db": "postgres-dev",
   "backupSchema": "parity_work",
   "ticket": "client-statement-06nov",
-  "description": "Post-migration fixes 2 and 3 (knowledge-base/post-migration-fixes.md): set the spot ids in currency_spot_mapping_table.spot and product_master_table.curr_mult_factor to the exact spelling used in underlying_settle_value_table ('SPOT BGN' -> 'Spot BGN'). The reload brought the MySQL spelling back; PostgreSQL matches case exactly, so the client statement refresh found no FX rate and printed BRL and other non-USD amounts as USD (ACM CRD 06-Nov). Proven by cs-05-root-cause-check-cfs: 8 mapping spots and 18 product spellings (36 products). After apply: refresh the client statement cache for 06-Nov and regenerate. DEV copy: prices of the CFS valuation date (read from valuation_date_table); counts not fixed in advance, every step must end with nothing left to fix (targetAfter 0).",
+  "description": "Post-migration fixes 2 and 3 (knowledge-base/post-migration-fixes.md): set the spot ids in currency_spot_mapping_table.spot and product_master_table.curr_mult_factor to the exact spelling used in underlying_settle_value_table ('SPOT BGN' -> 'Spot BGN'). The reload brought the MySQL spelling back; PostgreSQL matches case exactly, so the client statement refresh found no FX rate and printed BRL and other non-USD amounts as USD (ACM CRD 06-Nov). Proven by cs-05-root-cause-check-cfs: 8 mapping spots and 18 product spellings (36 products). After apply: refresh the client statement cache for 06-Nov and regenerate. DEV copy: prices of the CFS valuation date (read from valuation_date_table); counts not fixed in advance, every step must end with nothing left to fix (targetAfter 0). First step: search path opera for this transaction, because the product master clone trigger on UAT names its table without a schema.",
   "steps": [
+    {
+      "id": "session-search-path",
+      "action": "sql",
+      "note": "The deployed opera.product_master_clone_sync_fn (trigger on product_master_table) writes to cloned_product_master_table without a schema and has no search_path of its own; the app's connections have opera on the search path, the tool's do not. Transaction-local, ends with this change.",
+      "sql": "DO $sp$ BEGIN PERFORM set_config('search_path', 'opera, public', true); END $sp$",
+      "expect": {
+        "affected": "0"
+      }
+    },
     {
       "id": "spot-mapping",
       "action": "update",

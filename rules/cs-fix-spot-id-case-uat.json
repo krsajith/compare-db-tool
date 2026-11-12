@@ -3,33 +3,62 @@
   "db": "postgres-uat",
   "backupSchema": "parity_work",
   "ticket": "client-statement-06nov",
-  "description": "Post-migration fixes 2 and 3 (knowledge-base/post-migration-fixes.md): set the spot ids in currency_spot_mapping_table.spot and product_master_table.curr_mult_factor to the exact spelling used in underlying_settle_value_table ('SPOT BGN' -> 'Spot BGN'). The reload brought the MySQL spelling back; PostgreSQL matches case exactly, so the client statement refresh found no FX rate and printed BRL and other non-USD amounts as USD (ACM CRD 06-Nov). Proven by cs-05-root-cause-check-cfs: 8 mapping spots and 18 product spellings (36 products). After apply: refresh the client statement cache for 06-Nov and regenerate.",
+  "description": "Post-migration fixes 2 and 3 (knowledge-base/post-migration-fixes.md): set the spot ids in currency_spot_mapping_table.spot and product_master_table.curr_mult_factor to the exact spelling used in underlying_settle_value_table ('SPOT BGN' -> 'Spot BGN'). The reload brought the MySQL spelling back; PostgreSQL matches case exactly, so the client statement refresh found no FX rate and printed BRL and other non-USD amounts as USD (ACM CRD 06-Nov). Proven by cs-05-root-cause-check-cfs: 8 mapping spots and 18 product spellings (36 products). After apply: refresh the client statement cache for 06-Nov and regenerate. First step: search path opera for this transaction, because the product master clone trigger on UAT names its table without a schema.",
   "steps": [
+    {
+      "id": "session-search-path",
+      "action": "sql",
+      "note": "The deployed opera.product_master_clone_sync_fn (trigger on product_master_table) writes to cloned_product_master_table without a schema and has no search_path of its own; the app's connections have opera on the search path, the tool's do not. Transaction-local, ends with this change.",
+      "sql": "DO $sp$ BEGIN PERFORM set_config('search_path', 'opera, public', true); END $sp$",
+      "expect": {
+        "affected": "0"
+      }
+    },
     {
       "id": "spot-mapping",
       "action": "update",
       "table": "opera.currency_spot_mapping_table",
       "where": "tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND EXISTS (SELECT 1 FROM opera.underlying_settle_value_table u WHERE u.tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND u.value_date = DATE '2026-11-06' AND lower(u.underlying_id) = lower(currency_spot_mapping_table.spot) AND u.underlying_id <> currency_spot_mapping_table.spot)",
-      "key": ["uuid"],
+      "key": [
+        "uuid"
+      ],
       "set": {
         "spot": "(SELECT min(u.underlying_id) FROM opera.underlying_settle_value_table u WHERE u.tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND u.value_date = DATE '2026-11-06' AND lower(u.underlying_id) = lower(currency_spot_mapping_table.spot))"
       },
       "preconditions": [
-        { "sql": "SELECT count(*) FROM (SELECT lower(underlying_id) FROM opera.underlying_settle_value_table WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND value_date = DATE '2026-11-06' GROUP BY lower(underlying_id) HAVING count(DISTINCT underlying_id) > 1) x", "expect": "0", "reason": "the price table has one spelling per spot id, so the target spelling is unambiguous" }
+        {
+          "sql": "SELECT count(*) FROM (SELECT lower(underlying_id) FROM opera.underlying_settle_value_table WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND value_date = DATE '2026-11-06' GROUP BY lower(underlying_id) HAVING count(DISTINCT underlying_id) > 1) x",
+          "expect": "0",
+          "reason": "the price table has one spelling per spot id, so the target spelling is unambiguous"
+        }
       ],
-      "expect": { "targetBefore": "8", "affected": "8", "targetAfter": "0" }
+      "expect": {
+        "targetBefore": "8",
+        "affected": "8",
+        "targetAfter": "0"
+      }
     },
     {
       "id": "product-curr-mult-factor",
       "action": "update",
       "table": "opera.product_master_table",
       "where": "curr_mult_factor IS NOT NULL AND EXISTS (SELECT 1 FROM opera.underlying_settle_value_table u WHERE u.tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND u.value_date = DATE '2026-11-06' AND lower(u.underlying_id) = lower(product_master_table.curr_mult_factor) AND u.underlying_id <> product_master_table.curr_mult_factor)",
-      "key": ["uuid"],
+      "key": [
+        "uuid"
+      ],
       "set": {
         "curr_mult_factor": "(SELECT min(u.underlying_id) FROM opera.underlying_settle_value_table u WHERE u.tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND u.value_date = DATE '2026-11-06' AND lower(u.underlying_id) = lower(product_master_table.curr_mult_factor))"
       },
-      "expect": { "targetBefore": "36", "affected": "36", "targetAfter": "0" }
+      "expect": {
+        "targetBefore": "36",
+        "affected": "36",
+        "targetAfter": "0"
+      }
     }
   ],
-  "verify": [ { "rule": "cs-06-verify-spot-case-uat.xml" } ]
+  "verify": [
+    {
+      "rule": "cs-06-verify-spot-case-uat.xml"
+    }
+  ]
 }
