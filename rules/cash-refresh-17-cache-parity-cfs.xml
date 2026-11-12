@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- Cash balance refresh: is latest_active_lot (the cache the active lots view reads since PR 292) the same, trade by trade, as what the view used to compute?
+<!-- active_lots is double precision in both tables since the typefix; the engine db needs exact numeric, so both sides are cast to numeric.
+     Cash balance refresh: is latest_active_lot (the cache the active lots view reads since PR 292) the same, trade by trade, as what the view used to compute?
      Old: the latest deal_active_lots_table row per trade with value_date up to the business unit valuation date (zero lots kept).
      New: the cache table. Read-only. Heavier than rule 16 (reads the lots history of one business unit), so run it on its own and in a quiet window.
      Use the target environment flag: target-env postgres-uat (or postgres-dev). Both queries use one database, so the comparison runs inside it (engine db) and only counts leave.
@@ -12,7 +13,7 @@
   </parameters>
 
   <sql id="old-window" db="target" timeout="600"><![CDATA[
-    SELECT l.trade_id, l.active_lots
+    SELECT l.trade_id, l.active_lots::numeric AS active_lots
     FROM (SELECT a.trade_id, a.active_lots,
                  row_number() OVER (PARTITION BY a.trade_id ORDER BY a.value_date DESC) AS rn
           FROM opera.deal_active_lots_table a
@@ -22,7 +23,7 @@
   ]]></sql>
 
   <sql id="cache" db="target" timeout="600"><![CDATA[
-    SELECT c.trade_id, c.active_lots
+    SELECT c.trade_id, c.active_lots::numeric AS active_lots
     FROM opera.latest_active_lot c
     WHERE c.tenant_id = :tenant AND c.business_unit = :bu
   ]]></sql>
