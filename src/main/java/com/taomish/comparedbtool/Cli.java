@@ -25,6 +25,8 @@ public final class Cli {
         --datasources         List configured names without connecting or displaying secrets
         --out DIR             Output base directory (default: out)
         --param NAME=VALUE    Override a declared XML parameter; repeat as needed
+        --session NAME=VALUE  PostgreSQL session setting for every connection of this run (e.g. work_mem=256MB); repeat as needed;
+                              adds to or overrides config/session.properties
         --limit N             Optional row cap per query; capped results are PARTIAL
         --partitions N        Disk partitions per comparison (default: 64, range 1..256)
         --export MODE         none, sample (default), or full; XML export overrides this
@@ -85,6 +87,8 @@ public final class Cli {
         public java.util.function.BiPredicate<String, String> confirmer;
         public Path out = Path.of("out");
         public Map<String, String> parameters = new LinkedHashMap<>();
+        /** --session name=value: PostgreSQL session settings for this run (on top of config/session.properties). */
+        public Map<String, String> session = new LinkedHashMap<>();
         public int partitions = 64;
         public ExportMode export = ExportMode.SAMPLE;
         public int sampleRows = 200;
@@ -109,7 +113,7 @@ public final class Cli {
             }
             int equal = argument.indexOf('=');
             String name = equal > 0 ? argument.substring(0, equal) : argument;
-            if (Set.of("--template-export", "--template-import", "--template-upload", "--restore", "--load", "--change", "--confirm", "--db", "--schema", "--rule", "--ticket", "--last", "--rules", "--out", "--param", "--limit", "--partitions", "--export", "--sample-rows", "--parallel", "--max-partition-mb", "--target-env").contains(name)) {
+            if (Set.of("--template-export", "--template-import", "--template-upload", "--restore", "--load", "--change", "--confirm", "--db", "--schema", "--rule", "--ticket", "--last", "--rules", "--out", "--param", "--session", "--limit", "--partitions", "--export", "--sample-rows", "--parallel", "--max-partition-mb", "--target-env").contains(name)) {
                 String value;
                 if (equal > 0) value = argument.substring(equal + 1);
                 else {
@@ -163,6 +167,11 @@ public final class Cli {
                             int separator = value.indexOf('=');
                             if (separator <= 0) throw new ToolException("Use --param name=value.");
                             options.parameters.put(value.substring(0, separator), value.substring(separator + 1));
+                        }
+                        case "--session" -> {
+                            int separator = value.indexOf('=');
+                            if (separator <= 0) throw new ToolException("Use --session name=value, e.g. --session work_mem=256MB.");
+                            options.session.put(value.substring(0, separator).trim(), value.substring(separator + 1).trim());
                         }
                         default -> throw new IllegalArgumentException();
                     }
@@ -231,6 +240,7 @@ public final class Cli {
 
     public int execute(Options options) throws IOException {
         Progress.get().quiet(options.quiet);
+        SessionSettings.init(options.session);
         if (options.menu) return Menu.launch(settings, options);
         if (options.templateExport != null) return new TemplateExporter(settings).execute(options);
         if (options.templateUpload != null) return new TemplateUploader(settings).execute(options);

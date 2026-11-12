@@ -108,6 +108,7 @@ public final class DataRestorer {
         config.setPassword(definition.getPassword());
         if (definition.getDriverClassName() != null) config.setDriverClassName(definition.getDriverClassName());
         config.setMaximumPoolSize(1); config.setMinimumIdle(0); config.setAutoCommit(false);
+        SessionSettings.configure(config, definition.getUrl());
         config.setConnectionTimeout(30_000); config.setInitializationFailTimeout(-1);
         config.setReadOnly(false);
         List<StepResult> results = new ArrayList<>();

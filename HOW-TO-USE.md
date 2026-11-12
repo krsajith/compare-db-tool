@@ -105,6 +105,7 @@ Exit codes: `0` success / equal / all `<expect>` met · `1` differences or an `<
 | `--parallel N` | Query workers (default: number of distinct datasources; one active query per datasource). |
 | `--partitions N`, `--max-partition-mb N` | Comparison memory tuning (defaults 64, 256). Raise `--partitions` if a memory-budget error appears. |
 | `--out DIR` | Output base folder (default `out`). |
+| `--session NAME=VALUE` | PostgreSQL session setting for every connection of this run (reads, restore, load, change), e.g. `--session work_mem=256MB --session maintenance_work_mem=2GB`. Adds to or overrides `config/session.properties`. See "PostgreSQL session settings" below. |
 | `--target-env NAME` | The datasource that `db="target"` in a rule refers to for this run, so one rule file serves dev and UAT (`--target-env postgres-uat`). The environment variable `TARGET_ENV` does the same; the flag wins. NAME must be a configured datasource, and the console prints which one `target` means. A production datasource stays production (needs `--allow-prod`). Without it, a rule that uses `db="target"` stops with a message. |
 | `--allow-prod` | Allow datasources marked `prod=true` or with `prod` in the name. **Only when the user says so.** |
 | `--restore FILE` | Restore rows from a backup table using a JSON rule. **Preview by default.** |
@@ -121,6 +122,16 @@ Exit codes: `0` success / equal / all `<expect>` met · `1` differences or an `<
 | `--help` | Print the flags. |
 
 Logging: files in `logs/`; console shows progress messages, warnings and errors. More detail: `--logging.console.level=DEBUG`.
+
+**PostgreSQL session settings.** `config/session.properties` (optional, one `name=value` per line) holds settings for every PostgreSQL connection the tool opens; `--session name=value` adds to or overrides them for one run. Any server setting can be given, nothing is filtered: memory for big sorts and index builds (`work_mem`, `maintenance_work_mem`, `max_parallel_maintenance_workers`), `synchronous_commit=off` for a large commit, `statement_timeout=0`, `lock_timeout=30s`. They are passed to the driver as `-c name=value` (JDBC `options`), hold for the whole connection, and the console prints them once per run. MySQL datasources are not affected. Example `config/session.properties`:
+```properties
+work_mem=256MB
+maintenance_work_mem=2GB
+max_parallel_maintenance_workers=4
+synchronous_commit=off
+statement_timeout=0
+lock_timeout=30s
+```
 
 ---
 
@@ -535,6 +546,7 @@ Use it for a data fix that is an UPDATE, a DELETE or one free statement. It does
 - `action` is `update` (needs `set`: column to SQL expression), `delete`, or `sql` (one free statement in `sql`; `table`, `where` and `key` are then optional and name the scope to back up). `where` is required for update and delete. `{{where}}` in a precondition is replaced by the step's `where`.
 - `preconditions` are read-only `SELECT`s that must return the `expect` value. They run inside the transaction, in step order, after the earlier steps ran, and before their own step. A failed precondition rolls everything back and the summary names it.
 - `expect` keys: `targetBefore`, `affected`, `targetAfter` (a `sql` step without scope only has `affected`). `--apply` needs `expect` on every step; the preview prints the real counts to copy.
+- Session settings (global, not per rule): see "PostgreSQL session settings" in section 3.
 - Preview first: `.\compare.ps1 --change rules\fix-b-price.json` runs everything in a transaction and rolls it back (`CHANGE.md`, zip). Then `--apply`: it runs the steps again, shows the step table, and asks you to type the confirmation before it commits.
 - **Confirmation.** A normal change needs `APPLY` typed. A **risky** change needs a longer generated phrase such as `APPLY 2 DELETE postgres-uat opera.vol_id_table`, after the tool lists why and prints the statements. Risky means: a `;`, `--` or `/*` in a statement, a DDL word (drop, alter, create, truncate ...) in `where`, `set` or `sql`, an always-true `where`, a `sql` step that is not a plain UPDATE/DELETE/INSERT or has no scope (no backup, no automatic undo), or a production datasource (always). A rule can set `"confirm": "TEXT"` (rule level, or per step) and then that text must be typed instead. Scripts pass `--confirm "<the phrase>"`; `--yes` only works for a normal change.
 - Nothing is blocked by a word list; the confirmation is the guard. Everything still needs the scope, the backup and the counts.

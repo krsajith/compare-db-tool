@@ -85,6 +85,7 @@ public final class QueryRunner implements AutoCloseable {
             config.setMinimumIdle(0);
             config.setConnectionTimeout(connectTimeoutMs);
             config.setInitializationFailTimeout(-1);
+            SessionSettings.configure(config, definition.getUrl());
             if (!tempTables && definition.getUrl().startsWith("jdbc:postgresql:"))
                 config.setConnectionInitSql("SET default_transaction_read_only = on");
             else if (!tempTables && definition.getUrl().startsWith("jdbc:mysql:"))

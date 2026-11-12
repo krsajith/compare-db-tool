@@ -400,4 +400,20 @@ class DataChangerTests {
         assertThat(query("SELECT mode || '|' || action || '|' || status || '|' || rows_affected FROM parity_work.cdt_changelog")).isEqualTo("RESTORE|RESTORE|APPLIED|1;");
         assertThat(query("SELECT backup_table FROM parity_work.cdt_changelog")).startsWith("parity_work.restore_r1_p_");
     }
+
+    @Test void longStepIdsGiveDistinctBackupNamesWithin63Characters() {
+        DataChanger.Rule rule = new DataChanger.Rule();
+        rule.name = "typefix-20261111-reload-uat";
+        String stamp = "20261112064919";
+        java.util.Set<String> names = new java.util.HashSet<>();
+        for (String id : List.of("from-deal-ticket-premium", "from-deal-ticket-original-lots", "from-deal-ticket-spcl-rate",
+                                 "from-deal-ticket-lots-to-be-netted", "from-deal-ticket-broker-lots")) {
+            DataChanger.Step s = new DataChanger.Step();
+            s.id = id;
+            String name = DataChanger.backupName(rule, s, stamp);
+            assertThat(name.substring(name.indexOf('.') + 1)).hasSizeLessThanOrEqualTo(63);
+            names.add(name);
+        }
+        assertThat(names).hasSize(5);
+    }
 }

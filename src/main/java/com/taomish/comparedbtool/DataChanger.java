@@ -201,6 +201,7 @@ public final class DataChanger {
         config.setPassword(definition.getPassword());
         if (definition.getDriverClassName() != null) config.setDriverClassName(definition.getDriverClassName());
         config.setMaximumPoolSize(2); config.setMinimumIdle(0); config.setAutoCommit(false);
+        SessionSettings.configure(config, definition.getUrl());
         config.setConnectionTimeout(30_000); config.setInitializationFailTimeout(-1);
         config.setReadOnly(false);
         List<StepResult> results = new ArrayList<>();
@@ -353,7 +354,8 @@ public final class DataChanger {
     static String backupName(Rule rule, Step s, String stamp) {
         String middle = (DataRestorer.safe(rule.name) + "_" + s.id).replaceAll("[^A-Za-z0-9_]", "_");
         int room = 63 - "change_".length() - 1 - stamp.length();
-        if (middle.length() > room) middle = middle.substring(0, room);
+        // a cut name ends with a hash of the full name, so steps whose ids only differ at the end stay unique
+        if (middle.length() > room) middle = middle.substring(0, room - 9) + "_" + Integer.toHexString(middle.hashCode() | 0x10000000);
         return rule.backupSchema + ".change_" + middle + "_" + stamp;
     }
 
