@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Typefix 20261111 verify, read-only: after typefix-20261111-reload-dev.json no deal value is still the legacy value cut to
+     4 decimals, the columns are double precision, and the example trades carry the legacy price (5.02145 legacy, 5.0215 cut). -->
+<rules name="typefix-20261111-verify-dev">
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+  </parameters>
+
+  <sql id="types" db="postgres-dev" export="full"><![CDATA[
+    SELECT c.relname AS table_name, a.attname AS column_name, format_type(a.atttypid, a.atttypmod) AS column_type
+    FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid
+    WHERE c.relnamespace = 'opera'::regnamespace
+      AND c.relname IN ('cloned_deal_ticket_table', 'deal_ticket_table', 'option_expiry_deals_table')
+      AND a.attname IN ('premium', 'premium_1', 'original_lots', 'active_lots', 'lots_to_be_netted', 'netted_lots',
+                        'broker_lots', 'price_1', 'price_2', 'spcl_rate')
+      AND NOT a.attisdropped AND a.atttypid = 'numeric'::regtype
+  ]]></sql>
+
+  <sql id="still-cut" db="postgres-dev" export="full"><![CDATA[
+    SELECT v.col, count(*) AS values_still_cut
+    FROM opera.cloned_deal_ticket_table c
+    JOIN opera.typefix_20261111_src s ON s.business_unit = c.business_unit AND s.trade_id = c.trade_id
+    CROSS JOIN LATERAL (VALUES
+        ('original_lots', c.original_lots, s.original_lots), ('premium', c.premium, s.premium),
+        ('spcl_rate', c.spcl_rate, s.spcl_rate), ('active_lots', c.active_lots, s.active_lots),
+        ('netted_lots', c.netted_lots, s.netted_lots), ('lots_to_be_netted', c.lots_to_be_netted, s.lots_to_be_netted)) v(col, now_value, legacy)
+    WHERE c.tenant_id = :tenant AND v.legacy IS NOT NULL AND v.now_value IS NOT NULL
+      AND v.legacy <> v.now_value AND round(v.legacy::numeric, 4)::double precision = v.now_value
+    GROUP BY v.col
+  ]]></sql>
+
+  <sql id="restored" db="postgres-dev" export="full"><![CDATA[
+    SELECT s.business_unit, count(*) AS staged_trades,
+           count(*) FILTER (WHERE c.premium = s.premium) AS premium_equal_legacy,
+           count(*) FILTER (WHERE c.original_lots = s.original_lots) AS original_lots_equal_legacy
+    FROM opera.typefix_20261111_src s
+    JOIN opera.cloned_deal_ticket_table c
+      ON c.tenant_id = :tenant AND c.business_unit = s.business_unit AND c.trade_id = s.trade_id AND c.is_latest_version = 1
+    GROUP BY s.business_unit ORDER BY 1
+  ]]></sql>
+
+  <sql id="examples" db="postgres-dev" export="full"><![CDATA[
+    SELECT c.trade_id, c.premium AS new_premium, s.premium AS legacy_premium
+    FROM opera.cloned_deal_ticket_table c
+    JOIN opera.typefix_20261111_src s ON s.business_unit = c.business_unit AND s.trade_id = c.trade_id
+    WHERE c.tenant_id = :tenant AND c.is_latest_version = 1
+      AND c.trade_id IN ('TR-FY-2026-292041', 'TR-FY-2026-288367', 'TR-FY-2026-244400')
+    ORDER BY 1
+  ]]></sql>
+
+  <expect ref="types" rows="0" reason="no deal lot or price column is numeric any more (table rebuild ran)"/>
+  <expect ref="still-cut" rows="0" reason="no value is still the legacy value cut to 4 decimals"/>
+  <compress id="bundle" file="typefix-20261111-verify-dev.zip">
+    <include ref="types"/><include ref="still-cut"/><include ref="restored"/><include ref="examples"/>
+  </compress>
+</rules>

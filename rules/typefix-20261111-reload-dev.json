@@ -1,0 +1,128 @@
+{
+  "name": "typefix-20261111-reload-dev",
+  "db": "postgres-dev",
+  "backupSchema": "parity_work",
+  "ticket": "typefix-20261111",
+  "description": "Typefix 20261111, step 2 of 2: puts back the decimals numeric(18,4) cut on opera.cloned_deal_ticket_table, from the legacy values staged by typefix-20261111-stage-mysql-dev.json. One step per column. A value is changed ONLY when it is exactly the legacy value cut to 4 decimals (round(legacy, 4) = current) and the legacy value has more decimals, so values changed in the new system after the migration are left alone. targetAfter 0 = no value left that is still the cut. Before step 1, create the staging table once (DBeaver): CREATE TABLE opera.typefix_20261111_src (business_unit text NOT NULL, trade_id text NOT NULL, original_lots double precision, premium double precision, spcl_rate double precision, active_lots double precision, netted_lots double precision, lots_to_be_netted double precision, loaded_at timestamptz DEFAULT now(), PRIMARY KEY (business_unit, trade_id)). Afterwards: refresh the client statement cache (and cash balance / RRR runs to compare).",
+  "steps": [
+    {
+      "id": "restore-original-lots",
+      "action": "update",
+      "table": "opera.cloned_deal_ticket_table",
+      "where": "tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND original_lots IS NOT NULL AND EXISTS (SELECT 1 FROM opera.typefix_20261111_src s WHERE s.business_unit = cloned_deal_ticket_table.business_unit AND s.trade_id = cloned_deal_ticket_table.trade_id AND s.original_lots IS NOT NULL AND s.original_lots <> cloned_deal_ticket_table.original_lots AND round(s.original_lots::numeric, 4)::double precision = cloned_deal_ticket_table.original_lots)",
+      "key": [
+        "uuid"
+      ],
+      "set": {
+        "original_lots": "(SELECT s.original_lots FROM opera.typefix_20261111_src s WHERE s.business_unit = cloned_deal_ticket_table.business_unit AND s.trade_id = cloned_deal_ticket_table.trade_id)"
+      },
+      "expect": {
+        "targetBefore": ">=0",
+        "affected": ">=0",
+        "targetAfter": "0"
+      },
+      "preconditions": [
+        {
+          "sql": "SELECT format_type(atttypid, atttypmod) FROM pg_attribute WHERE attrelid = 'opera.cloned_deal_ticket_table'::regclass AND attname = 'premium'",
+          "expect": "double precision",
+          "reason": "the table rebuild (typefix 20261111) ran, so the columns can hold the full value"
+        },
+        {
+          "sql": "SELECT CASE WHEN count(*) > 0 THEN 1 ELSE 0 END FROM opera.typefix_20261111_src",
+          "expect": "1",
+          "reason": "step 1 (typefix-20261111-stage-mysql-dev.json) staged the legacy values"
+        }
+      ]
+    },
+    {
+      "id": "restore-premium",
+      "action": "update",
+      "table": "opera.cloned_deal_ticket_table",
+      "where": "tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND premium IS NOT NULL AND EXISTS (SELECT 1 FROM opera.typefix_20261111_src s WHERE s.business_unit = cloned_deal_ticket_table.business_unit AND s.trade_id = cloned_deal_ticket_table.trade_id AND s.premium IS NOT NULL AND s.premium <> cloned_deal_ticket_table.premium AND round(s.premium::numeric, 4)::double precision = cloned_deal_ticket_table.premium)",
+      "key": [
+        "uuid"
+      ],
+      "set": {
+        "premium": "(SELECT s.premium FROM opera.typefix_20261111_src s WHERE s.business_unit = cloned_deal_ticket_table.business_unit AND s.trade_id = cloned_deal_ticket_table.trade_id)"
+      },
+      "expect": {
+        "targetBefore": ">=0",
+        "affected": ">=0",
+        "targetAfter": "0"
+      }
+    },
+    {
+      "id": "restore-spcl-rate",
+      "action": "update",
+      "table": "opera.cloned_deal_ticket_table",
+      "where": "tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND spcl_rate IS NOT NULL AND EXISTS (SELECT 1 FROM opera.typefix_20261111_src s WHERE s.business_unit = cloned_deal_ticket_table.business_unit AND s.trade_id = cloned_deal_ticket_table.trade_id AND s.spcl_rate IS NOT NULL AND s.spcl_rate <> cloned_deal_ticket_table.spcl_rate AND round(s.spcl_rate::numeric, 4)::double precision = cloned_deal_ticket_table.spcl_rate)",
+      "key": [
+        "uuid"
+      ],
+      "set": {
+        "spcl_rate": "(SELECT s.spcl_rate FROM opera.typefix_20261111_src s WHERE s.business_unit = cloned_deal_ticket_table.business_unit AND s.trade_id = cloned_deal_ticket_table.trade_id)"
+      },
+      "expect": {
+        "targetBefore": ">=0",
+        "affected": ">=0",
+        "targetAfter": "0"
+      }
+    },
+    {
+      "id": "restore-active-lots",
+      "action": "update",
+      "table": "opera.cloned_deal_ticket_table",
+      "where": "tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND active_lots IS NOT NULL AND EXISTS (SELECT 1 FROM opera.typefix_20261111_src s WHERE s.business_unit = cloned_deal_ticket_table.business_unit AND s.trade_id = cloned_deal_ticket_table.trade_id AND s.active_lots IS NOT NULL AND s.active_lots <> cloned_deal_ticket_table.active_lots AND round(s.active_lots::numeric, 4)::double precision = cloned_deal_ticket_table.active_lots)",
+      "key": [
+        "uuid"
+      ],
+      "set": {
+        "active_lots": "(SELECT s.active_lots FROM opera.typefix_20261111_src s WHERE s.business_unit = cloned_deal_ticket_table.business_unit AND s.trade_id = cloned_deal_ticket_table.trade_id)"
+      },
+      "expect": {
+        "targetBefore": ">=0",
+        "affected": ">=0",
+        "targetAfter": "0"
+      }
+    },
+    {
+      "id": "restore-netted-lots",
+      "action": "update",
+      "table": "opera.cloned_deal_ticket_table",
+      "where": "tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND netted_lots IS NOT NULL AND EXISTS (SELECT 1 FROM opera.typefix_20261111_src s WHERE s.business_unit = cloned_deal_ticket_table.business_unit AND s.trade_id = cloned_deal_ticket_table.trade_id AND s.netted_lots IS NOT NULL AND s.netted_lots <> cloned_deal_ticket_table.netted_lots AND round(s.netted_lots::numeric, 4)::double precision = cloned_deal_ticket_table.netted_lots)",
+      "key": [
+        "uuid"
+      ],
+      "set": {
+        "netted_lots": "(SELECT s.netted_lots FROM opera.typefix_20261111_src s WHERE s.business_unit = cloned_deal_ticket_table.business_unit AND s.trade_id = cloned_deal_ticket_table.trade_id)"
+      },
+      "expect": {
+        "targetBefore": ">=0",
+        "affected": ">=0",
+        "targetAfter": "0"
+      }
+    },
+    {
+      "id": "restore-lots-to-be-netted",
+      "action": "update",
+      "table": "opera.cloned_deal_ticket_table",
+      "where": "tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND lots_to_be_netted IS NOT NULL AND EXISTS (SELECT 1 FROM opera.typefix_20261111_src s WHERE s.business_unit = cloned_deal_ticket_table.business_unit AND s.trade_id = cloned_deal_ticket_table.trade_id AND s.lots_to_be_netted IS NOT NULL AND s.lots_to_be_netted <> cloned_deal_ticket_table.lots_to_be_netted AND round(s.lots_to_be_netted::numeric, 4)::double precision = cloned_deal_ticket_table.lots_to_be_netted)",
+      "key": [
+        "uuid"
+      ],
+      "set": {
+        "lots_to_be_netted": "(SELECT s.lots_to_be_netted FROM opera.typefix_20261111_src s WHERE s.business_unit = cloned_deal_ticket_table.business_unit AND s.trade_id = cloned_deal_ticket_table.trade_id)"
+      },
+      "expect": {
+        "targetBefore": ">=0",
+        "affected": ">=0",
+        "targetAfter": "0"
+      }
+    }
+  ],
+  "verify": [
+    {
+      "rule": "typefix-20261111-verify-dev.xml"
+    }
+  ]
+}
