@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- UNF cash page: PREMIUM PAID/RECEIVED on 05-Nov-2026 is -100,707.11 in legacy MySQL and -1,654,129.50 in the new cash table (cs-20,
+     the only differing row of 551). Difference 1,553,422.39. Which deal accounts for it? Read-only, 12-Nov-2026.
+     Compares UNF deals with a trade date or a netting date from 1-Nov-2026 on, both systems, and lists the new cash table timeline of
+     UNF and of ORM (ORM matches) so the day the amount appears is visible. -->
+<rules name="cs-21-unf-premium-deals-cfs">
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+    <param name="fromDate" type="date" value="2026-11-01"/>
+  </parameters>
+  <sql id="l-deals" db="mysql-oprdb02" timeout="300" export="full"><![CDATA[
+    SELECT d.trade_id, d.contract_number, d.instrument, d.subportfolio, d.transaction_date, d.premium, d.original_lots,
+           d.netting_status, d.netting_date
+    FROM dbsystemuat.cloned_deal_ticket_table_cfs d
+    WHERE d.contract_number LIKE 'UNF%' AND (d.transaction_date >= :fromDate OR d.netting_date >= :fromDate)
+  ]]></sql>
+  <sql id="n-deals" db="postgres-uat" timeout="300" export="full"><![CDATA[
+    SELECT d.trade_id, d.contract_number, d.instrument, d.subportfolio, d.transaction_date, d.premium, d.original_lots,
+           d.netting_status, d.netting_date
+    FROM opera.cloned_deal_ticket_table d
+    WHERE d.tenant_id = :tenant AND d.business_unit = 'CFS' AND d.is_latest_version = 1
+      AND d.contract_number LIKE 'UNF%' AND (d.transaction_date >= :fromDate OR d.netting_date >= :fromDate)
+  ]]></sql>
+  <compare id="unf-deals" source="l-deals" target="n-deals" export="full">
+    <key columns="trade_id"/>
+    <column name="contract_number"/>
+    <column name="instrument"/>
+    <column name="subportfolio"/>
+    <column name="transaction_date"/>
+    <column name="premium" absTol="0.000001"/>
+    <column name="original_lots" absTol="0.000001"/>
+    <column name="netting_status"/>
+    <column name="netting_date"/>
+    <breakdown columns="contract_number" top="100"/>
+  </compare>
+  <sql id="n-cash-timeline" db="postgres-uat" timeout="120" export="full"><![CDATA[
+    SELECT c.client_code, c.currency, c.cob_date, c.opening_balance, c.expired_or_liquidated_cash, c.premium_paid_or_recd,
+           c.commission, c.transfers_out, c.transfers_in, c.interest_charges, c.closing_balance,
+           c.created_by, c.created_timestamp, c.updated_by, c.updated_timestamp
+    FROM opera.client_cash_account_balance_table c
+    WHERE c.tenant_id = :tenant AND c.business_unit = 'CFS' AND c.client_code IN ('UNF', 'ORM')
+      AND c.cob_date BETWEEN DATE '2026-11-01' AND DATE '2026-11-12'
+    ORDER BY c.client_code, c.cob_date, c.currency
+  ]]></sql>
+  <sql id="l-cash-timeline" db="mysql-oprdb02" timeout="120" export="full"><![CDATA[
+    SELECT c.client_code, c.currency, c.cob_date, c.opening_balance, c.expired_or_liquidated_cash, c.premium_paid_or_recd,
+           c.commission, c.transfers_out, c.transfers_in, c.interest_charges, c.closing_balance
+    FROM dbsystemuat.client_cash_account_balance_table_cfs c
+    WHERE c.client_code IN ('UNF', 'ORM') AND c.cob_date BETWEEN '2026-11-01' AND '2026-11-12'
+    ORDER BY c.client_code, c.cob_date, c.currency
+  ]]></sql>
+  <expect ref="unf-deals" matched="&gt;=1" reason="UNF deals compared"/>
+  <expect ref="n-cash-timeline" rows="&gt;=1" reason="new cash rows of UNF and ORM"/>
+  <compress id="bundle" file="cs-21-unf-premium-deals.zip">
+    <include ref="unf-deals"/><include ref="n-cash-timeline"/><include ref="l-cash-timeline"/>
+  </compress>
+</rules>
