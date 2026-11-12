@@ -1,0 +1,55 @@
+{
+  "name": "cs-fix-spot-id-case-dev",
+  "db": "postgres-dev",
+  "backupSchema": "parity_work",
+  "ticket": "client-statement-06nov",
+  "description": "Post-migration fixes 2 and 3 (knowledge-base/post-migration-fixes.md): set the spot ids in currency_spot_mapping_table.spot and product_master_table.curr_mult_factor to the exact spelling used in underlying_settle_value_table ('SPOT BGN' -> 'Spot BGN'). The reload brought the MySQL spelling back; PostgreSQL matches case exactly, so the client statement refresh found no FX rate and printed BRL and other non-USD amounts as USD (ACM CRD 06-Nov). Proven by cs-05-root-cause-check-cfs: 8 mapping spots and 18 product spellings (36 products). After apply: refresh the client statement cache for 06-Nov and regenerate. DEV copy: prices of the CFS valuation date (read from valuation_date_table); counts not fixed in advance, every step must end with nothing left to fix (targetAfter 0).",
+  "steps": [
+    {
+      "id": "spot-mapping",
+      "action": "update",
+      "table": "opera.currency_spot_mapping_table",
+      "where": "tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND EXISTS (SELECT 1 FROM opera.underlying_settle_value_table u WHERE u.tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND u.value_date = (SELECT v.value_date FROM opera.valuation_date_table v WHERE v.tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND v.business_unit = 'CFS') AND lower(u.underlying_id) = lower(currency_spot_mapping_table.spot) AND u.underlying_id <> currency_spot_mapping_table.spot)",
+      "key": [
+        "uuid"
+      ],
+      "set": {
+        "spot": "(SELECT min(u.underlying_id) FROM opera.underlying_settle_value_table u WHERE u.tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND u.value_date = (SELECT v.value_date FROM opera.valuation_date_table v WHERE v.tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND v.business_unit = 'CFS') AND lower(u.underlying_id) = lower(currency_spot_mapping_table.spot))"
+      },
+      "preconditions": [
+        {
+          "sql": "SELECT count(*) FROM (SELECT lower(underlying_id) FROM opera.underlying_settle_value_table WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND value_date = (SELECT v.value_date FROM opera.valuation_date_table v WHERE v.tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND v.business_unit = 'CFS') GROUP BY lower(underlying_id) HAVING count(DISTINCT underlying_id) > 1) x",
+          "expect": "0",
+          "reason": "the price table has one spelling per spot id, so the target spelling is unambiguous"
+        }
+      ],
+      "expect": {
+        "targetBefore": ">=0",
+        "affected": ">=0",
+        "targetAfter": "0"
+      }
+    },
+    {
+      "id": "product-curr-mult-factor",
+      "action": "update",
+      "table": "opera.product_master_table",
+      "where": "curr_mult_factor IS NOT NULL AND EXISTS (SELECT 1 FROM opera.underlying_settle_value_table u WHERE u.tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND u.value_date = (SELECT v.value_date FROM opera.valuation_date_table v WHERE v.tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND v.business_unit = 'CFS') AND lower(u.underlying_id) = lower(product_master_table.curr_mult_factor) AND u.underlying_id <> product_master_table.curr_mult_factor)",
+      "key": [
+        "uuid"
+      ],
+      "set": {
+        "curr_mult_factor": "(SELECT min(u.underlying_id) FROM opera.underlying_settle_value_table u WHERE u.tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND u.value_date = (SELECT v.value_date FROM opera.valuation_date_table v WHERE v.tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND v.business_unit = 'CFS') AND lower(u.underlying_id) = lower(product_master_table.curr_mult_factor))"
+      },
+      "expect": {
+        "targetBefore": ">=0",
+        "affected": ">=0",
+        "targetAfter": "0"
+      }
+    }
+  ],
+  "verify": [
+    {
+      "rule": "cs-06-verify-spot-case-dev.xml"
+    }
+  ]
+}

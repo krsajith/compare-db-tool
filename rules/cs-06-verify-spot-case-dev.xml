@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Verify for cs-fix-spot-id-case-uat.json: no spot id in the mapping or product tables differs from the price table only by letter case. -->
+<rules name="cs-06-verify-spot-case-dev">
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+    <param name="valueDate" type="date" value="2026-11-06"/>
+  </parameters>
+  <sql id="spot-mapping-case" db="postgres-dev" export="full"><![CDATA[
+    SELECT DISTINCT m.currency, m.spot AS mapping_spot, u.underlying_id AS price_spot
+    FROM opera.currency_spot_mapping_table m
+    JOIN (SELECT DISTINCT underlying_id FROM opera.underlying_settle_value_table WHERE tenant_id = :tenant AND value_date = (SELECT v.value_date FROM opera.valuation_date_table v WHERE v.tenant_id = :tenant AND v.business_unit = 'CFS')) u
+      ON lower(u.underlying_id) = lower(m.spot) AND u.underlying_id <> m.spot
+    WHERE m.tenant_id = :tenant
+  ]]></sql>
+  <sql id="product-curr-case" db="postgres-dev" export="full"><![CDATA[
+    SELECT p.curr_mult_factor AS product_value, u.underlying_id AS price_spot, count(*) AS products
+    FROM opera.product_master_table p
+    JOIN (SELECT DISTINCT underlying_id FROM opera.underlying_settle_value_table WHERE tenant_id = :tenant AND value_date = (SELECT v.value_date FROM opera.valuation_date_table v WHERE v.tenant_id = :tenant AND v.business_unit = 'CFS')) u
+      ON lower(u.underlying_id) = lower(p.curr_mult_factor) AND u.underlying_id <> p.curr_mult_factor
+    GROUP BY 1, 2
+  ]]></sql>
+  <sql id="crd-spot" db="postgres-dev" export="full"><![CDATA[
+    SELECT p.invenio_product_code, p.curr_mult_factor,
+           (SELECT max(u.settle_value) FROM opera.underlying_settle_value_table u
+             WHERE u.tenant_id = :tenant AND u.value_date = (SELECT v.value_date FROM opera.valuation_date_table v WHERE v.tenant_id = :tenant AND v.business_unit = 'CFS') AND u.underlying_id = p.curr_mult_factor) AS spot_exact
+    FROM opera.product_master_table p WHERE p.invenio_product_code = 'CM CRD'
+  ]]></sql>
+  <expect ref="spot-mapping-case" rows="0" reason="mapping spot ids match the price table exactly"/>
+  <expect ref="product-curr-case" rows="0" reason="product curr_mult_factor matches the price table exactly"/>
+  <expect ref="crd-spot" column="spot_exact" min="1" reason="CM CRD finds its BRL spot (about 5.46)"/>
+  <compress id="bundle" file="cs-06-verify-spot-case-dev.zip"><include ref="spot-mapping-case"/><include ref="product-curr-case"/><include ref="crd-spot"/></compress>
+</rules>
