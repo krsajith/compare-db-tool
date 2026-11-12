@@ -79,6 +79,11 @@ class SqlAssessmentTests {
                     definition.setUrl("jdbc:h2:mem:offline-validation-only");
                     settings.getDatasources().putIfAbsent(q.db, definition);
                 }
+                for (var x : rules.explains) {
+                    var definition = new DatasourceSettings.Definition();
+                    definition.setUrl("jdbc:h2:mem:offline-validation-only");
+                    settings.getDatasources().putIfAbsent(x.db, definition);
+                }
                 assertDoesNotThrow(() -> RuleLoader.validate(rules, settings), path.toString());
                 for (var q : rules.queries) {
                     var assessment = SqlGuard.assess(q.text);
