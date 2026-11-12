@@ -86,6 +86,8 @@ public final class QueryRunner implements AutoCloseable {
             config.setConnectionTimeout(connectTimeoutMs);
             config.setInitializationFailTimeout(-1);
             SessionSettings.configure(config, definition.getUrl());
+            // a statement that runs for hours sends nothing over the connection: keepalive stops a VPN or firewall from dropping it as idle
+            if (definition.getUrl().startsWith("jdbc:postgresql:")) config.addDataSourceProperty("tcpKeepAlive", "true");
             if (!tempTables && definition.getUrl().startsWith("jdbc:postgresql:"))
                 config.setConnectionInitSql("SET default_transaction_read_only = on");
             else if (!tempTables && definition.getUrl().startsWith("jdbc:mysql:"))

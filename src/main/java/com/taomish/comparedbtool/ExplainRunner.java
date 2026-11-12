@@ -60,7 +60,7 @@ final class ExplainRunner {
     static void validate(Rules.Explain explain, DatasourceSettings settings, boolean checkQueries, Set<String> ids, Set<String> queryIds) {
         RuleLoader.id(explain.id, ids);
         if (explain.db == null || explain.db.isBlank()) throw new ToolException("<explain> " + explain.id + " needs a datasource name (db=\"...\").");
-        if (explain.timeout < 1 || explain.timeout > 3600) throw new ToolException("<explain> " + explain.id + ": timeout must be between 1 and 3600 seconds.");
+        if (explain.timeout < 1 || explain.timeout > 86400) throw new ToolException("<explain> " + explain.id + ": timeout must be between 1 and 86400 seconds (24 hours).");
         if (explain.text == null || explain.text.isBlank()) throw new ToolException("<explain> " + explain.id + " needs the SELECT or WITH statement as its text.");
         SqlGuard.validate(explain.text);
         // inputs from earlier queries: aliases declared, queries exist; the values arrive when it runs (after all queries)
