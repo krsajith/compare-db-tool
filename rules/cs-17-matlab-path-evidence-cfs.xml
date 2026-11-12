@@ -1,0 +1,112 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- One run, read-only, 12-Nov-2026. Evidence for the code comparison legacy MATLAB vs new (analysis/HANDOFF_2026-11-12_client-statement-code-comparison.md).
+     Legacy side: what fills and changes the CFS statement cache on MySQL (procedures, events, triggers, backups of the cache with
+     their times), the real column types, and the booking rows. New side: every CFS swap leg of 06-Nov with the fields the MATLAB
+     reads (instrument, subportfolio, product, security, booking row of the suffix-stripped contract, contract prefix that MATLAB
+     uses as client at generate_client_statements.m :149-150), which function versions are installed on UAT, and when the cache
+     was written. Nothing is changed. -->
+<rules name="cs-17-matlab-path-evidence-cfs">
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+    <param name="valueDate" type="date" value="2026-11-06"/>
+  </parameters>
+
+  <sql id="legacy-cache-tables" db="mysql-oprdb02" timeout="120" export="full"><![CDATA[
+    SELECT table_schema, table_name, table_type, table_rows, create_time, update_time
+    FROM information_schema.tables
+    WHERE table_name LIKE '%client_statement%' OR table_name LIKE '%cache_table%'
+    ORDER BY table_schema, table_name
+  ]]></sql>
+  <sql id="legacy-routines" db="mysql-oprdb02" timeout="120" export="full"><![CDATA[
+    SELECT routine_schema, routine_name, routine_type, definer, created, last_altered, routine_definition
+    FROM information_schema.routines
+    WHERE routine_name LIKE '%client_statement%' OR routine_name LIKE '%cache%'
+       OR routine_definition LIKE '%client_statement_report_view_cache%'
+    ORDER BY routine_schema, routine_name
+  ]]></sql>
+  <sql id="legacy-events" db="mysql-oprdb02" timeout="120" export="full"><![CDATA[
+    SELECT event_schema, event_name, definer, status, event_type, execute_at, interval_value, interval_field, starts, ends, last_executed, event_definition
+    FROM information_schema.events
+    ORDER BY event_schema, event_name
+  ]]></sql>
+  <sql id="legacy-triggers" db="mysql-oprdb02" timeout="120" export="full"><![CDATA[
+    SELECT trigger_schema, trigger_name, event_object_table, action_timing, event_manipulation, action_statement
+    FROM information_schema.triggers
+    WHERE event_object_table LIKE '%client_statement%' OR action_statement LIKE '%client_statement%'
+       OR action_statement LIKE '%cache_table%'
+    ORDER BY trigger_schema, trigger_name
+  ]]></sql>
+  <sql id="legacy-cache-columns" db="mysql-oprdb02" timeout="120" export="full"><![CDATA[
+    SELECT table_name, ordinal_position, column_name, column_type, numeric_precision, numeric_scale
+    FROM information_schema.columns
+    WHERE table_schema = 'dbsystemuat'
+      AND table_name IN ('helper_client_statement_report_view_cache_table_cfs', 'helper_client_statement_report_view_cfs')
+    ORDER BY table_name, ordinal_position
+  ]]></sql>
+  <sql id="legacy-cache-summary" db="mysql-oprdb02" timeout="120" export="full"><![CDATA[
+    SELECT value_date, count(*) AS rows_in_cache, count(DISTINCT client_code) AS clients, count(DISTINCT counterparty_parent) AS counterparties,
+           sum(CASE WHEN derivative_type = 'future' THEN 1 ELSE 0 END) AS future_rows
+    FROM dbsystemuat.helper_client_statement_report_view_cache_table_cfs
+    GROUP BY value_date
+  ]]></sql>
+  <sql id="legacy-booking-clients" db="mysql-oprdb02" timeout="300" export="full"><![CDATA[
+    SELECT * FROM dbsystemuat.client_statement_booking_order_information_table_cfs
+    WHERE contract_number LIKE 'BFA_%' OR contract_number LIKE 'FMP_%' OR contract_number LIKE 'LIB_%'
+       OR contract_number LIKE 'AMC_%' OR contract_number LIKE 'NFO_%'
+  ]]></sql>
+
+  <sql id="new-legs-all" db="postgres-uat" timeout="600" export="full"><![CDATA[
+    SELECT c.client_code, split_part(c.contract_number, '_', 1) AS contract_prefix, c.contract_number, c.trade_id,
+           d.security_id, d.trade_source, c.instrument, c.product_code, c.subportfolio, c.derivative_type, c.currency,
+           c.transaction_date, c.maturity_date, c.contract_month, c.future_expiry, c.counterparty_parent,
+           c.traded_price, c.active_lots, c.settle_price, c.future_price, c.mult_factor, c.nc_factor, c.fx_nc_factor,
+           c.mtm_nc, c.mtm_usd, c.netting_status,
+           b.contract_number AS booking_contract, b.trade_date AS booking_trade_date, b.future_expiry_date AS booking_future_expiry,
+           b.sub_account AS booking_sub_account, b.structure_name AS booking_structure, b.traded_price AS booking_traded_price,
+           b.client_code AS booking_client_code
+    FROM opera.helper_client_statement_report_view_cache_table c
+    LEFT JOIN opera.cloned_deal_ticket_table d
+      ON d.tenant_id = c.tenant_id AND d.business_unit = c.business_unit AND d.trade_id = c.trade_id AND d.is_latest_version = 1
+    LEFT JOIN (SELECT DISTINCT ON (lower(contract_number)) *
+               FROM opera.client_statement_booking_order_information_table
+               WHERE tenant_id = :tenant AND business_unit = 'CFS'
+               ORDER BY lower(contract_number), trade_date) b
+      ON lower(b.contract_number) = lower(opera.fn_statement_swap_booking_contract_v2(c.contract_number))
+    WHERE c.tenant_id = :tenant AND c.business_unit = 'CFS' AND c.value_date = :valueDate AND c.derivative_type = 'future'
+    ORDER BY c.client_code, c.contract_number, c.trade_id
+  ]]></sql>
+  <sql id="new-function-versions" db="postgres-uat" timeout="120" export="full"><![CDATA[
+    SELECT proname, md5(prosrc) AS src_md5, length(prosrc) AS src_length,
+           position('p_rmc OR coalesce(src_sub_account' in prosrc) > 0 AS has_v6_sub_account_only_rule,
+           position('AS v_leg_rounded' in prosrc) > 0 AS has_leg_rounded
+    FROM pg_proc
+    WHERE pronamespace = 'opera'::regnamespace
+      AND (proname LIKE 'fn_statement%' OR proname LIKE 'fn_refresh_client_statement%' OR proname LIKE 'fn_client_statement%')
+    ORDER BY proname
+  ]]></sql>
+  <sql id="new-changesets" db="postgres-uat" timeout="120" export="full"><![CDATA[
+    SELECT id, dateexecuted, filename
+    FROM opera.databasechangelog
+    WHERE id LIKE 'fn_statement_position_summaries%' OR id LIKE 'fn_refresh_client_statement%'
+       OR id LIKE 'fn_client_statement_snapshots%' OR id LIKE 'fn_statement_%'
+    ORDER BY dateexecuted DESC
+  ]]></sql>
+  <sql id="new-cache-times" db="postgres-uat" timeout="120" export="full"><![CDATA[
+    SELECT value_date, count(*) AS rows_in_cache, count(DISTINCT client_code) AS clients,
+           min(created_timestamp) AS first_written, max(updated_timestamp) AS last_updated
+    FROM opera.helper_client_statement_report_view_cache_table
+    WHERE tenant_id = :tenant AND business_unit = 'CFS'
+    GROUP BY value_date
+    ORDER BY value_date DESC
+  ]]></sql>
+
+  <expect ref="legacy-cache-tables" rows=">=1" reason="legacy cache tables exist"/>
+  <expect ref="legacy-cache-columns" rows=">=1" reason="cache columns readable"/>
+  <expect ref="new-legs-all" rows=">=1" reason="CFS swap legs on the value date"/>
+  <expect ref="new-function-versions" rows=">=1" reason="statement functions installed"/>
+  <compress id="bundle" file="cs-17-matlab-path-evidence.zip">
+    <include ref="legacy-cache-tables"/><include ref="legacy-routines"/><include ref="legacy-events"/><include ref="legacy-triggers"/>
+    <include ref="legacy-cache-columns"/><include ref="legacy-cache-summary"/><include ref="legacy-booking-clients"/>
+    <include ref="new-legs-all"/><include ref="new-function-versions"/><include ref="new-changesets"/><include ref="new-cache-times"/>
+  </compress>
+</rules>
