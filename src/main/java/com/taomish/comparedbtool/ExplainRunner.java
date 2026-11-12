@@ -31,8 +31,12 @@ final class ExplainRunner {
         String label() { return type + (relation == null ? "" : " on " + relation) + (index == null ? "" : " using " + index); }
     }
 
+    /** One line a function printed, such as "cash_balance T CFS S4 eligible trades : 120000 rows, 41000 ms". */
+    record Step(String name, long rows, long ms) {}
+
     record Result(String id, boolean analyze, double planningMs, double executionMs, double totalCost, List<Node> nodes, long sharedHit, long sharedRead,
-                  List<Path> files, String headline) {
+                  List<Path> files, String headline, List<String> notices) {
+        List<Step> steps() { return ExplainRunner.steps(notices); }
         List<Node> seqScans() { return nodes.stream().filter(Node::seqScan).toList(); }
         List<Node> slowest() {
             if (!analyze) return List.of();
@@ -49,7 +53,7 @@ final class ExplainRunner {
 
     static Rules.Sql asSql(Rules.Explain explain) {
         Rules.Sql sql = new Rules.Sql();
-        sql.id = explain.id; sql.db = explain.db; sql.timeout = explain.timeout; sql.text = explain.text; sql.uses = explain.uses;
+        sql.id = explain.id; sql.db = explain.db; sql.timeout = explain.timeout; sql.text = explain.text; sql.uses = explain.uses; sql.tempTables = explain.tempTables;
         return sql;
     }
 
@@ -64,7 +68,8 @@ final class ExplainRunner {
         if (checkQueries) {
             var definition = settings.getDatasources().get(explain.db);
             if (definition == null) throw new ToolException("Unknown datasource for <explain> " + explain.id + ": " + explain.db);
-            if (!definition.isReadOnly()) throw new ToolException("Datasource " + explain.db + " must have read-only=true.");
+            if (!explain.tempTables && !definition.isReadOnly()) throw new ToolException("Datasource " + explain.db + " must have read-only=true.");
+            TempTablePolicy.validate(asSql(explain), settings);
         }
     }
 
@@ -72,17 +77,25 @@ final class ExplainRunner {
 
     Result run(Rules.Explain explain, Map<String, Object> parameters, QueryRunner runner, Path directory) throws IOException {
         long start = System.nanoTime();
-        String json = runner.explain(explain, parameters);
+        QueryRunner.Plan plan = runner.explain(explain, parameters);
+        String json = plan.json();
+        List<String> notices = plan.notices();
         Result parsed = parse(explain.id, explain.analyze, json);
         Path folder = directory.resolve(explain.id);
         Files.createDirectories(folder);
-        Path text = folder.resolve("plan.txt"), raw = folder.resolve("plan.json"), summary = folder.resolve("SUMMARY.md");
+        Path text = folder.resolve("plan.txt"), raw = folder.resolve("plan.json"), summary = folder.resolve("SUMMARY.md"), notes = folder.resolve("notices.txt");
         Files.writeString(text, render(parsed));
         Files.writeString(raw, json + System.lineSeparator());
-        Files.writeString(summary, markdown(explain, parsed, (System.nanoTime() - start) / 1_000_000));
-        LOG.info("Explain {}: {}", explain.id, parsed.headline());
-        return new Result(parsed.id, parsed.analyze, parsed.planningMs, parsed.executionMs, parsed.totalCost, parsed.nodes, parsed.sharedHit, parsed.sharedRead,
-            List.of(summary, text, raw), parsed.headline);
+        List<Path> files = new ArrayList<>(List.of(summary, text, raw));
+        if (!notices.isEmpty()) { Files.writeString(notes, String.join(System.lineSeparator(), notices) + System.lineSeparator()); files.add(notes); }
+        List<Step> steps = steps(notices);
+        String headline = parsed.headline + (steps.isEmpty() ? (notices.isEmpty() ? "" : "; the statement printed " + notices.size() + " messages")
+            : "; " + steps.size() + " function steps, slowest: " + steps.stream().max(Comparator.comparingLong(Step::ms)).map(s -> s.name() + " " + s.ms() + " ms").orElse(""));
+        Result r = new Result(parsed.id, parsed.analyze, parsed.planningMs, parsed.executionMs, parsed.totalCost, parsed.nodes, parsed.sharedHit, parsed.sharedRead,
+            files, headline, List.copyOf(notices));
+        Files.writeString(summary, markdown(explain, r, (System.nanoTime() - start) / 1_000_000));
+        LOG.info("Explain {}: {}", explain.id, headline);
+        return r;
     }
 
     // ---------------------------------------------------------------- parsing
@@ -99,8 +112,8 @@ final class ExplainRunner {
         double planning = number(top.get("Planning Time"), 0), execution = number(top.get("Execution Time"), 0);
         double cost = number(plan.get("Total Cost"), 0);
         long hit = (long) number(plan.get("Shared Hit Blocks"), 0), read = (long) number(plan.get("Shared Read Blocks"), 0);
-        Result r = new Result(id, analyze, planning, execution, cost, List.copyOf(nodes), hit, read, List.of(), "");
-        return new Result(id, analyze, planning, execution, cost, List.copyOf(nodes), hit, read, List.of(), headline(r));
+        Result r = new Result(id, analyze, planning, execution, cost, List.copyOf(nodes), hit, read, List.of(), "", List.of());
+        return new Result(id, analyze, planning, execution, cost, List.copyOf(nodes), hit, read, List.of(), headline(r), List.of());
     }
 
     /** Fills {@code out} with the node and its children, parents first. Returns the node's total time in ms (all loops). */
@@ -122,6 +135,21 @@ final class ExplainRunner {
 
     private static double number(Object value, double fallback) { return value instanceof Number n ? n.doubleValue() : fallback; }
     private static String text(Object value) { return value == null ? null : value.toString(); }
+
+    private static final java.util.regex.Pattern STEP_NUMBERED = java.util.regex.Pattern.compile("^(?:\\S+\\s+){0,3}?(S\\d+[^:]*?)\\s*:\\s*(\\d+)\\s+rows,\\s*(\\d+)\\s+ms\\s*$");
+    private static final java.util.regex.Pattern STEP_PLAIN = java.util.regex.Pattern.compile("^([^:]+?)\\s*:\\s*(\\d+)\\s+rows,\\s*(\\d+)\\s+ms\\s*$");
+
+    /** The lines of the form "name : N rows, M ms" that a function printed; the leading words of a line such as "cash_balance T CFS S4 ..." are dropped when the name starts with S and a number. */
+    static List<Step> steps(List<String> notices) {
+        List<Step> out = new ArrayList<>();
+        for (String line : notices) {
+            String text = line.strip();
+            var m = STEP_NUMBERED.matcher(text);
+            if (!m.matches()) m = STEP_PLAIN.matcher(text);
+            if (m.matches()) out.add(new Step(m.group(1).strip(), Long.parseLong(m.group(2)), Long.parseLong(m.group(3))));
+        }
+        return out;
+    }
 
     // ---------------------------------------------------------------- reporting
 
@@ -161,7 +189,8 @@ final class ExplainRunner {
 
     static String markdown(Rules.Explain explain, Result r, long wallMs) {
         StringBuilder md = new StringBuilder("# Explain " + explain.id + "\n\nDatasource: `" + explain.db + "`\n\n"
-            + (r.analyze() ? "Mode: EXPLAIN ANALYZE" + (explain.buffers ? ", BUFFERS" : "") + " in a read-only transaction that was rolled back. The statement was executed.\n\n"
+            + (r.analyze() ? "Mode: EXPLAIN ANALYZE" + (explain.buffers ? ", BUFFERS" : "") + (explain.tempTables ? " in temp-table mode (non-production only); the transaction was rolled back."
+                : " in a read-only transaction that was rolled back.") + " The statement was executed.\n\n"
                 : "Mode: plan only. The statement was not executed, so there are no actual rows or times.\n\n")
             + "Result: " + r.headline() + "\n\n");
         if (r.analyze() && explain.buffers) md.append("Shared blocks of the whole plan: ").append(r.sharedHit()).append(" hit, ").append(r.sharedRead()).append(" read from disk or the OS cache.\n\n");
@@ -182,6 +211,17 @@ final class ExplainRunner {
             for (Node n : r.misestimated()) md.append("| ").append(cell(n.label())).append(" | ").append(fmt(n.estRows())).append(" | ").append(fmt(n.actualRows()))
                 .append(" | ").append(fmt(n.error())).append("x |\n");
             md.append("\nNodes that expect and return fewer than ").append((int) ERROR_FLOOR_ROWS).append(" rows are not counted.\n\n");
+        }
+        if (!r.notices().isEmpty()) {
+            List<Step> steps = r.steps();
+            long total = steps.stream().mapToLong(Step::ms).sum();
+            if (!steps.isEmpty()) {
+                md.append("## Steps the function reported (RAISE NOTICE)\n\n| Step | Rows | Time ms | Share |\n|---|---:|---:|---:|\n");
+                for (Step s : steps) md.append("| ").append(cell(s.name())).append(" | ").append(s.rows()).append(" | ").append(s.ms()).append(" | ")
+                    .append(total == 0 ? "-" : String.format(Locale.ROOT, "%.0f%%", 100.0 * s.ms() / total)).append(" |\n");
+                md.append("\nThe plan of a function call is one node; these steps are where its time goes. A step whose row count jumps while the next one shrinks is a join that multiplies rows.\n\n");
+            }
+            md.append("All messages the statement printed are in `notices.txt`.\n\n");
         }
         md.append("Files: `plan.txt` (the tree), `plan.json` (the raw plan). Tool wall-clock time for this step: ").append(wallMs).append(" ms.\n");
         return md.toString();

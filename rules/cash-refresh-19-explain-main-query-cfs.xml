@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Cash balance refresh: the main query itself, with the tenant id and the business unit, as the service calls it:
+     select * from opera.fn_cash_balance_report_for_scope(tenant, bu). The function creates temp tables, so this explain runs in the tool's
+     non-production temp-table mode (always rolled back, never on a production datasource, no write reaches the tables).
+     It EXECUTES the function once (EXPLAIN ANALYZE), so it takes as long as the refresh does: run it on its own, in a quiet window, on UAT.
+     count(*) keeps the returned rows out of the output; the work is the same.
+     What you get:
+       - the total time of the call, measured by the database
+       - the steps the function reports itself (RAISE NOTICE lines such as S3 active lots, S4 eligible trades): rows and ms of each step.
+         The step where the time or the row count jumps is where to look next; a row count that rises while the next step shrinks is a join that multiplies rows.
+       - plan.txt: a function call is one node, so the steps above are the detail; explain the statement of the slow step with a rule like cash-refresh-18.
+     Run with the target environment flag: target-env postgres-uat. Start with the check flag (temp-table statements are skipped there), then run. -->
+<rules name="cash-refresh-19-explain-main-query-cfs">
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+    <param name="bu" type="string" value="CFS"/>
+  </parameters>
+
+  <explain id="main-query" db="target" tempTables="true" timeout="1800" buffers="true"><![CDATA[
+    SELECT count(*) AS report_rows
+    FROM opera.fn_cash_balance_report_for_scope(:tenant, :bu)
+  ]]></explain>
+
+  <expect ref="main-query" max-ms="120000" reason="the refresh used to finish in well under two minutes"/>
+
+  <compress id="bundle" file="cash-refresh-19-explain-main-query.zip"><include ref="main-query"/></compress>
+</rules>

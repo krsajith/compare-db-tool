@@ -72,6 +72,7 @@ final class LiveCheck {
             }
             for (Rules.Explain explain : rules.explains) {
                 String subject = "explain " + explain.id + " (" + explain.db + ")";
+                if (explain.tempTables) { add(lines, Status.SKIP, subject, "temp-table statements are checked only when they run"); continue; }
                 if (unreachable.contains(explain.db)) { add(lines, Status.SKIP, subject, "datasource " + explain.db + " could not be reached (see above)"); continue; }
                 try {
                     Map<String, Object> bound = new HashMap<>(parameters);

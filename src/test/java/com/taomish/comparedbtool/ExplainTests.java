@@ -155,6 +155,23 @@ class ExplainTests {
             .doesNotContain("are not available");
     }
 
+    @Test void stepsPrintedByAFunctionAreReadAsRowsAndTime() {
+        var steps = ExplainRunner.steps(List.of(
+            "cash_balance 2026-11-12 CFS S3 active lots     : 120000 rows, 4100 ms",
+            "cash_balance 2026-11-12 CFS S4 eligible trades : 480000 rows, 41000 ms",
+            "something else was printed", "S9 totals : 5 rows, 7 ms"));
+        assertThat(steps).extracting(ExplainRunner.Step::name).containsExactly("S3 active lots", "S4 eligible trades", "S9 totals");
+        assertThat(steps).extracting(ExplainRunner.Step::rows).containsExactly(120000L, 480000L, 5L);
+        assertThat(steps).extracting(ExplainRunner.Step::ms).containsExactly(4100L, 41000L, 7L);
+    }
+
+    @Test void tempTablesAreNeverAllowedOnAProductionDatasource() throws Exception {
+        var d = new DatasourceSettings.Definition(); d.setUrl("jdbc:h2:mem:p"); d.setUsername("sa"); d.setPassword(""); d.setReadOnly(true); d.setDriverClassName("org.h2.Driver");
+        settings.getDatasources().put("postgres-prod", d);
+        assertThatThrownBy(() -> rules("<explain id=\"p\" db=\"postgres-prod\" tempTables=\"true\">SELECT 1 AS a</explain>")).hasMessageContaining("production datasource");
+        assertThat(rules("<explain id=\"p\" db=\"test\" tempTables=\"true\">SELECT 1 AS a</explain>").explains.getFirst().tempTables).isTrue();
+    }
+
     @Test void aRuleWithoutQueriesOrExplainsStillNeedsOne() {
         assertThatThrownBy(() -> rules(PARAMS)).hasMessageContaining("at least one <sql> or <explain>");
     }

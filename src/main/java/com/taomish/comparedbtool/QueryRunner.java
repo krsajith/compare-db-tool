@@ -263,24 +263,32 @@ public final class QueryRunner implements AutoCloseable {
      * The plan of a statement as PostgreSQL JSON. analyze=true runs it (EXPLAIN ANALYZE) in the read-only pool, which is always rolled back, so it
      * cannot write; analyze=false only plans it and executes nothing. Production datasources still need --allow-prod.
      */
-    public String explain(Rules.Explain explain, Map<String, Object> parameters) {
+    public record Plan(String json, List<String> notices) {}
+
+    public Plan explain(Rules.Explain explain, Map<String, Object> parameters) {
         Rules.Sql rule = ExplainRunner.asSql(explain);
         String sql = SqlGuard.validate(rule.text);
+        TempTablePolicy.validate(rule, settings);
         validateParameters(rule, parameters);
         var definition = settings.getDatasources().get(explain.db);
         if (definition == null || definition.getUrl() == null || !definition.getUrl().startsWith("jdbc:postgresql:"))
             throw new ToolException("<explain> " + explain.id + " works on PostgreSQL datasources only: " + explain.db);
         String options = explain.analyze ? "ANALYZE" + (explain.buffers ? ", BUFFERS" : "") + ", FORMAT JSON" : "FORMAT JSON";
         LOG.info("Explain {} datasource={} analyze={} timeoutSeconds={}", explain.id, explain.db, explain.analyze, explain.timeout);
-        var template = new NamedParameterJdbcTemplate(datasource(explain.db, false));
-        return template.execute("EXPLAIN (" + options + ") " + sql, parameters, (PreparedStatementCallback<String>) statement -> {
+        if (explain.tempTables) LOG.warn("Temp-table mode datasource={} explain={}; transaction will be rolled back", explain.db, explain.id);
+        var template = new NamedParameterJdbcTemplate(datasource(explain.db, explain.tempTables));
+        return template.execute("EXPLAIN (" + options + ") " + sql, parameters, (PreparedStatementCallback<Plan>) statement -> {
             try {
                 statement.setQueryTimeout(explain.timeout);
                 StringBuilder text = new StringBuilder();
                 try (ResultSet result = statement.executeQuery()) {
                     while (result.next()) text.append(Objects.toString(result.getString(1), ""));
                 }
-                return text.toString();
+                // what the statement printed with RAISE NOTICE (a report function reports its steps this way)
+                List<String> notices = new ArrayList<>();
+                for (SQLWarning warning = statement.getWarnings(); warning != null; warning = warning.getNextWarning())
+                    if (warning.getMessage() != null) notices.add(warning.getMessage().strip());
+                return new Plan(text.toString(), List.copyOf(notices));
             } finally { statement.getConnection().rollback(); }
         });
     }

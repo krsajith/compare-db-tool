@@ -391,7 +391,8 @@ A funnel is an ordered list of stages; each stage is a pair of queries returning
 - The element text is one `SELECT` or `WITH` (same guard as `<sql>`, `:parameters` allowed). It is **not** also run as a query.
 - `analyze="true"` (default) executes it in the read-only pool that is always rolled back; give it a `timeout` (default 300 s). `analyze="false"` plans only and executes nothing. `buffers="false"` drops the block counters.
 - `uses="t=pick"` takes a value from an earlier `<sql>` (`:t.column` one row, `:t.column[]` a list), so the choice of a trade or date is not part of the plan.
-- PostgreSQL only; a production datasource needs `--allow-prod`. `--check` plans the statement and says whether the run will execute it.
+- `tempTables="true"` (non-production only) lets it call a function that creates temp tables, for example `SELECT count(*) FROM opera.fn_cash_balance_report_for_scope(:tenant, :bu)`. Lines the function prints with `RAISE NOTICE` in the form `S3 active lots : 120000 rows, 4100 ms` become a steps table in `SUMMARY.md` and are kept in `notices.txt`; a function call is one plan node, so the steps are where its time goes.
+- PostgreSQL only; a production datasource needs `--allow-prod`. `--check` plans the statement (it skips temp-table statements) and says whether the run will execute it.
 - Expectations: `max-ms`, `no-seq-scan="table1, table2"` (or `*`), `max-estimate-error="100"`. With `analyze="false"` the first and last fail with a reason (nothing was executed).
 - Output `<id>/SUMMARY.md`, `plan.txt` (the tree), `plan.json` (raw). A function call shows as one node: explain the statements inside it one by one.
 
