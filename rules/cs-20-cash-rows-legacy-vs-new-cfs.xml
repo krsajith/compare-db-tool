@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Cash page inputs, legacy MySQL vs new PostgreSQL, ALL CFS clients, read-only, 12-Nov-2026.
+     UNF prints PREMIUM PAID/RECEIVED (101,005.73) in legacy and (1,654,129.50) in the new statement. MATLAB takes that line
+     straight from client_cash_account_balance_table (premium_paid_or_recd, generate_client_statements.m :3842/:3897/:4334) for the
+     settle date (the CONFIRMATION DATE of the statement, 05-Nov-26); the new fn_statement_cash_inputs_v2 filters cob_date =
+     settlement date too. This compares the rows of both cash tables and both threshold tables (double_currency decides MATLAB's
+     double currency handling, :3976 onward), so we see whether the difference is in the data or in the handling. -->
+<rules name="cs-20-cash-rows-legacy-vs-new-cfs">
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+    <param name="settleDate" type="date" value="2026-11-05"/>
+  </parameters>
+  <sql id="l-cash" db="mysql-oprdb02" timeout="300" export="full"><![CDATA[
+    SELECT client_code, currency, cob_date, opening_balance, expired_or_liquidated_cash, premium_paid_or_recd, commission,
+           transfers_out, transfers_in, interest_charges, closing_balance
+    FROM dbsystemuat.client_cash_account_balance_table_cfs
+    WHERE cob_date = :settleDate
+  ]]></sql>
+  <sql id="n-cash" db="postgres-uat" timeout="300" export="full"><![CDATA[
+    SELECT c.client_code, c.currency, c.cob_date, c.opening_balance, c.expired_or_liquidated_cash, c.premium_paid_or_recd, c.commission,
+           c.transfers_out, c.transfers_in, c.interest_charges, c.closing_balance
+    FROM opera.client_cash_account_balance_table c
+    WHERE c.tenant_id = :tenant AND c.business_unit = 'CFS' AND c.cob_date = :settleDate
+  ]]></sql>
+  <compare id="cash-rows" source="l-cash" target="n-cash" export="full">
+    <key columns="client_code,currency"/>
+    <column name="opening_balance" absTol="0.005"/>
+    <column name="expired_or_liquidated_cash" absTol="0.005"/>
+    <column name="premium_paid_or_recd" absTol="0.005"/>
+    <column name="commission" absTol="0.005"/>
+    <column name="transfers_out" absTol="0.005"/>
+    <column name="transfers_in" absTol="0.005"/>
+    <column name="interest_charges" absTol="0.005"/>
+    <column name="closing_balance" absTol="0.005"/>
+    <breakdown columns="client_code" top="100"/>
+  </compare>
+  <sql id="l-thr" db="mysql-oprdb02" timeout="120" export="full"><![CDATA[
+    SELECT client_code, currency, threshold, independant_amount, final_threshold, min_trnsfr_amt, double_currency, provision
+    FROM dbsystemuat.client_threshold_master_table_cfs
+  ]]></sql>
+  <sql id="n-thr" db="postgres-uat" timeout="120" export="full"><![CDATA[
+    SELECT t.client_code, t.currency, t.threshold, t.independant_amount, t.final_threshold, t.min_trnsfr_amt, t.double_currency, t.provision
+    FROM opera.client_threshold_master t
+    WHERE t.tenant_id = :tenant AND t.business_unit = 'CFS'
+  ]]></sql>
+  <compare id="threshold-rows" source="l-thr" target="n-thr" export="full">
+    <key columns="client_code,currency"/>
+    <column name="threshold" absTol="0.005"/>
+    <column name="independant_amount" absTol="0.005"/>
+    <column name="final_threshold" absTol="0.005"/>
+    <column name="min_trnsfr_amt" absTol="0.005"/>
+    <column name="double_currency"/>
+    <column name="provision" absTol="0.005"/>
+    <breakdown columns="client_code" top="100"/>
+  </compare>
+  <sql id="unf-orm-legacy" db="mysql-oprdb02" timeout="120" export="full"><![CDATA[
+    SELECT 'cash' AS src, client_code, currency, cob_date, premium_paid_or_recd, closing_balance, opening_balance
+    FROM dbsystemuat.client_cash_account_balance_table_cfs
+    WHERE client_code IN ('UNF', 'ORM') AND cob_date BETWEEN '2026-11-01' AND '2026-11-12'
+    ORDER BY client_code, cob_date, currency
+  ]]></sql>
+  <expect ref="cash-rows" matched="&gt;=1" reason="cash rows compared"/>
+  <expect ref="threshold-rows" matched="&gt;=1" reason="threshold rows compared"/>
+  <compress id="bundle" file="cs-20-cash-rows-legacy-vs-new.zip">
+    <include ref="cash-rows"/><include ref="threshold-rows"/><include ref="unf-orm-legacy"/>
+  </compress>
+</rules>
