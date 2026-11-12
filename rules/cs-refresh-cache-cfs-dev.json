@@ -1,0 +1,36 @@
+{
+  "name": "cs-refresh-cache-cfs-dev",
+  "db": "postgres-dev",
+  "backupSchema": "parity_work",
+  "ticket": "client-statement-refresh",
+  "description": "Regenerates the CFS client statement data (helper_client_statement_report_view_cache_table) for the CFS valuation date, the same function as the Refresh button (fn_refresh_client_statement_positions). The step backs up the current CFS cache, so the undo rule puts the old cache back. The function replaces the whole CFS slice. Risky by the tool's definition (a DO block), so --apply asks for the typed phrase; run it again later with --rerun. Session settings (work_mem, statement_timeout ...) come from config/session.properties or --session; the function sets its own work_mem 256MB, jit off and enable_nestloop off.",
+  "steps": [
+    {
+      "id": "refresh-cfs",
+      "action": "sql",
+      "table": "opera.helper_client_statement_report_view_cache_table",
+      "where": "tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND business_unit = 'CFS'",
+      "key": [
+        "uuid"
+      ],
+      "sql": "DO $$ DECLARE v_date date; BEGIN SELECT value_date INTO STRICT v_date FROM opera.valuation_date_table WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND business_unit = 'CFS'; PERFORM opera.fn_refresh_client_statement_positions('227cd5f5-4498-4dba-bda9-05b8edc41113', 'CFS', v_date, 'compare-db-tool'); END $$",
+      "preconditions": [
+        {
+          "sql": "SELECT count(*) FROM opera.valuation_date_table WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND business_unit = 'CFS'",
+          "expect": "1",
+          "reason": "one CFS valuation date to refresh for"
+        }
+      ],
+      "expect": {
+        "targetBefore": ">=0",
+        "affected": "0",
+        "targetAfter": ">=1"
+      }
+    }
+  ],
+  "verify": [
+    {
+      "rule": "cs-refresh-cache-cfs-verify-dev.xml"
+    }
+  ]
+}

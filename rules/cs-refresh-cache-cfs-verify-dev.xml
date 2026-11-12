@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Verify of cs-refresh-cache-cfs-dev.json, read-only: the CFS client statement cache holds the CFS valuation date only, has rows,
+     and was built in the last hour. -->
+<rules name="cs-refresh-cache-cfs-verify-dev">
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+  </parameters>
+  <sql id="cache" db="postgres-dev" export="full"><![CDATA[
+    SELECT c.value_date, v.value_date AS valuation_date, count(*) AS cache_rows, max(c.created_timestamp) AS built,
+           CASE WHEN c.value_date = v.value_date THEN 1 ELSE 0 END AS on_valuation_date,
+           CASE WHEN max(c.created_timestamp) > now() - interval '1 hour' THEN 1 ELSE 0 END AS built_last_hour
+    FROM opera.helper_client_statement_report_view_cache_table c
+    JOIN opera.valuation_date_table v ON v.tenant_id = c.tenant_id AND v.business_unit = c.business_unit
+    WHERE c.tenant_id = :tenant AND c.business_unit = 'CFS'
+    GROUP BY c.value_date, v.value_date
+  ]]></sql>
+  <expect ref="cache" rows="1" reason="one value date in the CFS cache"/>
+  <expect ref="cache" column="on_valuation_date" equals="1" reason="the cache is on the CFS valuation date"/>
+  <expect ref="cache" column="built_last_hour" equals="1" reason="the cache was just rebuilt"/>
+  <compress id="bundle" file="cs-refresh-cache-cfs-verify-dev.zip"><include ref="cache"/></compress>
+</rules>
