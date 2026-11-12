@@ -3,7 +3,7 @@
   "db": "postgres-uat",
   "backupSchema": "parity_work",
   "ticket": "typefix-20261111",
-  "description": "Typefix 20261111, step 2 of 2: puts back the decimals numeric(18,4) cut on opera.cloned_deal_ticket_table, from the legacy values staged by typefix-20261111-stage-mysql-uat.json. One step per column. A value is changed ONLY when it is exactly the legacy value cut to 4 decimals (round(legacy, 4) = current) and the legacy value has more decimals, so values changed in the new system after the migration are left alone. targetAfter 0 = no value left that is still the cut. Before step 1, create the staging table once (DBeaver): CREATE TABLE opera.typefix_20261111_src (business_unit text NOT NULL, trade_id text NOT NULL, original_lots double precision, premium double precision, spcl_rate double precision, active_lots double precision, netted_lots double precision, lots_to_be_netted double precision, loaded_at timestamptz DEFAULT now(), PRIMARY KEY (business_unit, trade_id)). Afterwards: refresh the client statement cache (and cash balance / RRR runs to compare).",
+  "description": "Typefix 20261111, step 2 of 2: puts back the decimals numeric(18,4) cut on opera.cloned_deal_ticket_table, from the legacy values staged by typefix-20261111-stage-mysql-uat.json. One step per column. A value is changed ONLY when it is exactly the legacy value cut to 4 decimals (round(legacy, 4) = current) and the legacy value has more decimals, so values changed in the new system after the migration are left alone. targetAfter 0 = no value left that is still the cut. Before step 1, create the staging table once (DBeaver): CREATE TABLE opera.typefix_20261111_src (business_unit text NOT NULL, trade_id text NOT NULL, original_lots double precision, premium double precision, spcl_rate double precision, active_lots double precision, netted_lots double precision, lots_to_be_netted double precision, loaded_at timestamptz DEFAULT now(), PRIMARY KEY (business_unit, trade_id)). Steps 7-12 cover the records MySQL does not have (created in the new system after the migration, newer versions): deal_ticket_table premium, original_lots, spcl_rate, lots_to_be_netted, broker_lots were always double precision, so the same trade and version there still holds the full value (one distinct value required); active_lots comes from latest_active_lot (double). Same guard: only a clone value that is exactly that value cut to 4 decimals is changed. netted_lots exists only on the clone: new records cannot be restored for it. Afterwards: refresh the client statement cache (and cash balance / RRR runs to compare).",
   "steps": [
     {
       "id": "restore-original-lots",
@@ -112,6 +112,108 @@
       ],
       "set": {
         "lots_to_be_netted": "(SELECT s.lots_to_be_netted FROM opera.typefix_20261111_src s WHERE s.business_unit = cloned_deal_ticket_table.business_unit AND s.trade_id = cloned_deal_ticket_table.trade_id)"
+      },
+      "expect": {
+        "targetBefore": ">=0",
+        "affected": ">=0",
+        "targetAfter": "0"
+      }
+    },
+    {
+      "id": "from-deal-ticket-premium",
+      "action": "update",
+      "table": "opera.cloned_deal_ticket_table",
+      "where": "tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND premium IS NOT NULL AND version_no IS NOT NULL AND (SELECT max(dt.premium) FROM opera.deal_ticket_table dt WHERE dt.tenant_id = cloned_deal_ticket_table.tenant_id AND dt.trade_id = cloned_deal_ticket_table.trade_id AND dt.version_no = cloned_deal_ticket_table.version_no HAVING count(DISTINCT dt.premium) = 1) <> premium AND round((SELECT max(dt.premium) FROM opera.deal_ticket_table dt WHERE dt.tenant_id = cloned_deal_ticket_table.tenant_id AND dt.trade_id = cloned_deal_ticket_table.trade_id AND dt.version_no = cloned_deal_ticket_table.version_no HAVING count(DISTINCT dt.premium) = 1)::numeric, 4)::double precision = premium",
+      "key": [
+        "uuid"
+      ],
+      "set": {
+        "premium": "(SELECT max(dt.premium) FROM opera.deal_ticket_table dt WHERE dt.tenant_id = cloned_deal_ticket_table.tenant_id AND dt.trade_id = cloned_deal_ticket_table.trade_id AND dt.version_no = cloned_deal_ticket_table.version_no HAVING count(DISTINCT dt.premium) = 1)"
+      },
+      "expect": {
+        "targetBefore": ">=0",
+        "affected": ">=0",
+        "targetAfter": "0"
+      }
+    },
+    {
+      "id": "from-deal-ticket-original-lots",
+      "action": "update",
+      "table": "opera.cloned_deal_ticket_table",
+      "where": "tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND original_lots IS NOT NULL AND version_no IS NOT NULL AND (SELECT max(dt.original_lots) FROM opera.deal_ticket_table dt WHERE dt.tenant_id = cloned_deal_ticket_table.tenant_id AND dt.trade_id = cloned_deal_ticket_table.trade_id AND dt.version_no = cloned_deal_ticket_table.version_no HAVING count(DISTINCT dt.original_lots) = 1) <> original_lots AND round((SELECT max(dt.original_lots) FROM opera.deal_ticket_table dt WHERE dt.tenant_id = cloned_deal_ticket_table.tenant_id AND dt.trade_id = cloned_deal_ticket_table.trade_id AND dt.version_no = cloned_deal_ticket_table.version_no HAVING count(DISTINCT dt.original_lots) = 1)::numeric, 4)::double precision = original_lots",
+      "key": [
+        "uuid"
+      ],
+      "set": {
+        "original_lots": "(SELECT max(dt.original_lots) FROM opera.deal_ticket_table dt WHERE dt.tenant_id = cloned_deal_ticket_table.tenant_id AND dt.trade_id = cloned_deal_ticket_table.trade_id AND dt.version_no = cloned_deal_ticket_table.version_no HAVING count(DISTINCT dt.original_lots) = 1)"
+      },
+      "expect": {
+        "targetBefore": ">=0",
+        "affected": ">=0",
+        "targetAfter": "0"
+      }
+    },
+    {
+      "id": "from-deal-ticket-spcl-rate",
+      "action": "update",
+      "table": "opera.cloned_deal_ticket_table",
+      "where": "tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND spcl_rate IS NOT NULL AND version_no IS NOT NULL AND (SELECT max(dt.spcl_rate) FROM opera.deal_ticket_table dt WHERE dt.tenant_id = cloned_deal_ticket_table.tenant_id AND dt.trade_id = cloned_deal_ticket_table.trade_id AND dt.version_no = cloned_deal_ticket_table.version_no HAVING count(DISTINCT dt.spcl_rate) = 1) <> spcl_rate AND round((SELECT max(dt.spcl_rate) FROM opera.deal_ticket_table dt WHERE dt.tenant_id = cloned_deal_ticket_table.tenant_id AND dt.trade_id = cloned_deal_ticket_table.trade_id AND dt.version_no = cloned_deal_ticket_table.version_no HAVING count(DISTINCT dt.spcl_rate) = 1)::numeric, 4)::double precision = spcl_rate",
+      "key": [
+        "uuid"
+      ],
+      "set": {
+        "spcl_rate": "(SELECT max(dt.spcl_rate) FROM opera.deal_ticket_table dt WHERE dt.tenant_id = cloned_deal_ticket_table.tenant_id AND dt.trade_id = cloned_deal_ticket_table.trade_id AND dt.version_no = cloned_deal_ticket_table.version_no HAVING count(DISTINCT dt.spcl_rate) = 1)"
+      },
+      "expect": {
+        "targetBefore": ">=0",
+        "affected": ">=0",
+        "targetAfter": "0"
+      }
+    },
+    {
+      "id": "from-deal-ticket-lots-to-be-netted",
+      "action": "update",
+      "table": "opera.cloned_deal_ticket_table",
+      "where": "tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND lots_to_be_netted IS NOT NULL AND version_no IS NOT NULL AND (SELECT max(dt.lots_to_be_netted) FROM opera.deal_ticket_table dt WHERE dt.tenant_id = cloned_deal_ticket_table.tenant_id AND dt.trade_id = cloned_deal_ticket_table.trade_id AND dt.version_no = cloned_deal_ticket_table.version_no HAVING count(DISTINCT dt.lots_to_be_netted) = 1) <> lots_to_be_netted AND round((SELECT max(dt.lots_to_be_netted) FROM opera.deal_ticket_table dt WHERE dt.tenant_id = cloned_deal_ticket_table.tenant_id AND dt.trade_id = cloned_deal_ticket_table.trade_id AND dt.version_no = cloned_deal_ticket_table.version_no HAVING count(DISTINCT dt.lots_to_be_netted) = 1)::numeric, 4)::double precision = lots_to_be_netted",
+      "key": [
+        "uuid"
+      ],
+      "set": {
+        "lots_to_be_netted": "(SELECT max(dt.lots_to_be_netted) FROM opera.deal_ticket_table dt WHERE dt.tenant_id = cloned_deal_ticket_table.tenant_id AND dt.trade_id = cloned_deal_ticket_table.trade_id AND dt.version_no = cloned_deal_ticket_table.version_no HAVING count(DISTINCT dt.lots_to_be_netted) = 1)"
+      },
+      "expect": {
+        "targetBefore": ">=0",
+        "affected": ">=0",
+        "targetAfter": "0"
+      }
+    },
+    {
+      "id": "from-deal-ticket-broker-lots",
+      "action": "update",
+      "table": "opera.cloned_deal_ticket_table",
+      "where": "tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND broker_lots IS NOT NULL AND version_no IS NOT NULL AND (SELECT max(dt.broker_lots) FROM opera.deal_ticket_table dt WHERE dt.tenant_id = cloned_deal_ticket_table.tenant_id AND dt.trade_id = cloned_deal_ticket_table.trade_id AND dt.version_no = cloned_deal_ticket_table.version_no HAVING count(DISTINCT dt.broker_lots) = 1) <> broker_lots AND round((SELECT max(dt.broker_lots) FROM opera.deal_ticket_table dt WHERE dt.tenant_id = cloned_deal_ticket_table.tenant_id AND dt.trade_id = cloned_deal_ticket_table.trade_id AND dt.version_no = cloned_deal_ticket_table.version_no HAVING count(DISTINCT dt.broker_lots) = 1)::numeric, 4)::double precision = broker_lots",
+      "key": [
+        "uuid"
+      ],
+      "set": {
+        "broker_lots": "(SELECT max(dt.broker_lots) FROM opera.deal_ticket_table dt WHERE dt.tenant_id = cloned_deal_ticket_table.tenant_id AND dt.trade_id = cloned_deal_ticket_table.trade_id AND dt.version_no = cloned_deal_ticket_table.version_no HAVING count(DISTINCT dt.broker_lots) = 1)"
+      },
+      "expect": {
+        "targetBefore": ">=0",
+        "affected": ">=0",
+        "targetAfter": "0"
+      }
+    },
+    {
+      "id": "from-latest-active-lot-active-lots",
+      "action": "update",
+      "table": "opera.cloned_deal_ticket_table",
+      "where": "tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND active_lots IS NOT NULL AND is_latest_version = 1 AND (SELECT l.active_lots FROM opera.latest_active_lot l WHERE l.tenant_id = cloned_deal_ticket_table.tenant_id AND l.business_unit = cloned_deal_ticket_table.business_unit AND l.trade_id = cloned_deal_ticket_table.trade_id) <> active_lots AND round((SELECT l.active_lots FROM opera.latest_active_lot l WHERE l.tenant_id = cloned_deal_ticket_table.tenant_id AND l.business_unit = cloned_deal_ticket_table.business_unit AND l.trade_id = cloned_deal_ticket_table.trade_id)::numeric, 4)::double precision = active_lots",
+      "key": [
+        "uuid"
+      ],
+      "set": {
+        "active_lots": "(SELECT l.active_lots FROM opera.latest_active_lot l WHERE l.tenant_id = cloned_deal_ticket_table.tenant_id AND l.business_unit = cloned_deal_ticket_table.business_unit AND l.trade_id = cloned_deal_ticket_table.trade_id)"
       },
       "expect": {
         "targetBefore": ">=0",
