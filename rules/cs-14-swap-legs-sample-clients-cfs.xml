@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Swap legs of the 06-Nov-2026 CFS cache for BFA (legacy prints the sum of legs rounded to cents) and clients whose legacy
+     PDFs match the exact sum although per-leg rounding would change some rows (cs-13): LIB, NFO, AST, AMC, FMP, IOL, JUP.
+     Read-only. Used offline with the legacy PDFs to find how MATLAB groups legs into printed rows
+     (UniqueFields_Swaps: TRADE_ID, EXPIRY_DATE, AVG_LONG_PRICE, AVG_SHORT_PRICE, EDSP) and when it rounds. -->
+<rules name="cs-14-swap-legs-sample-clients-cfs">
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+    <param name="valueDate" type="date" value="2026-11-06"/>
+  </parameters>
+  <sql id="legs" db="postgres-uat" timeout="300" export="full"><![CDATA[
+    SELECT c.client_code, c.contract_number, c.trade_id, c.derivative_type, c.currency, c.traded_price, c.active_lots,
+           c.settle_price, c.future_price, c.mult_factor, c.mtm_nc, c.mtm_usd, c.maturity_date, c.contract_month,
+           b.future_expiry_date, b.sub_account
+    FROM opera.helper_client_statement_report_view_cache_table c
+    LEFT JOIN LATERAL (SELECT max(bo.future_expiry_date) AS future_expiry_date, max(bo.sub_account) AS sub_account
+                       FROM opera.client_statement_booking_order_information_table bo
+                       WHERE bo.tenant_id = c.tenant_id AND lower(bo.business_unit) = 'cfs'
+                         AND bo.contract_number = regexp_replace(c.contract_number, '[ABC]$', '')) b ON true
+    WHERE c.tenant_id = :tenant AND c.business_unit = 'CFS' AND c.value_date = :valueDate
+      AND c.derivative_type = 'future'
+      AND c.client_code IN ('BFA', 'LIB', 'NFO', 'AST', 'AMC', 'FMP', 'IOL', 'JUP')
+    ORDER BY 1, 2, 3
+  ]]></sql>
+  <expect ref="legs" rows=">=1" reason="swap legs of the sample clients"/>
+  <compress id="bundle" file="cs-14-swap-legs-sample-clients.zip"><include ref="legs"/></compress>
+</rules>
