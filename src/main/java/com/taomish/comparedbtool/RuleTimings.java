@@ -10,7 +10,8 @@ import java.util.Map;
 /** Monotonic wall-clock measurements; parallel/shared work must never be summed as rule time. */
 final class RuleTimings {
     static final String HEADING = "## Rule timing";
-    private final long started = System.nanoTime();
+    private final long started;
+    RuleTimings(long started) { this.started = started; }
     private final List<Entry> entries = new ArrayList<>();
     record Entry(String type, String id, long millis, String status, String note) {}
 
@@ -31,7 +32,10 @@ final class RuleTimings {
     Step start(String type, String id) { return new Step(type, id); }
 
     synchronized void add(String type, String id, long start, String status, String note) {
-        long millis = (System.nanoTime() - start) / 1_000_000;
+        addMillis(type, id, (System.nanoTime() - start) / 1_000_000, status, note);
+    }
+
+    synchronized void addMillis(String type, String id, long millis, String status, String note) {
         entries.add(new Entry(type, id, millis, status, note));
         Progress.get().line("  time " + type + " " + id + ": " + Progress.duration(millis)
             + " (" + millis + " ms)" + (note.isEmpty() ? "" : " - " + note));
@@ -50,7 +54,9 @@ final class RuleTimings {
             + "| Step | Id | Time | Time ms | Status | Note |\n|---|---|---|---:|---|---|\n");
         try (var csv = CsvFiles.writer(directory.resolve("TIMINGS.csv"), List.of("step", "id", "millis", "status", "note"))) {
             for (Entry e : entries) {
-                String status = skipped.containsKey(e.id()) ? "SKIPPED" : failures.containsKey(e.id()) ? "FAILED / PARTIAL" : e.status();
+                boolean ruleStep = List.of("query", "compare", "compare-db", "funnel", "presence", "zip").contains(e.type());
+                String status = ruleStep && skipped.containsKey(e.id()) ? "SKIPPED"
+                    : ruleStep && failures.containsKey(e.id()) && e.status().equals("COMPLETE") ? "FAILED" : e.status();
                 md.append("| ").append(e.type()).append(" | ").append(e.id()).append(" | ")
                     .append(Progress.duration(e.millis())).append(" | ").append(e.millis()).append(" | ")
                     .append(status).append(" | ").append(e.note()).append(" |\n");

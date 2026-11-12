@@ -274,6 +274,7 @@ public final class Cli {
 
     /** Runs one XML rule file. Also used by a restore rule's verify step. */
     public Outcome executeRules(Options options) throws IOException {
+        final long startedNanos = System.nanoTime();
         LOG.info("Loading rules: {}", options.rules.toAbsolutePath().normalize());
         Rules rules = RuleLoader.load(options.rules);
         RuleLoader.validate(rules, settings, options.validate || options.check, options.rules.toAbsolutePath().getParent());
@@ -301,7 +302,7 @@ public final class Cli {
             return new Outcome(exit, directory, new Expectations.Report(List.of(), Set.of()));
         }
         Progress.get().quiet(options.quiet);
-        final long startedNanos = System.nanoTime();
+        RuleTimings timings = new RuleTimings(startedNanos);
         Progress.get().line("compare-db-tool: " + rules.name + " - " + rules.queries.size() + (rules.queries.size() == 1 ? " query" : " queries") + " on "
             + String.join(", ", rules.queries.stream().map(q -> q.db).distinct().toList())
             + (rules.comparisons.isEmpty() ? "" : ", " + rules.comparisons.size() + (rules.comparisons.size() == 1 ? " comparison" : " comparisons"))
@@ -313,6 +314,8 @@ public final class Cli {
         Map<String, QueryRunner.Result> queries = new LinkedHashMap<>();
         List<ComparisonRunner.Result> comparisons = new ArrayList<>();
         Map<String, String> failures = new LinkedHashMap<>();
+        Map<String, String> skippedReasons = new LinkedHashMap<>();
+        String completion = null;
         Path manualDirectory = directory.resolve("manual");
         Files.createDirectory(manualDirectory);
         try (QueryRunner runner = new QueryRunner(settings, options.allowProd)) {
@@ -341,10 +344,17 @@ public final class Cli {
             needs.values().forEach(n -> n.stream().filter(x -> x.startsWith("cmp:")).forEach(x -> drilled.add(x.substring(4))));
             Set<String> comparisonDone = ConcurrentHashMap.newKeySet();
             Set<String> skipped = ConcurrentHashMap.newKeySet();                    // ids skipped by a when= condition (queries, comparisons, funnels)
-            Map<String, String> skippedReasons = new LinkedHashMap<>();
             Map<String, ComparisonRunner.Result> comparisonById = new ConcurrentHashMap<>();
             QueryScheduler.run(rules.queries.stream().filter(q -> !dbOnly.contains(q.id)).toList(), needs, comparisonDone, options.parallel,
-                (group, finished) -> executeGroup(group, finished, comparisonById, rules, skipped, runner, parameters, directory, options),
+                (group, finished) -> {
+                    long stepStart = System.nanoTime();
+                    var outcomes = executeGroup(group, finished, comparisonById, rules, skipped, runner, parameters, directory, options);
+                    long stepMillis = (System.nanoTime() - stepStart) / 1_000_000;
+                    for (var outcome : outcomes) timings.addMillis("query", outcome.query().id, stepMillis,
+                        outcome.error() instanceof QueryScheduler.Skipped ? "SKIPPED" : outcome.error() != null ? "FAILED / BLOCKED" : outcome.result().partial() ? "PARTIAL" : "COMPLETE",
+                        group.rules().size() > 1 ? "shared group: " + group.rules().getFirst().id : "");
+                    return outcomes;
+                },
                 outcomes -> {
                     for (var outcome : outcomes) {
                         completedQueries.add(outcome.query().id);
@@ -358,7 +368,9 @@ public final class Cli {
                         attemptedComparisons.add(compare.id);
                         Path retain = drilled.contains(compare.id) ? directory.resolve(".work/drill").resolve(compare.id) : null;
                         if (retain != null) Files.createDirectories(retain);
-                        compareReady(compare, comparator, directory, manualDirectory, queries, artifacts, failures, comparisons, options, retain, skipped, skippedReasons);
+                        try (var step = timings.start("compare", compare.id)) {
+                            compareReady(compare, comparator, directory, manualDirectory, queries, artifacts, failures, comparisons, options, retain, skipped, skippedReasons);
+                        }
                         comparisons.stream().filter(r -> r.id().equals(compare.id)).findFirst().ifPresent(r -> comparisonById.put(compare.id, r));
                         comparisonDone.add("cmp:" + compare.id);       // also when it failed: what waits for it is then blocked with a reason
                     }
@@ -373,7 +385,7 @@ public final class Cli {
                     Files.writeString(note, "# Query " + query.id + "\n\nInput to engine=db comparison; no standalone CSV is fetched. See comparison SUMMARY.md for execution status, counts and capped samples.\n");
                     artifacts.put(query.id, List.of(sql, note));
                 }
-                try {
+                try (var step = timings.start("compare-db", compare.id)) {
                     if (options.limit > 0) throw new ToolException("engine=db cannot be combined with --limit; remove the row cap.");
                     checkQuery(source, parameters, options.allowProd); checkQuery(target, parameters, options.allowProd);
                     var outcome = new DbComparisonRunner().run(compare, source, target, runner, parameters, directory, options.export, options.sampleRows);
@@ -395,6 +407,7 @@ public final class Cli {
             for (Rules.Funnel funnel : rules.funnels) {
                 var skippedStage = funnel.stages.stream().flatMap(st -> Stream.of(st.source, st.target)).filter(Objects::nonNull).filter(skipped::contains).findFirst();
                 if (skippedStage.isPresent()) {
+                    timings.add("funnel", funnel.id, System.nanoTime(), "SKIPPED", "input skipped");
                     skipped.add(funnel.id);
                     skippedReasons.put(funnel.id, "its stage query " + skippedStage.get() + " was skipped");
                     artifacts.put(funnel.id, List.of());
@@ -402,7 +415,7 @@ public final class Cli {
                     continue;
                 }
                 LOG.info("Starting funnel {} ({} stages)...", funnel.id, funnel.stages.size());
-                try {
+                try (var step = timings.start("funnel", funnel.id)) {
                     var result = new FunnelRunner(options.partitions, options.maxPartitionMb).run(funnel, queries, directory, options.export, options.sampleRows);
                     funnels.add(result); artifacts.put(funnel.id, result.files());
                     LOG.info("Funnel {}: {}", funnel.id, result.headline());
@@ -422,6 +435,7 @@ public final class Cli {
             for (Rules.Presence presence : rules.presences) {
                 var skippedSource = PresenceRunner.sources(presence).stream().filter(skipped::contains).findFirst();
                 if (skippedSource.isPresent()) {
+                    timings.add("presence", presence.id, System.nanoTime(), "SKIPPED", "input skipped");
                     skipped.add(presence.id);
                     skippedReasons.put(presence.id, "its source query " + skippedSource.get() + " was skipped");
                     artifacts.put(presence.id, List.of());
@@ -429,7 +443,7 @@ public final class Cli {
                     continue;
                 }
                 LOG.info("Starting presence {} ({} sources)...", presence.id, PresenceRunner.sources(presence).size());
-                try {
+                try (var step = timings.start("presence", presence.id)) {
                     var result = new PresenceRunner(options.partitions, options.maxPartitionMb).run(presence, queries, directory, options.export, options.sampleRows);
                     presences.add(result); artifacts.put(presence.id, result.files());
                     LOG.info("Presence {}: {}", presence.id, result.headline());
@@ -446,8 +460,11 @@ public final class Cli {
             }
             boolean partial = queries.values().stream().anyMatch(QueryRunner.Result::partial);
             // Query CSVs still exist here (they live under .work until the run ends), so expectations can read them.
-            Expectations.Report report = Expectations.evaluate(rules, queries, comparisons, funnels, presences, parameters, skipped);
-            Expectations.write(directory, report);
+            Expectations.Report report;
+            try (var step = timings.start("expectations", "evaluate")) {
+                report = Expectations.evaluate(rules, queries, comparisons, funnels, presences, parameters, skipped);
+                Expectations.write(directory, report);
+            }
             // A comparison the rule has stated expectations for is judged by them; the rest still count as differences.
             boolean differs = comparisons.stream().filter(c -> !report.judgedComparisons().contains(c.id()))
                 .anyMatch(ComparisonRunner.Result::differs)
@@ -461,14 +478,20 @@ public final class Cli {
                     + " expected " + v.expected() + ", got " + Menu.shorten(String.valueOf(v.actual()), 120) + (v.reason() == null || v.reason().isBlank() ? "" : " (" + v.reason() + ")")));
             }
             List<String> suggestionWarnings = new ArrayList<>();
-            List<Suggestions.Suggestion> suggestions = Suggestions.evaluate(rules, options.rules.toAbsolutePath().getParent(), parameters, queries, comparisons, funnels,
-                presences, skipped, suggestionWarnings);
+            List<Suggestions.Suggestion> suggestions;
+            try (var step = timings.start("suggestions", "evaluate")) {
+                suggestions = Suggestions.evaluate(rules, options.rules.toAbsolutePath().getParent(), parameters, queries, comparisons, funnels,
+                    presences, skipped, suggestionWarnings);
+            }
             suggestionWarnings.forEach(w -> Progress.get().line("  note: " + w));
             for (var s : suggestions) {
                 Progress.get().line("  SUGGESTED: restore with " + s.name() + " (preview first)" + (s.reason().isEmpty() ? "" : " - " + s.reason()));
                 Progress.get().line("    run:  " + s.command() + "      (a preview; nothing changes until you add --apply)");
             }
-            List<String> topFindings = writeFindings(directory, comparisons, funnels, presences);
+            List<String> topFindings;
+            try (var step = timings.start("findings", "report")) {
+                topFindings = writeFindings(directory, comparisons, funnels, presences);
+            }
             StringBuilder summary = new StringBuilder("# " + rules.name + "\n\nStatus: "
                 + (!failures.isEmpty() ? "INCOMPLETE / MANUAL ACTIONS REQUIRED" : partial ? "PARTIAL"
                     : !report.passed() ? "EXPECTATIONS NOT MET" : differs ? "DIFFERENCES"
@@ -511,15 +534,16 @@ public final class Cli {
             ComparisonRunner.writeSmallSummary(directory.resolve("SUMMARY.md"), summary.toString());
             writeManualActions(directory, failures);
             for (Rules.Compress compression : rules.compressions) {
+                timings.write(directory, failures, skippedReasons, false);
                 LinkedHashSet<Path> included = new LinkedHashSet<>(List.of(directory.resolve("SUMMARY.md"),
-                    directory.resolve("RULES.xml"), directory.resolve("PARAMETERS.csv"), directory.resolve("MANUAL_ACTIONS.md")));
+                    directory.resolve("RULES.xml"), directory.resolve("PARAMETERS.csv"), directory.resolve("MANUAL_ACTIONS.md"), directory.resolve("TIMINGS.csv")));
                 if (report.any()) included.add(directory.resolve("EXPECTATIONS.md"));
                 if (Files.exists(directory.resolve("FINDINGS.md"))) included.add(directory.resolve("FINDINGS.md"));
                 for (Rules.Sql query : rules.queries) if (failures.containsKey(query.id))
                     included.add(directory.resolve(query.id + ".sql"));
                 for (Rules.Include include : compression.includes) included.addAll(artifacts.get(include.ref));
                 LOG.info("Creating ZIP {} with {} files", compression.file, included.size());
-                try {
+                try (var step = timings.start("zip", compression.id)) {
                     zip(directory, directory.resolve(compression.file), included);
                 LOG.info("ZIP: {} ({} bytes)", directory.resolve(compression.file), Files.size(directory.resolve(compression.file)));
                 Progress.get().line("  zip: " + compression.file + " (" + Progress.size(Files.size(directory.resolve(compression.file))) + ")");
@@ -536,9 +560,8 @@ public final class Cli {
             LOG.info("Summary: {}", directory.resolve("SUMMARY.md"));
             LOG.info("Manual actions: {} ({} issue(s))", directory.resolve("MANUAL_ACTIONS.md"), failures.size());
             if (!failures.isEmpty()) Progress.get().line("  " + failures.size() + (failures.size() == 1 ? " item needs" : " items need") + " attention: " + directory.resolve("MANUAL_ACTIONS.md"));
-            Progress.get().line("compare-db-tool: done in " + Progress.duration((System.nanoTime() - startedNanos) / 1_000_000) + " - exit " + exit + " (" + Menu.exitText(exit) + ")"
-                + (report.any() ? ", expectations " + (report.passed() ? "PASS" : "FAIL") : ""));
-            Progress.get().line("  summary: " + directory.resolve("SUMMARY.md"));
+            completion = " - exit " + exit + " (" + Menu.exitText(exit) + ")"
+                + (report.any() ? ", expectations " + (report.passed() ? "PASS" : "FAIL") : "");
             return new Outcome(exit, directory, report, suggestions);
         } catch (Exception e) {
             String message = e instanceof ToolException ? e.getMessage() : "File processing failed. Check paths, free disk space and permissions.";
@@ -548,8 +571,15 @@ public final class Cli {
             } catch (IOException reportingFailure) { e.addSuppressed(reportingFailure); }
             throw new ToolException(message + " See " + directory.resolve("ERROR.md"), e);
         } finally {
-            try { CsvFiles.deleteTree(directory.resolve(".work")); }
+            try (var step = timings.start("cleanup", "temporary-files")) { CsvFiles.deleteTree(directory.resolve(".work")); }
             catch (IOException cleanup) { LOG.warn("Could not remove temporary files under {}", directory.resolve(".work"), cleanup); }
+            try { timings.write(directory, failures, skippedReasons, true); }
+            catch (IOException reportingFailure) { LOG.warn("Could not write rule timings under {}", directory, reportingFailure); }
+            if (completion != null) {
+                long totalMillis = (System.nanoTime() - startedNanos) / 1_000_000;
+                Progress.get().line("compare-db-tool: done in " + Progress.duration(totalMillis) + " (" + totalMillis + " ms)" + completion);
+                Progress.get().line("  summary: " + directory.resolve("SUMMARY.md"));
+            }
         }
     }
 

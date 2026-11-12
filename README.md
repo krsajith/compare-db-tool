@@ -35,6 +35,9 @@ compare-db-tool: done in 2 min 36 s - exit 1 (differences, or an expectation was
 - `--quiet` turns these messages off (warnings and errors still show). The console otherwise shows warnings and errors only; to see every log line as before, set
   `logging.console.level=INFO` (or `DEBUG`) in `config/logging.properties`, or pass it on the command line with two leading dashes.
 
+
+XML rule runs automatically print elapsed time for each query, comparison (including `engine=db`), funnel, presence matrix, expectations, suggestions, findings report, ZIP and cleanup. `SUMMARY.md` ends with a **Rule timing** table: readable durations, exact milliseconds, step status and whole-rule wall-clock time. `TIMINGS.csv` contains the same measurements for sorting or analysis, even with `--quiet` or `--export none`. Whole-rule time starts before XML loading and ends after packaging, connection shutdown and cleanup. Query step time includes setup, fetching and local processing, excluding scheduler waiting. Parallel steps overlap; identical SQL groups are labeled shared, and their elapsed time is repeated for each query id. Do not add the step times to get the total. For `engine=db`, input-query execution is included in the comparison timing. ZIPs contain a timing snapshot taken before their own packaging; the output folder has final ZIP/cleanup timings and the final total. This applies to XML execution, not validation, live checks or JSON restore/load/change rules.
+
 ## Checking a rule against the databases before the long run
 
 `--validate` checks the rule without connecting. `--check` goes one step further: it asks each database about every query and then checks the rule against the answers. **Nothing is executed and no data is read.**
