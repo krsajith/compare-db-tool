@@ -68,6 +68,7 @@ public final class RuleLoader {
                             case "check" -> rules.checks.add(mapper.readValue(reader, Rules.Check.class));
                             case "presence" -> rules.presences.add(mapper.readValue(reader, Rules.Presence.class));
                             case "suggest" -> rules.suggestions.add(mapper.readValue(reader, Rules.Suggest.class));
+                            case "explain" -> rules.explains.add(mapper.readValue(reader, Rules.Explain.class));
                             case "parameters" -> {
                                 if (parametersSeen) throw new ToolException("Use only one <parameters> block.");
                                 parametersSeen = true;
@@ -134,7 +135,9 @@ public final class RuleLoader {
     }
 
     private static void validateStructure(Rules rules, DatasourceSettings settings, boolean checkQueries) {
-        if (rules.queries == null || rules.queries.isEmpty()) throw new ToolException("Rules need at least one <sql>.");
+        if (rules.explains == null) rules.explains = new ArrayList<>();
+        if ((rules.queries == null || rules.queries.isEmpty()) && rules.explains.isEmpty()) throw new ToolException("Rules need at least one <sql> or <explain>.");
+        if (rules.queries == null) rules.queries = new ArrayList<>();
         Set<String> ids = new HashSet<>();
         Map<String, Rules.Sql> queries = new HashMap<>();
         for (Rules.Sql sql : rules.queries) {
@@ -207,7 +210,9 @@ public final class RuleLoader {
         for (Rules.Funnel funnel : rules.funnels) FunnelRunner.validate(funnel, queries, ids);
         if (rules.presences == null) rules.presences = new ArrayList<>();
         for (Rules.Presence presence : rules.presences) PresenceRunner.validate(presence, queries, ids);
+        for (Rules.Explain explain : rules.explains) ExplainRunner.validate(explain, settings, checkQueries, ids, queries.keySet());
         Set<String> includable = new HashSet<>(queries.keySet());
+        rules.explains.forEach(x -> includable.add(x.id));
         rules.comparisons.forEach(c -> includable.add(c.id));
         rules.funnels.forEach(f -> includable.add(f.id));
         rules.presences.forEach(p -> includable.add(p.id));
@@ -230,12 +235,18 @@ public final class RuleLoader {
         for (Rules.Compare compare : rules.comparisons) outputName(compare.id, outputs);
         for (Rules.Funnel funnel : rules.funnels) outputName(funnel.id, outputs);
         for (Rules.Presence presence : rules.presences) outputName(presence.id, outputs);
+        for (Rules.Explain explain : rules.explains) outputName(explain.id, outputs);
         for (Rules.Compress zip : rules.compressions) outputName(zip.file, outputs);
         Map<String, Object> values = parameters(rules, Map.of());
         if (checkQueries) rules.queries.forEach(q -> {
             Map<String, Object> withInputs = new HashMap<>(values);
             withInputs.putAll(Chaining.placeholders(q));
             QueryRunner.validateParameters(q, withInputs);
+        });
+        if (checkQueries) rules.explains.forEach(x -> {
+            Map<String, Object> withInputs = new HashMap<>(values);
+            withInputs.putAll(Chaining.placeholders(ExplainRunner.asSql(x)));
+            QueryRunner.validateParameters(ExplainRunner.asSql(x), withInputs);
         });
     }
 

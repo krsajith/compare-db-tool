@@ -31,6 +31,8 @@ public class Rules {
     @JacksonXmlProperty(localName = "presence") public List<Presence> presences = new ArrayList<>();
     @JacksonXmlElementWrapper(useWrapping = false)
     @JacksonXmlProperty(localName = "suggest") public List<Suggest> suggestions = new ArrayList<>();
+    @JacksonXmlElementWrapper(useWrapping = false)
+    @JacksonXmlProperty(localName = "explain") public List<Explain> explains = new ArrayList<>();
 
     public static class Param {
         @JacksonXmlProperty(isAttribute = true) public String name;
@@ -139,6 +141,26 @@ public class Rules {
         // presence ref: keys that are not in every source, and keys that are
         @JacksonXmlProperty(isAttribute = true) public String mismatched;
         @JacksonXmlProperty(isAttribute = true, localName = "in-all") public String inAll;
+        // explain ref: the execution time in ms, tables that must not be read by a sequential scan, and the worst estimated-versus-actual row ratio
+        @JacksonXmlProperty(isAttribute = true, localName = "max-ms") public String maxMs;
+        @JacksonXmlProperty(isAttribute = true, localName = "no-seq-scan") public String noSeqScan;
+        @JacksonXmlProperty(isAttribute = true, localName = "max-estimate-error") public String maxEstimateError;
+    }
+
+    /**
+     * The plan of one SELECT or WITH statement (PostgreSQL only). analyze=true (default) runs it with EXPLAIN (ANALYZE, BUFFERS) in a
+     * read-only transaction that is rolled back, so it reads the data like the query does; analyze=false only plans it (nothing is executed).
+     */
+    public static class Explain {
+        @JacksonXmlProperty(isAttribute = true) public String id;
+        @JacksonXmlProperty(isAttribute = true) public String db;
+        /** Seconds the database may take (default 300). */
+        @JacksonXmlProperty(isAttribute = true) public int timeout = 300;
+        @JacksonXmlProperty(isAttribute = true) public boolean analyze = true;
+        @JacksonXmlProperty(isAttribute = true) public boolean buffers = true;
+        /** Inputs from earlier queries, like <sql uses="...">: "alias=query-id"; the statement refers to :alias.column (one row) or :alias.column[] (a list). */
+        @JacksonXmlProperty(isAttribute = true) public String uses;
+        @JacksonXmlText public String text;
     }
 
     /** When the condition holds after the run, suggest previewing a restore rule (a --restore JSON next to this file). The tool never restores by itself. */

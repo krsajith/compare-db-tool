@@ -259,6 +259,32 @@ public final class QueryRunner implements AutoCloseable {
         return new Described(columns, plan, estimatedRows(plan));
     }
 
+    /**
+     * The plan of a statement as PostgreSQL JSON. analyze=true runs it (EXPLAIN ANALYZE) in the read-only pool, which is always rolled back, so it
+     * cannot write; analyze=false only plans it and executes nothing. Production datasources still need --allow-prod.
+     */
+    public String explain(Rules.Explain explain, Map<String, Object> parameters) {
+        Rules.Sql rule = ExplainRunner.asSql(explain);
+        String sql = SqlGuard.validate(rule.text);
+        validateParameters(rule, parameters);
+        var definition = settings.getDatasources().get(explain.db);
+        if (definition == null || definition.getUrl() == null || !definition.getUrl().startsWith("jdbc:postgresql:"))
+            throw new ToolException("<explain> " + explain.id + " works on PostgreSQL datasources only: " + explain.db);
+        String options = explain.analyze ? "ANALYZE" + (explain.buffers ? ", BUFFERS" : "") + ", FORMAT JSON" : "FORMAT JSON";
+        LOG.info("Explain {} datasource={} analyze={} timeoutSeconds={}", explain.id, explain.db, explain.analyze, explain.timeout);
+        var template = new NamedParameterJdbcTemplate(datasource(explain.db, false));
+        return template.execute("EXPLAIN (" + options + ") " + sql, parameters, (PreparedStatementCallback<String>) statement -> {
+            try {
+                statement.setQueryTimeout(explain.timeout);
+                StringBuilder text = new StringBuilder();
+                try (ResultSet result = statement.executeQuery()) {
+                    while (result.next()) text.append(Objects.toString(result.getString(1), ""));
+                }
+                return text.toString();
+            } finally { statement.getConnection().rollback(); }
+        });
+    }
+
     /** Publishes an alias without re-executing the SQL; per-rule row caps and export settings still apply. */
     public Result reuse(Rules.Sql rule, Result shared, long globalLimit, Path directory, ExportMode defaultMode) throws IOException {
         ExportMode mode = ExportMode.resolve(rule.export, defaultMode);

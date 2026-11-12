@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Cash balance refresh is slow since 11-12 Nov 2026: where does the per-trade probe of the cash function spend its time?
+     Step S5 of fn_cash_balance_report_for_scope looks every eligible trade up in deal_ticket_table_with_fy_premium_view, which reads
+     deal_ticket_active_lots_view, which since PR 292 reads the cache latest_active_lot through casts to varchar(255) and varchar(50).
+     Suspicion: those casts stop the planner from using pk_latest_active_lot, so each probe reads the whole cache (sequential scan, once per trade).
+     Run with the target environment flag: target-env postgres-uat. Read-only: the explains run inside the read-only pool and are rolled back.
+     Each probe runs for one trade that the query pick chooses (a CFS trade of the cache), so no trade id is needed and the choice is not part of the plans.
+       view-probe     the cache view for one trade (what S5 reads)             expect: no sequential scan of latest_active_lot
+       table-probe    the cache table for the same trade (control)             expect: index scan on the primary key
+       fy-view-probe  the full view S5 reads for the same trade                expect: no sequential scan of latest_active_lot or cloned_deal_ticket_table
+       history-probe  S3 of the function, the lots history for the trade        expect: index scan, quick
+       fy-view-bu     the view for the whole business unit, plan only (nothing is executed): which scans does it plan?
+     Start with the export flag none and read SUMMARY.md, then each folder's SUMMARY.md and plan.txt. -->
+<rules name="cash-refresh-18-explain-active-lots-cfs">
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+    <param name="bu" type="string" value="CFS"/>
+  </parameters>
+
+  <sql id="pick" db="target" export="full"><![CDATA[
+    SELECT c.trade_id FROM opera.latest_active_lot c
+    WHERE c.tenant_id = :tenant AND c.business_unit = :bu
+    LIMIT 1
+  ]]></sql>
+
+  <explain id="view-probe" db="target" timeout="300" uses="t=pick"><![CDATA[
+    SELECT v.trade_id, v.active_lots
+    FROM opera.deal_ticket_active_lots_view v
+    WHERE v.tenant_id = :tenant AND v.business_unit = :bu
+      AND v.trade_id = :t.trade_id
+  ]]></explain>
+
+  <explain id="table-probe" db="target" timeout="300" uses="t=pick"><![CDATA[
+    SELECT c.trade_id, c.active_lots
+    FROM opera.latest_active_lot c
+    WHERE c.tenant_id = :tenant AND c.business_unit = :bu
+      AND c.trade_id = :t.trade_id
+  ]]></explain>
+
+  <explain id="fy-view-probe" db="target" timeout="300" uses="t=pick"><![CDATA[
+    SELECT p.trade_id, p.security_id, p.is_fixing_done
+    FROM opera.deal_ticket_table_with_fy_premium_view p
+    WHERE p.tenant_id = :tenant AND p.business_unit = :bu
+      AND p.trade_id = :t.trade_id
+  ]]></explain>
+
+  <explain id="history-probe" db="target" timeout="300" uses="t=pick"><![CDATA[
+    SELECT a.active_lots
+    FROM opera.deal_active_lots_table a
+    WHERE a.tenant_id = :tenant AND a.business_unit = :bu
+      AND a.trade_id = :t.trade_id
+      AND a.value_date <= current_date
+    ORDER BY a.value_date DESC
+    LIMIT 1
+  ]]></explain>
+
+  <explain id="fy-view-bu" db="target" analyze="false"><![CDATA[
+    SELECT count(*) AS trades
+    FROM opera.deal_ticket_table_with_fy_premium_view p
+    WHERE p.tenant_id = :tenant AND p.business_unit = :bu
+  ]]></explain>
+
+  <expect ref="pick" rows="1" reason="the cache holds trades for the business unit"/>
+  <expect ref="view-probe" no-seq-scan="latest_active_lot" reason="the cache view must use pk_latest_active_lot for one trade"/>
+  <expect ref="view-probe" max-ms="200" reason="one trade must take milliseconds"/>
+  <expect ref="table-probe" no-seq-scan="latest_active_lot" reason="control: the table itself is looked up by its key"/>
+  <expect ref="fy-view-probe" no-seq-scan="latest_active_lot, cloned_deal_ticket_table" reason="S5 probes this view once per trade"/>
+  <expect ref="fy-view-probe" max-ms="200" reason="one trade must take milliseconds"/>
+  <expect ref="history-probe" no-seq-scan="deal_active_lots_table" reason="S3 reads the lots history by its key"/>
+  <expect ref="history-probe" max-ms="200"/>
+
+  <compress id="bundle" file="cash-refresh-18-explain-active-lots.zip">
+    <include ref="pick"/><include ref="view-probe"/><include ref="table-probe"/><include ref="fy-view-probe"/><include ref="history-probe"/><include ref="fy-view-bu"/>
+  </compress>
+</rules>

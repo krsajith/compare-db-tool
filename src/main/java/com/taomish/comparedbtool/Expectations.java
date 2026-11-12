@@ -67,11 +67,14 @@ final class Expectations {
         for (Rules.Funnel f : rules.funnels) funnels.put(f.id, f);
         Set<String> presenceIds = new HashSet<>();
         for (Rules.Presence p : rules.presences) presenceIds.add(p.id);
+        Set<String> explainIds = new HashSet<>();
+        for (Rules.Explain x : rules.explains) explainIds.add(x.id);
         for (Rules.Expect e : rules.expectations) {
             if (e.expr != null) {
                 boolean others = e.mismatched != null || e.inAll != null || e.ref != null || e.rows != null || e.column != null || e.row != null || e.each != null || e.equals != null || e.min != null
                     || e.max != null || e.between != null || e.isNull != null || e.matched != null || e.equal != null || e.different != null
-                    || e.onlySource != null || e.onlyTarget != null || e.duplicates != null || e.firstDivergence != null || e.diverging != null;
+                    || e.onlySource != null || e.onlyTarget != null || e.duplicates != null || e.firstDivergence != null || e.diverging != null
+                    || e.maxMs != null || e.noSeqScan != null || e.maxEstimateError != null;
                 if (others) throw new ToolException("<expect expr=\"...\"> cannot be combined with ref= or the other checks; give each its own <expect>.");
                 if (e.judges != null) for (String id : e.judges.split(",", -1)) {
                     String name = id.strip();
@@ -84,9 +87,22 @@ final class Expectations {
             if (e.judges != null) throw new ToolException("judges= belongs to <expect expr=\"...\">.");
             if (e.ref == null || e.ref.isBlank()) throw new ToolException("<expect> needs ref=\"query or comparison id\" or expr=\"...\".");
             boolean query = queryIds.contains(e.ref), comparison = comparisonIds.contains(e.ref), funnel = funnels.containsKey(e.ref), presence = presenceIds.contains(e.ref);
-            if (!query && !comparison && !funnel && !presence)
+            boolean explain = explainIds.contains(e.ref);
+            if (!query && !comparison && !funnel && !presence && !explain)
                 throw new ToolException("<expect ref=\"" + e.ref + "\"> references an unknown id. Queries: "
-                    + new TreeSet<>(queryIds) + "; comparisons: " + new TreeSet<>(comparisonIds) + "; funnels: " + new TreeSet<>(funnels.keySet()) + "; presences: " + new TreeSet<>(presenceIds));
+                    + new TreeSet<>(queryIds) + "; comparisons: " + new TreeSet<>(comparisonIds) + "; funnels: " + new TreeSet<>(funnels.keySet()) + "; presences: " + new TreeSet<>(presenceIds) + "; explains: " + new TreeSet<>(explainIds));
+            boolean explainAttrs = e.maxMs != null || e.noSeqScan != null || e.maxEstimateError != null;
+            if (!explain && explainAttrs) throw new ToolException("<expect ref=\"" + e.ref + "\">: max-ms, no-seq-scan and max-estimate-error apply to an <explain>.");
+            if (explain) {
+                if (queryAttrs(e) || compareAttrs(e) || e.firstDivergence != null || e.diverging != null || e.mismatched != null || e.inAll != null)
+                    throw new ToolException("<expect ref=\"" + e.ref + "\"> is an explain: use max-ms, no-seq-scan or max-estimate-error.");
+                if (!explainAttrs) throw new ToolException("<expect ref=\"" + e.ref + "\"> states nothing to check.");
+                if (e.maxMs != null) number("max-ms", e.maxMs);
+                if (e.maxEstimateError != null) number("max-estimate-error", e.maxEstimateError);
+                if (e.noSeqScan != null && Arrays.stream(e.noSeqScan.split(",", -1)).anyMatch(s -> s.isBlank()))
+                    throw new ToolException("<expect ref=\"" + e.ref + "\" no-seq-scan=\"" + e.noSeqScan + "\"> needs table names separated by commas, or *.");
+                continue;
+            }
             boolean funnelAttrs = e.firstDivergence != null || e.diverging != null;
             boolean presenceAttrs = e.mismatched != null || e.inAll != null;
             if (!presence && presenceAttrs) throw new ToolException("<expect ref=\"" + e.ref + "\">: mismatched and in-all apply to a <presence>.");
@@ -183,7 +199,17 @@ final class Expectations {
 
     static Report evaluate(Rules rules, Map<String, QueryRunner.Result> queries, List<ComparisonRunner.Result> comparisons,
                            List<FunnelRunner.Result> funnels, List<PresenceRunner.Result> presences, Map<String, Object> parameters, Set<String> skipped) {
+        return evaluate(rules, queries, comparisons, funnels, presences, List.of(), parameters, skipped);
+    }
+
+    static Report evaluate(Rules rules, Map<String, QueryRunner.Result> queries, List<ComparisonRunner.Result> comparisons,
+                           List<FunnelRunner.Result> funnels, List<PresenceRunner.Result> presences, List<ExplainRunner.Result> explains,
+                           Map<String, Object> parameters, Set<String> skipped) {
         List<Verdict> verdicts = new ArrayList<>();
+        Map<String, ExplainRunner.Result> explainById = new HashMap<>();
+        explains.forEach(x -> explainById.put(x.id(), x));
+        Set<String> explainIds = new HashSet<>();
+        rules.explains.forEach(x -> explainIds.add(x.id));
         Map<String, PresenceRunner.Result> presenceById = new HashMap<>();
         presences.forEach(p -> presenceById.put(p.id(), p));
         Set<String> presenceIds = new HashSet<>();
@@ -205,6 +231,10 @@ final class Expectations {
             if (e.expr != null) {
                 if (e.judges != null) for (String id : e.judges.split(",", -1)) judged.add(id.strip());
                 evaluateExpression(rules, e, queries, comparisons, funnels, presences, parameters, skipped, verdicts);
+                continue;
+            }
+            if (explainIds.contains(e.ref)) {
+                evaluateExplain(e, explainById.get(e.ref), verdicts);
                 continue;
             }
             if (presenceIds.contains(e.ref)) {
@@ -262,6 +292,35 @@ final class Expectations {
 
     private static boolean compareAttrs(Rules.Expect e) {
         return e.matched != null || e.equal != null || e.different != null || e.onlySource != null || e.onlyTarget != null || e.duplicates != null;
+    }
+
+    private static void evaluateExplain(Rules.Expect e, ExplainRunner.Result r, List<Verdict> out) {
+        if (r == null) {
+            String why = "explain did not complete (see MANUAL_ACTIONS.md)";
+            if (e.maxMs != null) out.add(new Verdict(e.ref, "execution time ms", "<=" + e.maxMs, why, false, e.reason));
+            if (e.noSeqScan != null) out.add(new Verdict(e.ref, "sequential scan of " + e.noSeqScan, "none", why, false, e.reason));
+            if (e.maxEstimateError != null) out.add(new Verdict(e.ref, "row estimate error", "<=" + e.maxEstimateError, why, false, e.reason));
+            return;
+        }
+        String needsAnalyze = "the explain has analyze=\"false\", so nothing was executed";
+        if (e.maxMs != null) {
+            BigDecimal limit = number("max-ms", e.maxMs);
+            out.add(r.analyze() ? new Verdict(e.ref, "execution time ms", "<=" + e.maxMs, ExplainRunner.fmt(r.executionMs()), r.executionMs() <= limit.doubleValue(), e.reason)
+                : new Verdict(e.ref, "execution time ms", "<=" + e.maxMs, needsAnalyze, false, e.reason));
+        }
+        if (e.noSeqScan != null) {
+            boolean any = Arrays.stream(e.noSeqScan.split(",", -1)).anyMatch(s -> s.strip().equals("*"));
+            Set<String> tables = new HashSet<>();
+            for (String s : e.noSeqScan.split(",", -1)) tables.add(s.strip().toLowerCase(Locale.ROOT));
+            List<String> hits = r.seqScans().stream().filter(n -> any || (n.relation() != null && tables.contains(n.relation().toLowerCase(Locale.ROOT))))
+                .map(n -> n.relation() + (r.analyze() ? " (" + ExplainRunner.fmt(n.actualRows()) + " rows x " + ExplainRunner.fmt(n.loops()) + " loops)" : "")).toList();
+            out.add(new Verdict(e.ref, "sequential scan of " + e.noSeqScan, "none", hits.isEmpty() ? "none" : String.join(", ", hits), hits.isEmpty(), e.reason));
+        }
+        if (e.maxEstimateError != null) {
+            BigDecimal limit = number("max-estimate-error", e.maxEstimateError);
+            out.add(r.analyze() ? new Verdict(e.ref, "row estimate error", "<=" + e.maxEstimateError, ExplainRunner.fmt(r.worstError()) + "x", r.worstError() <= limit.doubleValue(), e.reason)
+                : new Verdict(e.ref, "row estimate error", "<=" + e.maxEstimateError, needsAnalyze, false, e.reason));
+        }
     }
 
     private static void evaluatePresence(Rules.Expect e, PresenceRunner.Result r, List<Verdict> out) {

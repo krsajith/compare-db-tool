@@ -24,6 +24,8 @@ checksums. Depersonalisation is parked (depends on the project).
 
 **Not done:** generating a restore rule from a comparison (needs table names, keys and scope that the SQL does not give); restoring directly from another database (MySQL to PostgreSQL).
 
+## DONE 12-Nov-2026: `<explain>`: EXPLAIN (ANALYZE, BUFFERS) of one statement in a read-only, rolled back transaction, or plan only (`analyze="false"`); `max-ms`, `no-seq-scan`, `max-estimate-error` expectations; plan.txt, plan.json, SUMMARY.md (see README and HOW-TO-USE 6.5b)
+
 ## DONE 04-Nov-2026: `--check`: EXPLAIN and column description of every query against the live databases (see README)
 
 **Not done:** checking `engine="db"` types; resolving the values of chained queries for a more exact check.

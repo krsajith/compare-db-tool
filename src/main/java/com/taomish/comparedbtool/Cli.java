@@ -285,7 +285,7 @@ public final class Cli {
                 rules.queries.size(), rules.comparisons.size(), rules.compressions.size());
             Progress.get().quiet(options.quiet);
             Progress.get().line("compare-db-tool: rules are valid - " + rules.queries.size() + " queries, " + rules.comparisons.size() + " comparisons, "
-                + rules.funnels.size() + " funnels, " + rules.expectations.size() + " expectations, " + rules.compressions.size() + " ZIP. No connection was opened.");
+                + rules.funnels.size() + " funnels, " + (rules.explains.isEmpty() ? "" : rules.explains.size() + " explains, ") + rules.expectations.size() + " expectations, " + rules.compressions.size() + " ZIP. No connection was opened.");
             RuleLint.print(rules, options.export);
             return new Outcome(0, null, new Expectations.Report(List.of(), Set.of()));
         }
@@ -303,11 +303,12 @@ public final class Cli {
         }
         Progress.get().quiet(options.quiet);
         RuleTimings timings = new RuleTimings(startedNanos);
-        Progress.get().line("compare-db-tool: " + rules.name + " - " + rules.queries.size() + (rules.queries.size() == 1 ? " query" : " queries") + " on "
-            + String.join(", ", rules.queries.stream().map(q -> q.db).distinct().toList())
+        Progress.get().line("compare-db-tool: " + rules.name + " - " + rules.queries.size() + (rules.queries.size() == 1 ? " query" : " queries")
+            + (rules.queries.isEmpty() ? "" : " on " + String.join(", ", rules.queries.stream().map(q -> q.db).distinct().toList()))
             + (rules.comparisons.isEmpty() ? "" : ", " + rules.comparisons.size() + (rules.comparisons.size() == 1 ? " comparison" : " comparisons"))
             + (rules.funnels.isEmpty() ? "" : ", " + rules.funnels.size() + (rules.funnels.size() == 1 ? " funnel" : " funnels"))
             + (rules.presences.isEmpty() ? "" : ", " + rules.presences.size() + (rules.presences.size() == 1 ? " presence matrix" : " presence matrices"))
+            + (rules.explains.isEmpty() ? "" : ", " + rules.explains.size() + (rules.explains.size() == 1 ? " explain" : " explains"))
             + "; export " + options.export.name().toLowerCase(Locale.ROOT) + (options.limit > 0 ? ", row limit " + Progress.count(options.limit) : ""));
         Progress.get().line("  output: " + directory);
         Map<String, List<Path>> artifacts = new LinkedHashMap<>();
@@ -458,11 +459,31 @@ public final class Cli {
                     artifacts.put(presence.id, List.of(note));
                 }
             }
+            // Plans of single statements (EXPLAIN, optionally ANALYZE). They stand alone and run after the queries, one at a time.
+            List<ExplainRunner.Result> explains = new ArrayList<>();
+            for (Rules.Explain explain : rules.explains) {
+                LOG.info("Starting explain {} (analyze={})...", explain.id, explain.analyze);
+                try (var step = timings.start("explain", explain.id)) {
+                    Map<String, Object> bound = new HashMap<>(parameters);
+                    bound.putAll(Chaining.bind(ExplainRunner.asSql(explain), queries));
+                    var result = new ExplainRunner().run(explain, bound, runner, directory);
+                    explains.add(result); artifacts.put(explain.id, result.files());
+                    Progress.get().line("  explain " + explain.id + ": " + result.headline());
+                } catch (Exception error) {
+                    LOG.error("Explain {} did not complete; continuing", explain.id, error);
+                    String detail = failureReason(error);
+                    Progress.get().line("  FAILED explain " + explain.id + ": " + Menu.shorten(detail.replaceAll("\\s+", " "), 200));
+                    failures.put(explain.id, "Explain " + explain.id + ": " + detail);
+                    Path note = manualDirectory.resolve(explain.id + ".md");
+                    Files.writeString(note, "# Explain " + explain.id + " not completed\n\n" + detail + "\n");
+                    artifacts.put(explain.id, List.of(note));
+                }
+            }
             boolean partial = queries.values().stream().anyMatch(QueryRunner.Result::partial);
             // Query CSVs still exist here (they live under .work until the run ends), so expectations can read them.
             Expectations.Report report;
             try (var step = timings.start("expectations", "evaluate")) {
-                report = Expectations.evaluate(rules, queries, comparisons, funnels, presences, parameters, skipped);
+                report = Expectations.evaluate(rules, queries, comparisons, funnels, presences, explains, parameters, skipped);
                 Expectations.write(directory, report);
             }
             // A comparison the rule has stated expectations for is judged by them; the rest still count as differences.
@@ -529,6 +550,7 @@ public final class Cli {
             for (var result : comparisons) summary.append("- ").append(result.id()).append(": ").append(result.headline()).append("\n");
             for (var result : funnels) summary.append("- funnel ").append(result.id()).append(": ").append(result.headline()).append("\n");
             for (var result : presences) summary.append("- presence ").append(result.id()).append(": ").append(result.headline()).append("\n");
+            for (var result : explains) summary.append("- explain ").append(result.id()).append(": ").append(result.headline()).append(" (").append(result.id()).append("/SUMMARY.md)\n");
             summary.append("\nQueries run with bounded concurrency and one active query per datasource; identical SQL is reused. "
                 + "Ready comparisons run while other queries continue. Results are not a synchronized cross-database snapshot.\n");
             ComparisonRunner.writeSmallSummary(directory.resolve("SUMMARY.md"), summary.toString());

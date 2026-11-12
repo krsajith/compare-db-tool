@@ -70,6 +70,26 @@ final class LiveCheck {
                     }
                 }
             }
+            for (Rules.Explain explain : rules.explains) {
+                String subject = "explain " + explain.id + " (" + explain.db + ")";
+                if (unreachable.contains(explain.db)) { add(lines, Status.SKIP, subject, "datasource " + explain.db + " could not be reached (see above)"); continue; }
+                try {
+                    Map<String, Object> bound = new HashMap<>(parameters);
+                    bound.putAll(Chaining.placeholders(ExplainRunner.asSql(explain)));
+                    QueryRunner.Described d = runner.describe(ExplainRunner.asSql(explain), bound);
+                    add(lines, Status.OK, subject, "the statement plans" + (d.estimatedRows() != null ? ", the planner expects about " + Progress.count(d.estimatedRows()) + " rows" : "")
+                        + (explain.analyze ? "; the run executes it (read-only, rolled back)" : "; plan only, nothing is executed"));
+                } catch (Exception error) {
+                    Throwable root = error;
+                    for (Throwable cause = error; cause != null; cause = cause.getCause()) root = cause;
+                    String message = SecretRedactorHolder.clean(Objects.toString(root.getMessage(), root.getClass().getSimpleName())).replaceAll("\\s+", " ");
+                    if (message.length() > 260) message = message.substring(0, 257) + "...";
+                    boolean usesOtherQueries = explain.uses != null && !explain.uses.isBlank();
+                    if (usesOtherQueries && !(error instanceof ToolException))
+                        add(lines, Status.WARN, subject, "could not be checked completely because it uses values from another query: " + message);
+                    else add(lines, Status.FAIL, subject, message);
+                }
+            }
         }
         structure(rules, stubs, lines);
         long failed = lines.stream().filter(l -> l.status() == Status.FAIL).count(), warned = lines.stream().filter(l -> l.status() == Status.WARN).count();

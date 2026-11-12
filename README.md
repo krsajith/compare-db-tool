@@ -54,7 +54,7 @@ XML rule runs automatically print elapsed time for each query, comparison (inclu
   FAIL  funnel deals, stage s2: query l2 has no key column(s) [deal_id]; its columns: [id, a]
 ```
 
-- **Per query:** the database prepares the statement and describes its columns, and runs `EXPLAIN` (never `EXPLAIN ANALYZE`). A missing table or column, a syntax error or a type mismatch comes back with the database's own message, exactly as it would at run time.
+- **Per query:** the database prepares the statement and describes its columns, and runs `EXPLAIN` (never `EXPLAIN ANALYZE`; for a timed plan use `<explain>`, see below). A missing table or column, a syntax error or a type mismatch comes back with the database's own message, exactly as it would at run time.
   On PostgreSQL the planner's row estimate is shown, with a warning above 5 million rows (estimates can be off).
 - **Against the real columns:** key columns of comparisons (column mappings honoured), funnels and presence matrices; the column in every `:alias.column` / `:alias.column[]` (including a comparison's `:only-source`, `:only-target`, `:different`, which have the
   source or target query's columns); and columns named in `<expect column="...">`.
@@ -316,6 +316,32 @@ A small, restricted expression language (Spring SpEL) is available in four place
   A presence with keys missing somewhere is a difference (exit 1) unless an `<expect>` or `judges=` accounts for it.
 - It shows up in the run `SUMMARY.md`, in `FINDINGS.md` and can be put in a ZIP with `<include ref="trade-presence"/>`. A presence whose source query was skipped is skipped; one whose source failed is listed in `MANUAL_ACTIONS.md`.
 - Values are not compared (that is what `<compare>` does for two sources); use a comparison for the pair you care about once the presence has told you where the keys differ. See `rules/presence.example.xml`.
+
+## Explain: why is this query slow? (`<explain>`)
+
+`--check` only plans a query and never runs it. When you need to know where a statement spends its time, state it as an `<explain>`: the tool asks PostgreSQL
+for the plan (`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)`), reads out what matters and lets you say what you expect.
+
+```xml
+<explain id="probe" db="postgres-uat" timeout="300"><![CDATA[
+  SELECT * FROM opera.deal_ticket_active_lots_view
+  WHERE tenant_id = :tenant AND business_unit = 'CFS' AND trade_id = :trade
+]]></explain>
+<expect ref="probe" max-ms="200" reason="one trade must be quick"/>
+<expect ref="probe" no-seq-scan="latest_active_lot" reason="the primary key must be used"/>
+<expect ref="probe" max-estimate-error="100" reason="statistics are current"/>
+```
+
+- **The statement** is the element text: one `SELECT` or `WITH`, with `:parameters`, checked by the same guard as `<sql>`. It is not also run as a query, so nothing is executed twice.
+- **`analyze="true"` (default)** executes the statement inside the datasource's read-only pool; the transaction is always rolled back, so it cannot write. It reads the data like the query does, so give it a `timeout` (seconds, default 300).
+  **`analyze="false"`** plans only and executes nothing (no times, no actual rows). `buffers="false"` leaves out the block counters.
+- **`uses="t=pick"`** takes a value from an earlier `<sql>` like a query does: the statement refers to `:t.column` (exactly one row) or `:t.column[]` (a list). The explain runs after all queries, so use it to pick a trade, a date or a client without that choice appearing in the plan.
+- **PostgreSQL only.** A production datasource still needs `--allow-prod`. `--check` plans the statement (never runs it) and says which of the two the run will do.
+- **Output** in `<id>/`: `SUMMARY.md` (headline, sequential scans, the five slowest nodes by their own time over all loops, nodes whose row estimate is far from the real count), `plan.txt` (the tree) and `plan.json` (the raw plan). The run `SUMMARY.md` lists the headline.
+- **Expectations** on an explain: `max-ms` (execution time), `no-seq-scan` (comma separated tables, or `*` for any sequential scan) and `max-estimate-error` (the worst ratio between expected and actual rows of a node; nodes that expect and return fewer than 100 rows are ignored).
+  With `analyze="false"`, `max-ms` and `max-estimate-error` fail with a reason, because nothing was executed; `no-seq-scan` still works on the planned scans.
+- A function call (`SELECT * FROM fn(...)`) shows as one node: the statements inside a function are not visible. Explain those statements one by one.
+- A rule may contain only `<explain>` elements. They can be put in a ZIP with `<include ref="probe"/>`.
 
 ## Funnels: the first stage where two sides stop agreeing
 

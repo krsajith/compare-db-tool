@@ -62,6 +62,7 @@ It can also restore rows from a backup table (always preview first) and move rep
 | Move report templates between environments | `--template-export`, `--template-import` | 6.10 |
 | Browse, re-run and confirm risky runs interactively | menu (`.\compare.ps1` with no arguments) | 6.11 |
 | Bundle selected outputs for sending | `<compress>` | 5.8 |
+| Why is a statement slow? Plan, time, sequential scans, bad estimates (PostgreSQL) | `<explain>` | 6.5b |
 
 ---
 
@@ -365,6 +366,35 @@ A funnel is an ordered list of stages; each stage is a pair of queries returning
 - `mode="chain"` (stages with only `source`): one side; shows the stage where each key drops out, e.g. the stages of one report pipeline. Add `group="outcome"` (one of the key columns) to get side-by-side columns per group (FAIL vs OK). A chain is a report; it never gives exit 1.
 - Up to 30 stages. `rules/grasa-funnel-cfs-v2.xml` is a real chain funnel.
 
+### 6.5b Explain: why is a statement slow? (PostgreSQL)
+`--check` only plans a query. An `<explain>` asks PostgreSQL for the real plan of one statement (`EXPLAIN (ANALYZE, BUFFERS)`), reads out the time, the slowest nodes, sequential scans and row estimates that are far off, and lets you state what you expect.
+
+```xml rule
+<rules name="why-slow">
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+    <param name="trade" type="string" value="TR-1"/>
+  </parameters>
+  <explain id="probe" db="postgres-dev" timeout="120"><![CDATA[
+    SELECT active_lots FROM opera.latest_active_lot
+    WHERE tenant_id = :tenant AND business_unit = 'CFS' AND trade_id = :trade
+  ]]></explain>
+  <explain id="plan-only" db="postgres-dev" analyze="false"><![CDATA[
+    SELECT * FROM opera.deal_ticket_active_lots_view WHERE tenant_id = :tenant AND business_unit = 'CFS' AND trade_id = :trade
+  ]]></explain>
+  <expect ref="probe" max-ms="200" reason="one trade must be quick"/>
+  <expect ref="probe" no-seq-scan="latest_active_lot" reason="the primary key must be used"/>
+  <expect ref="plan-only" no-seq-scan="*" reason="the planned view lookup must not scan a table"/>
+  <compress id="bundle" file="why-slow.zip"><include ref="probe"/><include ref="plan-only"/></compress>
+</rules>
+```
+- The element text is one `SELECT` or `WITH` (same guard as `<sql>`, `:parameters` allowed). It is **not** also run as a query.
+- `analyze="true"` (default) executes it in the read-only pool that is always rolled back; give it a `timeout` (default 300 s). `analyze="false"` plans only and executes nothing. `buffers="false"` drops the block counters.
+- `uses="t=pick"` takes a value from an earlier `<sql>` (`:t.column` one row, `:t.column[]` a list), so the choice of a trade or date is not part of the plan.
+- PostgreSQL only; a production datasource needs `--allow-prod`. `--check` plans the statement and says whether the run will execute it.
+- Expectations: `max-ms`, `no-seq-scan="table1, table2"` (or `*`), `max-estimate-error="100"`. With `analyze="false"` the first and last fail with a reason (nothing was executed).
+- Output `<id>/SUMMARY.md`, `plan.txt` (the tree), `plan.json` (raw). A function call shows as one node: explain the statements inside it one by one.
+
 ### 6.6 Use one query's result in another (chaining, drill-down, batching)
 A query declares its inputs with `uses`; the SQL refers to them by alias. Values are always bound parameters.
 
@@ -430,7 +460,7 @@ Reading results by id: `#query1.first.first_name`, `#query1.rows`, `#trades.only
 
 ### 6.8 `--validate` and `--check`: catch mistakes before the long run
 - `--validate` (offline): XML, ids, SQL guard, parameters, aliases, cycles, expressions, key names.
-- `--check` (connects, reads nothing): for every query the database prepares the statement, describes its columns and runs `EXPLAIN` (never `ANALYZE`). Finds missing tables/columns, syntax and type errors with the database's own message; checks key columns of comparisons/funnels/presence, `:alias.col` inputs and `<expect column>` against the real column lists; shows the planner's row estimate on PostgreSQL (warns above 5 million). An unreachable database is reported once (10 s) and its other queries are skipped. Temp-table queries and `engine="db"` types are not checked.
+- `--check` (connects, reads nothing): for every query the database prepares the statement, describes its columns and runs `EXPLAIN` (never `ANALYZE`; for a timed plan use `<explain>`, section 6.5b). Finds missing tables/columns, syntax and type errors with the database's own message; checks key columns of comparisons/funnels/presence, `:alias.col` inputs and `<expect column>` against the real column lists; shows the planner's row estimate on PostgreSQL (warns above 5 million). An unreachable database is reported once (10 s) and its other queries are skipped. Temp-table queries and `engine="db"` types are not checked.
   Output: console lines `OK / WARN / FAIL / SKIP` and `CHECK.md`.
 - Both print `advice:` lines about a rule that is valid but probably not what you want: a standalone query that keeps no rows, no `<expect>`, no `<compress>`, `SELECT *`. Advice never stops a run.
 
