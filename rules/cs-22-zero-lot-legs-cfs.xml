@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Zero-lot trades, read-only, 12-Nov-2026. The legacy statement cache keeps legs with active_lots = 0 (the view has no lots filter);
+     the new statement refresh drops them (fn_refresh_client_statement_positions_v4 :70, active_lots <> 0). CFS 06-Nov: MAO_W_303 (price 0,
+     lots 0, settle 599.25) prints a row in legacy and not in the new statement. How many such trades exist, of which types, and do they
+     carry a contract number (MATLAB drops an empty contract number, generate_client_statements.m :1375)? Run with the target environment
+     for the PostgreSQL side: target-env postgres-uat. -->
+<rules name="cs-22-zero-lot-legs-cfs">
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+  </parameters>
+  <sql id="legacy-cache-zero-lots" db="mysql-oprdb02" timeout="300" export="full"><![CDATA[
+    SELECT derivative_type, count(*) AS legs,
+           sum(CASE WHEN contract_number IS NULL OR contract_number = '' THEN 1 ELSE 0 END) AS without_contract_number,
+           sum(CASE WHEN contract_number IS NOT NULL AND contract_number <> '' THEN 1 ELSE 0 END) AS with_contract_number
+    FROM dbsystemuat.helper_client_statement_report_view_cache_table_cfs
+    WHERE active_lots = 0
+    GROUP BY derivative_type
+  ]]></sql>
+  <sql id="legacy-cache-zero-lots-with-contract" db="mysql-oprdb02" timeout="300" export="full"><![CDATA[
+    SELECT trade_id, contract_number, client_code, derivative_type, instrument, subportfolio, transaction_date, traded_price, active_lots,
+           settle_price, future_price, mtm_usd, netting_status
+    FROM dbsystemuat.helper_client_statement_report_view_cache_table_cfs
+    WHERE active_lots = 0 AND contract_number IS NOT NULL AND contract_number <> ''
+    ORDER BY contract_number
+  ]]></sql>
+  <sql id="new-latest-active-lot-counts" db="target" timeout="300" export="full"><![CDATA[
+    SELECT business_unit, count(*) AS rows_total,
+           count(*) FILTER (WHERE active_lots <> 0) AS nonzero,
+           count(*) FILTER (WHERE active_lots = 0) AS zero_lots
+    FROM opera.latest_active_lot
+    WHERE tenant_id = :tenant
+    GROUP BY business_unit
+    ORDER BY rows_total DESC
+  ]]></sql>
+  <sql id="new-zero-lot-trades-cfs" db="target" timeout="300" export="full"><![CDATA[
+    SELECT d.trade_id, d.contract_number, d.instrument, d.subportfolio, d.transaction_date, d.premium, l.active_lots,
+           d.netting_status, d.netting_date
+    FROM opera.latest_active_lot l
+    JOIN opera.cloned_deal_ticket_table d
+      ON d.tenant_id = l.tenant_id AND d.business_unit = l.business_unit AND d.trade_id = l.trade_id AND d.is_latest_version = 1
+    WHERE l.tenant_id = :tenant AND l.business_unit = 'CFS' AND l.active_lots = 0
+      AND d.contract_number IS NOT NULL AND d.contract_number <> ''
+      AND d.netting_status <> 'fully_netted'
+    ORDER BY d.contract_number
+  ]]></sql>
+  <expect ref="legacy-cache-zero-lots" rows="&gt;=0" reason="counts of zero-lot legs in the legacy cache"/>
+  <expect ref="new-latest-active-lot-counts" rows="&gt;=1" reason="counts per business unit"/>
+  <compress id="bundle" file="cs-22-zero-lot-legs.zip">
+    <include ref="legacy-cache-zero-lots"/><include ref="legacy-cache-zero-lots-with-contract"/>
+    <include ref="new-latest-active-lot-counts"/><include ref="new-zero-lot-trades-cfs"/>
+  </compress>
+</rules>

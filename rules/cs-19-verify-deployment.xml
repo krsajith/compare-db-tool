@@ -31,6 +31,10 @@
        WHERE NOT EXISTS (SELECT 1 FROM pg_proc WHERE pronamespace = 'opera'::regnamespace AND proname = 'fn_refresh_client_statement_positions'
                            AND position('2026-11-12: case-insensitive' in prosrc) > 0)
       UNION ALL
+      SELECT 'fn_refresh_client_statement_positions still drops zero-lot trades (not v5)'
+       WHERE NOT EXISTS (SELECT 1 FROM pg_proc WHERE pronamespace = 'opera'::regnamespace AND proname = 'fn_refresh_client_statement_positions'
+                           AND position('zero lots are kept' in prosrc) > 0)
+      UNION ALL
       SELECT 'fn_client_statement_position_rows_v2 has no case-insensitive spot match'
        WHERE NOT EXISTS (SELECT 1 FROM pg_proc WHERE pronamespace = 'opera'::regnamespace AND proname = 'fn_client_statement_position_rows_v2'
                            AND position('2026-11-12: case-insensitive' in prosrc) > 0)
