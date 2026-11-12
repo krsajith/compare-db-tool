@@ -224,7 +224,7 @@ public final class RuleLoader {
         }
         validateExpressions(rules);
         Expectations.validate(rules, queries.keySet());
-        Set<String> outputs = new HashSet<>(Set.of("findings.md", "expectations.md", "summary.md", "parameters.csv", "rules.xml", "error.md", "manual_actions.md", "manual", ".work"));
+        Set<String> outputs = new HashSet<>(Set.of("findings.md", "expectations.md", "summary.md", "timings.csv", "timings.md", "parameters.csv", "rules.xml", "error.md", "manual_actions.md", "manual", ".work"));
         for (Rules.Sql query : rules.queries) for (String suffix : List.of(".csv", ".sql", ".md"))
             outputName(query.id + suffix, outputs);
         for (Rules.Compare compare : rules.comparisons) outputName(compare.id, outputs);
@@ -298,7 +298,7 @@ public final class RuleLoader {
             throw new ToolException("Conflicting/reserved output filename: " + name);
     }
     static void id(String id, Set<String> ids) {
-        Set<String> reserved = Set.of("summary", "parameters", "rules", "error", "expectations", "expectations.md", "findings", "findings.md", "rules.xml", "parameters.csv", "summary.md", "error.md");
+        Set<String> reserved = Set.of("timings", "summary", "parameters", "rules", "error", "expectations", "expectations.md", "findings", "findings.md", "rules.xml", "parameters.csv", "summary.md", "error.md");
         if (id == null || !id.matches("[A-Za-z][A-Za-z0-9_.-]{0,79}")
             || id.endsWith(".") || id.matches("(?i)(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\\..*)?")
             || reserved.contains(id.toLowerCase(Locale.ROOT)) || !ids.add(id.toLowerCase(Locale.ROOT)))
