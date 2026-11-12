@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Every client-level setting the legacy statement reads, all CFS clients, legacy MySQL, read-only, one run.
+     Purpose: find what separates BFA (legacy prints swap rows as the sum of legs rounded to cents) from the 30 clients whose
+     legacy rows are the exact sum (cs-12 to cs-14, 12 Nov). The MATLAB source on disk rounds every leg for every client
+     (generate_client_statements.m :1359/:1362), so the deployed build decides per client on something in the data. -->
+<rules name="cs-16-client-settings-legacy-cfs">
+  <sql id="client-master" db="mysql-oprdb02" timeout="120" export="full"><![CDATA[
+    SELECT * FROM dbsystemuat.client_master_data_cfs
+  ]]></sql>
+  <sql id="client-threshold" db="mysql-oprdb02" timeout="120" export="full"><![CDATA[
+    SELECT * FROM dbsystemuat.client_threshold_master_table_cfs
+  ]]></sql>
+  <sql id="client-sub-accounts" db="mysql-oprdb02" timeout="120" export="full"><![CDATA[
+    SELECT * FROM dbsystemuat.client_sub_account_mapping_table_cfs
+  ]]></sql>
+  <sql id="client-information" db="mysql-oprdb02" timeout="120" export="full"><![CDATA[
+    SELECT * FROM dbsystemuat.client_information_table_cfs
+  ]]></sql>
+  <sql id="booking-per-client" db="mysql-oprdb02" timeout="300" export="full"><![CDATA[
+    SELECT b.client_code, count(*) AS booking_rows, count(DISTINCT b.contract_number) AS contracts,
+           count(DISTINCT CASE WHEN m.n > 1 THEN b.contract_number END) AS contracts_with_several_booking_rows,
+           sum(CASE WHEN b.sub_account IS NOT NULL AND b.sub_account <> '' THEN 1 ELSE 0 END) AS rows_with_sub_account,
+           count(DISTINCT b.structure_name) AS structures, max(b.structure_name) AS a_structure,
+           sum(CASE WHEN b.daily_or_eod = 'DAILY' THEN 1 ELSE 0 END) AS daily_rows,
+           sum(CASE WHEN b.daily_or_eod = 'EOD' THEN 1 ELSE 0 END) AS eod_rows,
+           sum(CASE WHEN b.structure_name IS NULL OR b.structure_name = '' THEN 1 ELSE 0 END) AS rows_without_structure,
+           min(b.trade_date) AS first_trade_date, max(b.trade_date) AS last_trade_date
+    FROM dbsystemuat.client_statement_booking_order_information_table_cfs b
+    JOIN (SELECT contract_number, count(*) AS n FROM dbsystemuat.client_statement_booking_order_information_table_cfs GROUP BY contract_number) m
+      ON m.contract_number = b.contract_number
+    GROUP BY b.client_code
+  ]]></sql>
+  <sql id="booking-structures" db="mysql-oprdb02" timeout="300" export="full"><![CDATA[
+    SELECT client_code, structure_name, daily_or_eod, count(*) AS booking_rows
+    FROM dbsystemuat.client_statement_booking_order_information_table_cfs
+    GROUP BY client_code, structure_name, daily_or_eod
+  ]]></sql>
+  <sql id="deals-per-counterparty" db="mysql-oprdb02" timeout="600" export="full"><![CDATA[
+    SELECT d.counterparty_parent, count(*) AS trades, count(DISTINCT d.contract_number) AS contracts,
+           sum(CASE WHEN d.contract_number REGEXP '[ABC]$' THEN 1 ELSE 0 END) AS trades_on_suffixed_contracts,
+           count(DISTINCT d.instrument) AS instruments, max(d.trade_source) AS a_trade_source,
+           count(DISTINCT d.trade_source) AS trade_sources, count(DISTINCT d.subportfolio) AS subportfolios,
+           max(d.subportfolio) AS a_subportfolio
+    FROM dbsystemuat.cloned_deal_ticket_table_cfs d
+    WHERE d.subportfolio LIKE 'RMS%' AND d.transaction_date < '2026-11-06'
+    GROUP BY d.counterparty_parent
+  ]]></sql>
+  <expect ref="client-master" rows=">=1" reason="legacy CFS clients"/>
+  <compress id="bundle" file="cs-16-client-settings-legacy.zip">
+    <include ref="client-master"/><include ref="client-threshold"/><include ref="client-sub-accounts"/><include ref="client-information"/>
+    <include ref="booking-per-client"/><include ref="booking-structures"/><include ref="deals-per-counterparty"/>
+  </compress>
+</rules>
