@@ -15,9 +15,9 @@
            CASE WHEN si.derivative_type IN ('future', 'cs_future') AND :valueDate > si.maturity_date THEN fp.last_price
                 ELSE h.settle_price END AS settle_price,
            m.mult_factor AS mult_factor, m.nc_factor AS nc_factor, fx.fx_nc_factor AS fx_nc_factor,
-           ((((((CASE WHEN si.derivative_type IN ('future', 'cs_future') AND :valueDate > si.maturity_date THEN fp.last_price
-                      ELSE h.settle_price END) - d.premium) * (-1 * a.active_lots)) * m.mult_factor) * m.nc_factor)
-             * IFNULL(fx.fx_nc_factor, 1)) * -1) AS mtm_usd
+           (((CASE WHEN si.derivative_type IN ('future', 'cs_future') AND :valueDate > si.maturity_date THEN fp.last_price
+                   ELSE h.settle_price END) - d.premium) * (-1 * a.active_lots) * m.mult_factor * m.nc_factor
+             * IFNULL(fx.fx_nc_factor, 1) * -1) AS mtm_usd
     FROM dbsystemuat.cloned_deal_ticket_table_cfs d
     JOIN (SELECT x.trade_id, x.active_lots FROM dbsystemuat.deal_active_lots_table_cfs x
           JOIN (SELECT trade_id, max(value_date) AS value_date FROM dbsystemuat.deal_active_lots_table_cfs
