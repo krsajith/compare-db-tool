@@ -296,6 +296,14 @@ public final class QueryRunner implements AutoCloseable {
         });
     }
 
+    /** SQL literal for a bound value: EXPLAIN EXECUTE cannot take bind parameters in the extended protocol, so the values are written into the statement, quoted and escaped. */
+    private static String pgLiteral(Object value) {
+        if (value == null) return "NULL";
+        if (value instanceof Number || value instanceof Boolean) return value.toString();
+        if (value instanceof java.time.LocalDate || value instanceof java.sql.Date) return "DATE '" + value + "'";
+        return "'" + value.toString().replace("'", "''") + "'";
+    }
+
     /** PostgreSQL type name for a bound value, so PREPARE can declare its parameters (the extended protocol does not infer them for a PREPARE body). */
     private static String pgType(Object value) {
         if (value instanceof java.time.LocalDate || value instanceof java.sql.Date) return "date";
@@ -322,7 +330,6 @@ public final class QueryRunner implements AutoCloseable {
             if (c == '?' && !quoted) numbered.append('$').append(++count); else numbered.append(c);
         }
         if (count != values.length) throw new ToolException("<explain> " + explain.id + " generic=true: could not number the parameters of the statement.");
-        String marks = String.join(",", Collections.nCopies(count, "?"));
         var template = new NamedParameterJdbcTemplate(datasource(explain.db, explain.tempTables));
         return template.getJdbcOperations().execute((org.springframework.jdbc.core.ConnectionCallback<Plan>) connection -> {
             try {
@@ -331,9 +338,9 @@ public final class QueryRunner implements AutoCloseable {
                     setup.execute("SET plan_cache_mode = force_generic_plan");
                     setup.execute("PREPARE cdt_generic(" + String.join(", ", java.util.Arrays.stream(values).map(QueryRunner::pgType).toList()) + ") AS " + numbered);
                 }
-                try (PreparedStatement statement = connection.prepareStatement("EXPLAIN (" + options + ") EXECUTE cdt_generic(" + marks + ")")) {
+                String literals = String.join(", ", java.util.Arrays.stream(values).map(QueryRunner::pgLiteral).toList());
+                try (PreparedStatement statement = connection.prepareStatement("EXPLAIN (" + options + ") EXECUTE cdt_generic(" + literals + ")")) {
                     statement.setQueryTimeout(explain.timeout);
-                    for (int i = 0; i < values.length; i++) statement.setObject(i + 1, values[i]);
                     StringBuilder text = new StringBuilder();
                     try (ResultSet result = statement.executeQuery()) {
                         while (result.next()) text.append(Objects.toString(result.getString(1), ""));
