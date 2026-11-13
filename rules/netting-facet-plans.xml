@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Netting options screen: the plans of the exact queries the current NettingService.getOptions runs when only the business unit is chosen
+     (faceted filtering since 28 Oct and XOGA-591, no other filter applied, so each list reads every open trade of the BU).
+     PLAN ONLY: analyze is false on every probe, nothing is executed, so it cannot hang UAT. Run it once per environment:
+       .\compare.ps1 rules\netting-facet-plans.xml, with the target-env flag set to postgres-dev
+       .\compare.ps1 rules\netting-facet-plans.xml, with the target-env flag set to postgres-uat
+     Read plan.txt of each probe: look for Seq Scan, Hash Join, Sort, the index used and the estimated rows (a plan only, so no real times).
+       f1 subportfolios (recursive loose scan)   f2 counterparties   f3 group types   f4 contract numbers   f5 derivative types (open securities joined to security_info_table) -->
+<rules name="netting-facet-plans">
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+    <param name="bu" type="string" value="CFS"/>
+  </parameters>
+
+  <explain id="f1" db="target" analyze="false"><![CDATA[
+    WITH RECURSIVE s AS (
+      (SELECT c.subportfolio FROM opera.cloned_deal_ticket_table c
+       WHERE c.tenant_id = :tenant AND c.business_unit = :bu AND c.subportfolio IS NOT NULL
+         AND c.lots_to_be_netted <> 0 AND (c.deal_status = 'Live' OR c.deal_status IS NULL)
+       ORDER BY c.subportfolio LIMIT 1)
+      UNION ALL
+      SELECT (SELECT c.subportfolio FROM opera.cloned_deal_ticket_table c
+              WHERE c.tenant_id = :tenant AND c.business_unit = :bu AND c.subportfolio > s.subportfolio
+                AND c.lots_to_be_netted <> 0 AND (c.deal_status = 'Live' OR c.deal_status IS NULL)
+              ORDER BY c.subportfolio LIMIT 1)
+      FROM s WHERE s.subportfolio IS NOT NULL
+    )
+    SELECT subportfolio FROM s WHERE subportfolio IS NOT NULL
+  ]]></explain>
+
+  <explain id="f2" db="target" analyze="false"><![CDATA[
+    SELECT DISTINCT c.counterparty_parent FROM opera.cloned_deal_ticket_table c
+    WHERE c.tenant_id = :tenant AND c.business_unit = :bu AND c.lots_to_be_netted <> 0 AND (c.deal_status = 'Live' OR c.deal_status IS NULL)
+  ]]></explain>
+
+  <explain id="f3" db="target" analyze="false"><![CDATA[
+    SELECT DISTINCT c.trade_group_type FROM opera.cloned_deal_ticket_table c
+    WHERE c.tenant_id = :tenant AND c.business_unit = :bu AND c.lots_to_be_netted <> 0 AND (c.deal_status = 'Live' OR c.deal_status IS NULL)
+  ]]></explain>
+
+  <explain id="f4" db="target" analyze="false"><![CDATA[
+    SELECT DISTINCT c.contract_number FROM opera.cloned_deal_ticket_table c
+    WHERE c.tenant_id = :tenant AND c.business_unit = :bu AND c.lots_to_be_netted <> 0 AND (c.deal_status = 'Live' OR c.deal_status IS NULL)
+  ]]></explain>
+
+  <explain id="f5" db="target" analyze="false"><![CDATA[
+    SELECT DISTINCT si.derivative_type
+    FROM (SELECT DISTINCT c.security_id FROM opera.cloned_deal_ticket_table c
+          WHERE c.tenant_id = :tenant AND c.business_unit = :bu AND c.lots_to_be_netted <> 0 AND (c.deal_status = 'Live' OR c.deal_status IS NULL)) s
+    JOIN opera.security_info_table si ON si.tenant_id = :tenant AND si.business_unit = :bu AND si.security_id = s.security_id
+  ]]></explain>
+
+  <expect ref="f1" no-seq-scan="cloned_deal_ticket_table" reason="loose scan on idx_cdt_netting_open"/>
+  <expect ref="f2" no-seq-scan="cloned_deal_ticket_table" reason="an index only scan of idx_cdt_netting_open at worst"/>
+  <expect ref="f3" no-seq-scan="cloned_deal_ticket_table"/>
+  <expect ref="f4" no-seq-scan="cloned_deal_ticket_table" reason="contract_number is in no netting index, so a heap fetch per open trade is expected here"/>
+  <expect ref="f5" no-seq-scan="cloned_deal_ticket_table, security_info_table"/>
+
+  <compress id="bundle" file="netting-facet-plans.zip">
+    <include ref="f1"/><include ref="f2"/><include ref="f3"/><include ref="f4"/><include ref="f5"/>
+  </compress>
+</rules>
