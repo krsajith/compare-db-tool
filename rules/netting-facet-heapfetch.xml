@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Netting options: why do the BU-only facet queries take 14 s although the plans use idx_cdt_netting_open?
+     Hypothesis from the plan-only run: an index only scan still visits the table for every page that is not marked all-visible, and contract_number
+     is in no netting index (index scan plus heap fetch per open trade). This rule measures it. One run per environment:
+       .\compare.ps1 rules\netting-facet-heapfetch.xml, with the target-env flag set to postgres-dev, then postgres-uat
+     vm        share of table pages marked all-visible, dead tuples, last vacuum, sizes (catalog only, instant)
+     settings  memory and parallel settings that change these plans
+     a2, a4    EXPLAIN ANALYZE with buffers of the counterparty list and the contract number list (BU only). Read Heap Fetches and the shared read versus hit blocks.
+               Executed in the read-only pool and rolled back; the timeout of 90 s cancels a probe that runs longer. -->
+<rules name="netting-facet-heapfetch">
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+    <param name="bu" type="string" value="CFS"/>
+  </parameters>
+
+  <sql id="vm" db="target" timeout="60" export="full"><![CDATA[
+    SELECT c.relname, c.relpages, c.relallvisible,
+           round(100.0 * c.relallvisible / nullif(c.relpages, 0), 1) AS pct_all_visible,
+           c.reltuples::bigint AS approx_rows, s.n_live_tup, s.n_dead_tup, s.n_mod_since_analyze,
+           s.last_vacuum, s.last_autovacuum, s.last_analyze, s.last_autoanalyze,
+           pg_size_pretty(pg_relation_size(c.oid)) AS size
+    FROM pg_class c JOIN pg_stat_user_tables s ON s.relid = c.oid
+    WHERE c.relnamespace = 'opera'::regnamespace AND c.relname IN ('cloned_deal_ticket_table', 'security_info_table')
+  ]]></sql>
+
+  <sql id="settings" db="target" timeout="60" export="full"><![CDATA[
+    SELECT name, setting, unit FROM pg_settings
+    WHERE name IN ('shared_buffers', 'work_mem', 'effective_cache_size', 'random_page_cost', 'max_parallel_workers_per_gather', 'statement_timeout', 'autovacuum')
+    ORDER BY name
+  ]]></sql>
+
+  <explain id="a2" db="target" timeout="90"><![CDATA[
+    SELECT DISTINCT c.counterparty_parent FROM opera.cloned_deal_ticket_table c
+    WHERE c.tenant_id = :tenant AND c.business_unit = :bu AND c.lots_to_be_netted <> 0 AND (c.deal_status = 'Live' OR c.deal_status IS NULL)
+  ]]></explain>
+
+  <explain id="a4" db="target" timeout="90"><![CDATA[
+    SELECT DISTINCT c.contract_number FROM opera.cloned_deal_ticket_table c
+    WHERE c.tenant_id = :tenant AND c.business_unit = :bu AND c.lots_to_be_netted <> 0 AND (c.deal_status = 'Live' OR c.deal_status IS NULL)
+  ]]></explain>
+
+  <expect ref="vm" rows="2" reason="both tables found"/>
+  <expect ref="a2" max-ms="3000" reason="an index only scan of the open trades of one BU"/>
+  <expect ref="a4" max-ms="3000" reason="contract numbers of the open trades of one BU"/>
+
+  <compress id="bundle" file="netting-facet-heapfetch.zip">
+    <include ref="vm"/><include ref="settings"/><include ref="a2"/><include ref="a4"/>
+  </compress>
+</rules>
