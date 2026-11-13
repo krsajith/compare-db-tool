@@ -27,6 +27,24 @@ public class DatasourceSettings {
         // The alias must not hide production: keep the guard even if only the real name said "prod".
         if (QueryRunner.production(datasourceName, definition)) definition.setProd(true);
         datasources.put(TARGET_ALIAS, definition);
+        targetName = datasourceName;
+    }
+    private String targetName;
+    /** Which real datasource db="target" meant in this run, or null when the alias was not set. */
+    public String targetName() { return targetName; }
+    /** One line naming the real datasource and database location (JDBC URL without options or credentials) of each name a run used, so an output folder or zip shows its environment. */
+    public String environmentLine(java.util.Collection<String> names) {
+        var parts = new java.util.ArrayList<String>();
+        for (String name : new java.util.LinkedHashSet<>(names)) {
+            var definition = datasources.get(name);
+            String url = definition == null || definition.getUrl() == null ? "" : definition.getUrl();
+            int cut = url.indexOf('?');
+            if (cut >= 0) url = url.substring(0, cut);
+            url = url.replaceFirst("^jdbc:", "").replaceFirst("//[^/@]*@", "//");
+            String label = TARGET_ALIAS.equals(name) && targetName != null ? "target = " + targetName : name;
+            parts.add(label + (url.isEmpty() ? "" : " (" + url + ")"));
+        }
+        return String.join("; ", parts);
     }
     public static String unknownDatasourceMessage(String name) {
         return TARGET_ALIAS.equals(name)

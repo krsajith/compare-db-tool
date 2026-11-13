@@ -323,6 +323,7 @@ public final class Cli {
             Files.copy(options.rules, directory.resolve("RULES.xml"));
             try (CSVPrinter params = CsvFiles.writer(directory.resolve("PARAMETERS.csv"), List.of("name", "value"))) {
                 for (var entry : parameters.entrySet()) params.printRecord(Arrays.asList(entry.getKey(), entry.getValue()));
+                if (settings.targetName() != null) params.printRecord(Arrays.asList("_target_datasource", settings.targetName()));
             }
             Set<String> completedQueries = new HashSet<>(), attemptedComparisons = new HashSet<>();
             ComparisonRunner comparator = new ComparisonRunner(options.partitions, options.maxPartitionMb);
@@ -513,7 +514,10 @@ public final class Cli {
             try (var step = timings.start("findings", "report")) {
                 topFindings = writeFindings(directory, comparisons, funnels, presences);
             }
-            StringBuilder summary = new StringBuilder("# " + rules.name + "\n\nStatus: "
+            java.util.List<String> usedDatasources = new java.util.ArrayList<>();
+            rules.queries.forEach(q -> usedDatasources.add(q.db));
+            rules.explains.forEach(x -> usedDatasources.add(x.db));
+            StringBuilder summary = new StringBuilder("# " + rules.name + "\n\nEnvironment: " + settings.environmentLine(usedDatasources) + "\n\nStatus: "
                 + (!failures.isEmpty() ? "INCOMPLETE / MANUAL ACTIONS REQUIRED" : partial ? "PARTIAL"
                     : !report.passed() ? "EXPECTATIONS NOT MET" : differs ? "DIFFERENCES"
                     : report.any() ? "COMPLETE / EXPECTATIONS MET" : "COMPLETE / EQUAL") + "; exit code: " + exit
