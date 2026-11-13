@@ -296,6 +296,18 @@ public final class QueryRunner implements AutoCloseable {
         });
     }
 
+    /** PostgreSQL type name for a bound value, so PREPARE can declare its parameters (the extended protocol does not infer them for a PREPARE body). */
+    private static String pgType(Object value) {
+        if (value instanceof java.time.LocalDate || value instanceof java.sql.Date) return "date";
+        if (value instanceof java.sql.Timestamp || value instanceof java.time.LocalDateTime) return "timestamp";
+        if (value instanceof Integer || value instanceof Short) return "int4";
+        if (value instanceof Long) return "int8";
+        if (value instanceof java.math.BigDecimal) return "numeric";
+        if (value instanceof Double || value instanceof Float) return "float8";
+        if (value instanceof Boolean) return "boolean";
+        return "varchar";
+    }
+
     /** Plans the statement as a prepared statement with a generic plan (what the application gets after pgjdbc's prepareThreshold), then rolls back and cleans up the connection. */
     private Plan explainGeneric(Rules.Explain explain, String sql, Map<String, Object> parameters, String options) {
         var source = new org.springframework.jdbc.core.namedparam.MapSqlParameterSource(parameters);
@@ -317,7 +329,7 @@ public final class QueryRunner implements AutoCloseable {
                 try (Statement setup = connection.createStatement()) {
                     setup.setQueryTimeout(explain.timeout);
                     setup.execute("SET plan_cache_mode = force_generic_plan");
-                    setup.execute("PREPARE cdt_generic AS " + numbered);
+                    setup.execute("PREPARE cdt_generic(" + String.join(", ", java.util.Arrays.stream(values).map(QueryRunner::pgType).toList()) + ") AS " + numbered);
                 }
                 try (PreparedStatement statement = connection.prepareStatement("EXPLAIN (" + options + ") EXECUTE cdt_generic(" + marks + ")")) {
                     statement.setQueryTimeout(explain.timeout);
