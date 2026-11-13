@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- Netting screen performance, one run per environment (read only; EXPLAIN ANALYZE runs in the read-only pool and is rolled back).
-       .\compare.ps1 --rules rules\netting-perf-explain.xml --target-env postgres-dev
-       .\compare.ps1 --rules rules\netting-perf-explain.xml --target-env postgres-uat
+       .\compare.ps1 the rules flag rules\netting-perf-explain.xml target-env postgres-dev
+       .\compare.ps1 the rules flag rules\netting-perf-explain.xml target-env postgres-uat
      Compare the query tables of the two SUMMARY.md files (time per step) and the plan.txt of each probe.
      The SQL is the text NettingService sends (NettingConstants.SQL_NETTING_OPEN_PREDICATE and the option queries), so the planner sees the same shape.
        pick      the busiest subportfolio and counterparty pair of the business unit (the worst case for the dropdowns), chosen in each environment itself
