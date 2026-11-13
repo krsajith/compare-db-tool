@@ -1,0 +1,145 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Netting screen: why does it work in dev and not in UAT? Read only, one run compares postgres-dev (source) with postgres-uat (target).
+     Both datasource names are written in the rule, so no target-env flag is needed. To check one environment alone use the other rule style with db="target".
+       1 indexes     the three netting indexes: same definition (indexdef text, so the partial predicate must be identical), valid and ready
+       2 changesets  Liquibase rows for the netting index changesets (executed in both, same checksum)
+       3 view        netting_trade_view definition is the same (md5 of pg_get_viewdef)
+       4 status      deal_status values among open trades (lots_to_be_netted not 0) per business unit: a value that exists in only one environment
+                     is outside the Java predicate (Live or NULL) and makes the dropdowns short or empty
+       5 excluded    open trades the netting predicate leaves out, per environment (read it, no verdict)
+       6 stats       table size, last analyse and index scan counters per environment (stale statistics give seq scans)
+       7 invalid     any invalid or not-ready index in schema opera (an interrupted CONCURRENTLY build leaves one, and IF NOT EXISTS then does nothing)
+     Predicate the Java code uses (NettingConstants.SQL_NETTING_OPEN_PREDICATE): lots_to_be_netted &lt;&gt; 0 and (deal_status = Live or deal_status is null).
+     Read SUMMARY.md first, then the comparison folders. -->
+<rules name="netting-dev-vs-uat">
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+  </parameters>
+
+  <!-- 1 indexes -->
+  <sql id="idx-dev" db="postgres-dev" timeout="120" export="full"><![CDATA[
+    SELECT i.indexname, i.tablename, i.indexdef, x.indisvalid AS valid, x.indisready AS ready
+    FROM pg_indexes i
+    JOIN pg_class c ON c.relname = i.indexname AND c.relnamespace = 'opera'::regnamespace
+    JOIN pg_index x ON x.indexrelid = c.oid
+    WHERE i.schemaname = 'opera'
+      AND i.indexname IN ('idx_cdt_netting_open', 'idx_cdt_netting_security_open', 'idx_security_info_bu_sec_deriv')
+  ]]></sql>
+  <sql id="idx-uat" db="postgres-uat" timeout="120" export="full"><![CDATA[
+    SELECT i.indexname, i.tablename, i.indexdef, x.indisvalid AS valid, x.indisready AS ready
+    FROM pg_indexes i
+    JOIN pg_class c ON c.relname = i.indexname AND c.relnamespace = 'opera'::regnamespace
+    JOIN pg_index x ON x.indexrelid = c.oid
+    WHERE i.schemaname = 'opera'
+      AND i.indexname IN ('idx_cdt_netting_open', 'idx_cdt_netting_security_open', 'idx_security_info_bu_sec_deriv')
+  ]]></sql>
+  <compare id="cmp-indexes" source="idx-dev" target="idx-uat" export="full">
+    <key columns="indexname"/>
+  </compare>
+  <expect ref="idx-uat" rows="3" reason="all three netting indexes must exist in UAT"/>
+  <expect ref="cmp-indexes" different="0" only-source="0" only-target="0" reason="same index names and identical definitions in dev and UAT"/>
+
+  <!-- 2 changesets: md5sum is the checksum Liquibase stored; a different value means the changeset text differs between the deployed builds -->
+  <sql id="cs-dev" db="postgres-dev" timeout="120" export="full"><![CDATA[
+    SELECT id, author, exectype, md5sum, filename
+    FROM opera.databasechangelog
+    WHERE id IN ('create-idx-cdt-netting-open', 'create-idx-cdt-netting-security-open', 'create-idx-security-info-derivative-type')
+       OR id LIKE '%netting_trade_view%' OR id LIKE '%netting-trade-view%'
+  ]]></sql>
+  <sql id="cs-uat" db="postgres-uat" timeout="120" export="full"><![CDATA[
+    SELECT id, author, exectype, md5sum, filename
+    FROM opera.databasechangelog
+    WHERE id IN ('create-idx-cdt-netting-open', 'create-idx-cdt-netting-security-open', 'create-idx-security-info-derivative-type')
+       OR id LIKE '%netting_trade_view%' OR id LIKE '%netting-trade-view%'
+  ]]></sql>
+  <compare id="cmp-changesets" source="cs-dev" target="cs-uat" export="full">
+    <key columns="id"/>
+    <column name="filename" ignore="true"/>
+  </compare>
+  <expect ref="cmp-changesets" different="0" only-source="0" only-target="0" reason="the same netting changesets ran in both with the same checksum"/>
+
+  <!-- 3 view -->
+  <sql id="view-dev" db="postgres-dev" timeout="120" export="full"><![CDATA[
+    SELECT 'netting_trade_view' AS view_name,
+           md5(regexp_replace(pg_get_viewdef('opera.netting_trade_view'::regclass), '\s+', ' ', 'g')) AS definition_md5,
+           length(pg_get_viewdef('opera.netting_trade_view'::regclass)) AS definition_length
+  ]]></sql>
+  <sql id="view-uat" db="postgres-uat" timeout="120" export="full"><![CDATA[
+    SELECT 'netting_trade_view' AS view_name,
+           md5(regexp_replace(pg_get_viewdef('opera.netting_trade_view'::regclass), '\s+', ' ', 'g')) AS definition_md5,
+           length(pg_get_viewdef('opera.netting_trade_view'::regclass)) AS definition_length
+  ]]></sql>
+  <compare id="cmp-view" source="view-dev" target="view-uat" export="full">
+    <key columns="view_name"/>
+  </compare>
+  <expect ref="cmp-view" different="0" only-source="0" only-target="0" reason="same view definition in dev and UAT"/>
+
+  <!-- 4 status values of open trades, counts ignored (the two databases hold different volumes) -->
+  <sql id="status-dev" db="postgres-dev" timeout="300" export="full"><![CDATA[
+    SELECT business_unit, coalesce(deal_status, '(null)') AS deal_status,
+           (deal_status = 'Live' OR deal_status IS NULL) AS inside_predicate,
+           count(*) AS open_trades
+    FROM opera.cloned_deal_ticket_table
+    WHERE tenant_id = :tenant AND coalesce(lots_to_be_netted, 0) <> 0
+    GROUP BY business_unit, coalesce(deal_status, '(null)'), (deal_status = 'Live' OR deal_status IS NULL)
+  ]]></sql>
+  <sql id="status-uat" db="postgres-uat" timeout="300" export="full"><![CDATA[
+    SELECT business_unit, coalesce(deal_status, '(null)') AS deal_status,
+           (deal_status = 'Live' OR deal_status IS NULL) AS inside_predicate,
+           count(*) AS open_trades
+    FROM opera.cloned_deal_ticket_table
+    WHERE tenant_id = :tenant AND coalesce(lots_to_be_netted, 0) <> 0
+    GROUP BY business_unit, coalesce(deal_status, '(null)'), (deal_status = 'Live' OR deal_status IS NULL)
+  ]]></sql>
+  <compare id="cmp-status" source="status-dev" target="status-uat" export="full">
+    <key columns="business_unit,deal_status"/>
+    <column name="open_trades" ignore="true"/>
+  </compare>
+  <expect ref="cmp-status" only-source="0" only-target="0" reason="no business unit or deal_status value exists in only one environment (a spelling or case difference shows here)"/>
+
+  <!-- 5 open trades the predicate leaves out -->
+  <sql id="excluded-dev" db="postgres-dev" timeout="300" export="full"><![CDATA[
+    SELECT business_unit, deal_status, count(*) AS excluded_open_trades
+    FROM opera.cloned_deal_ticket_table
+    WHERE tenant_id = :tenant AND coalesce(lots_to_be_netted, 0) <> 0 AND deal_status IS NOT NULL AND deal_status <> 'Live'
+    GROUP BY business_unit, deal_status ORDER BY excluded_open_trades DESC LIMIT 50
+  ]]></sql>
+  <sql id="excluded-uat" db="postgres-uat" timeout="300" export="full"><![CDATA[
+    SELECT business_unit, deal_status, count(*) AS excluded_open_trades
+    FROM opera.cloned_deal_ticket_table
+    WHERE tenant_id = :tenant AND coalesce(lots_to_be_netted, 0) <> 0 AND deal_status IS NOT NULL AND deal_status <> 'Live'
+    GROUP BY business_unit, deal_status ORDER BY excluded_open_trades DESC LIMIT 50
+  ]]></sql>
+
+  <!-- 6 table stats and index usage -->
+  <sql id="stats-dev" db="postgres-dev" timeout="120" export="full"><![CDATA[
+    SELECT s.relname AS name, 'table' AS kind, s.n_live_tup AS rows_or_scans, s.last_analyze, s.last_autoanalyze, s.seq_scan AS seq_scans
+    FROM pg_stat_user_tables s WHERE s.schemaname = 'opera' AND s.relname IN ('cloned_deal_ticket_table', 'security_info_table')
+    UNION ALL
+    SELECT indexrelname, 'index', idx_scan, NULL, NULL, NULL
+    FROM pg_stat_user_indexes WHERE schemaname = 'opera' AND indexrelname IN ('idx_cdt_netting_open', 'idx_cdt_netting_security_open', 'idx_security_info_bu_sec_deriv')
+    ORDER BY 2, 1
+  ]]></sql>
+  <sql id="stats-uat" db="postgres-uat" timeout="120" export="full"><![CDATA[
+    SELECT s.relname AS name, 'table' AS kind, s.n_live_tup AS rows_or_scans, s.last_analyze, s.last_autoanalyze, s.seq_scan AS seq_scans
+    FROM pg_stat_user_tables s WHERE s.schemaname = 'opera' AND s.relname IN ('cloned_deal_ticket_table', 'security_info_table')
+    UNION ALL
+    SELECT indexrelname, 'index', idx_scan, NULL, NULL, NULL
+    FROM pg_stat_user_indexes WHERE schemaname = 'opera' AND indexrelname IN ('idx_cdt_netting_open', 'idx_cdt_netting_security_open', 'idx_security_info_bu_sec_deriv')
+    ORDER BY 2, 1
+  ]]></sql>
+
+  <!-- 7 invalid indexes in UAT -->
+  <sql id="invalid-uat" db="postgres-uat" timeout="120" export="full"><![CDATA[
+    SELECT c.relname AS index_name, t.relname AS table_name, x.indisvalid AS valid, x.indisready AS ready
+    FROM pg_index x JOIN pg_class c ON c.oid = x.indexrelid JOIN pg_class t ON t.oid = x.indrelid
+    WHERE c.relnamespace = 'opera'::regnamespace AND (NOT x.indisvalid OR NOT x.indisready)
+  ]]></sql>
+  <expect ref="invalid-uat" rows="0" reason="no invalid or not-ready index in UAT"/>
+
+  <compress id="bundle" file="netting-dev-vs-uat.zip">
+    <include ref="cmp-indexes"/><include ref="cmp-changesets"/><include ref="cmp-view"/><include ref="cmp-status"/>
+    <include ref="idx-dev"/><include ref="idx-uat"/><include ref="excluded-dev"/><include ref="excluded-uat"/>
+    <include ref="stats-dev"/><include ref="stats-uat"/><include ref="invalid-uat"/>
+  </compress>
+</rules>
