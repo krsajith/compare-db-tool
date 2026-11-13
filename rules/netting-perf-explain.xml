@@ -1,0 +1,102 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Netting screen performance, one run per environment (read only; EXPLAIN ANALYZE runs in the read-only pool and is rolled back).
+       .\compare.ps1 --rules rules\netting-perf-explain.xml --target-env postgres-dev
+       .\compare.ps1 --rules rules\netting-perf-explain.xml --target-env postgres-uat
+     Compare the query tables of the two SUMMARY.md files (time per step) and the plan.txt of each probe.
+     The SQL is the text NettingService sends (NettingConstants.SQL_NETTING_OPEN_PREDICATE and the option queries), so the planner sees the same shape.
+       pick      the busiest subportfolio and counterparty pair of the business unit (the worst case for the dropdowns), chosen in each environment itself
+       p1        subportfolio list, loose index scan on idx_cdt_netting_open
+       p2        counterparty list for the pair
+       p3        derivative type list for the pair (open securities joined to security_info_table, uses idx_security_info_bu_sec_deriv)
+       p4        trade grid for the pair, read from netting_trade_view
+       p5        security list for the business unit, keyset paging on idx_cdt_netting_security_open
+     Expected: every probe under a second or two, no sequential scan on cloned_deal_ticket_table or security_info_table. -->
+<rules name="netting-perf-explain">
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+    <param name="bu" type="string" value="CFS"/>
+  </parameters>
+
+  <sql id="pick" db="target" timeout="300" export="full"><![CDATA[
+    SELECT c.subportfolio, c.counterparty_parent, count(*) AS open_trades, count(DISTINCT c.security_id) AS securities
+    FROM opera.cloned_deal_ticket_table c
+    WHERE c.tenant_id = :tenant AND c.business_unit = :bu
+      AND c.lots_to_be_netted <> 0 AND (c.deal_status = 'Live' OR c.deal_status IS NULL)
+      AND c.subportfolio IS NOT NULL AND c.counterparty_parent IS NOT NULL
+    GROUP BY c.subportfolio, c.counterparty_parent
+    ORDER BY count(*) DESC
+    LIMIT 1
+  ]]></sql>
+
+  <explain id="p1" db="target" timeout="300"><![CDATA[
+    WITH RECURSIVE s AS (
+      (SELECT c.subportfolio FROM opera.cloned_deal_ticket_table c
+       WHERE c.tenant_id = :tenant AND c.business_unit = :bu AND c.subportfolio IS NOT NULL
+         AND c.lots_to_be_netted <> 0 AND (c.deal_status = 'Live' OR c.deal_status IS NULL)
+       ORDER BY c.subportfolio LIMIT 1)
+      UNION ALL
+      SELECT (SELECT c.subportfolio FROM opera.cloned_deal_ticket_table c
+              WHERE c.tenant_id = :tenant AND c.business_unit = :bu AND c.subportfolio > s.subportfolio
+                AND c.lots_to_be_netted <> 0 AND (c.deal_status = 'Live' OR c.deal_status IS NULL)
+              ORDER BY c.subportfolio LIMIT 1)
+      FROM s WHERE s.subportfolio IS NOT NULL
+    )
+    SELECT subportfolio FROM s WHERE subportfolio IS NOT NULL
+  ]]></explain>
+
+  <explain id="p2" db="target" timeout="300" uses="p=pick"><![CDATA[
+    SELECT DISTINCT c.counterparty_parent
+    FROM opera.cloned_deal_ticket_table c
+    WHERE c.tenant_id = :tenant AND c.business_unit = :bu
+      AND c.lots_to_be_netted <> 0 AND (c.deal_status = 'Live' OR c.deal_status IS NULL)
+      AND c.subportfolio = :p.subportfolio
+  ]]></explain>
+
+  <explain id="p3" db="target" timeout="300" uses="p=pick"><![CDATA[
+    SELECT DISTINCT si.derivative_type
+    FROM (SELECT DISTINCT c.security_id
+          FROM opera.cloned_deal_ticket_table c
+          WHERE c.tenant_id = :tenant AND c.business_unit = :bu
+            AND c.lots_to_be_netted <> 0 AND (c.deal_status = 'Live' OR c.deal_status IS NULL)
+            AND c.subportfolio = :p.subportfolio AND c.counterparty_parent = :p.counterparty_parent) s
+    JOIN opera.security_info_table si
+      ON si.tenant_id = :tenant AND si.business_unit = :bu AND si.security_id = s.security_id
+  ]]></explain>
+
+  <explain id="p4" db="target" timeout="300" uses="p=pick"><![CDATA[
+    SELECT tenant_id, business_unit, trade_id, source, trade_date, contract_number, premium,
+           lots_to_be_netted, market_action, group_type, subportfolio, counterparty, deal_status,
+           security_id, contract_month, product_code, currency, derivative_type
+    FROM opera.netting_trade_view c
+    WHERE tenant_id = :tenant AND business_unit = :bu
+      AND c.lots_to_be_netted <> 0 AND (c.deal_status = 'Live' OR c.deal_status IS NULL)
+      AND subportfolio = :p.subportfolio AND counterparty = :p.counterparty_parent
+    ORDER BY trade_date ASC NULLS LAST, premium ASC NULLS LAST
+  ]]></explain>
+
+  <explain id="p5" db="target" timeout="300"><![CDATA[
+    SELECT DISTINCT c.security_id
+    FROM opera.cloned_deal_ticket_table c
+    WHERE c.tenant_id = :tenant AND c.business_unit = :bu
+      AND c.lots_to_be_netted <> 0 AND (c.deal_status = 'Live' OR c.deal_status IS NULL)
+      AND c.security_id > ''
+    ORDER BY c.security_id
+    LIMIT 101
+  ]]></explain>
+
+  <expect ref="pick" rows="1" reason="the business unit has open trades with a subportfolio and counterparty"/>
+  <expect ref="p1" max-ms="2000" reason="loose index scan over tens of subportfolios"/>
+  <expect ref="p1" no-seq-scan="cloned_deal_ticket_table" reason="idx_cdt_netting_open must be used"/>
+  <expect ref="p2" max-ms="2000" reason="counterparty list of one subportfolio"/>
+  <expect ref="p2" no-seq-scan="cloned_deal_ticket_table"/>
+  <expect ref="p3" max-ms="5000" reason="derivative types of the worst pair were 3.4 s before the covering index"/>
+  <expect ref="p3" no-seq-scan="cloned_deal_ticket_table, security_info_table" reason="idx_security_info_bu_sec_deriv must be used"/>
+  <expect ref="p4" max-ms="2000" reason="trade grid of one pair"/>
+  <expect ref="p4" no-seq-scan="cloned_deal_ticket_table, security_info_table"/>
+  <expect ref="p5" max-ms="2000" reason="first page of the security dropdown"/>
+  <expect ref="p5" no-seq-scan="cloned_deal_ticket_table" reason="idx_cdt_netting_security_open must be used"/>
+
+  <compress id="bundle" file="netting-perf-explain.zip">
+    <include ref="pick"/><include ref="p1"/><include ref="p2"/><include ref="p3"/><include ref="p4"/><include ref="p5"/>
+  </compress>
+</rules>
