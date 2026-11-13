@@ -44,7 +44,7 @@ The client code is the filename stem before its first underscore, compared in up
 - Legacy defines the scope. For example, 165 legacy clients versus 623 new clients is supported.
 - Extra new clients are listed as `ONLY_NEW`; they do not fail the comparison.
 - Missing new files for legacy clients are flagged as `MISSING_NEW`.
-- Multiple text files for the same client within one input are rejected; select one run first.
+- Multiple files for one client are accepted if their text matches after whitespace normalization. Conflicting duplicates for a compared client are rejected; select one run first. Duplicate files for extra new clients outside legacy scope do not block comparison. All skipped duplicates are recorded in `duplicate_files.csv`.
 - `.raw.txt` sidecars and `index.csv` are excluded from statement comparison.
 
 ### Outputs
@@ -53,6 +53,7 @@ The client code is the filename stem before its first underscore, compared in up
 |---|---|
 | `summary.csv` | One row per client, status, input filenames and unmatched decimal-number occurrence counts. |
 | `number_differences.csv` | Decimal values whose occurrence counts differ, with counts on both sides. Extra new clients are excluded. |
+| `duplicate_files.csv` | Retained and skipped filenames, with the reason: matching normalized text or outside legacy scope. |
 | `diffs\<CLIENT>.diff.txt` | Unified text diff for differing or missing legacy clients. Extra new clients get no diff file. |
 
 | Status | Meaning |

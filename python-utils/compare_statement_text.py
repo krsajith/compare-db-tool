@@ -4,7 +4,8 @@
 python tools/compare_statement_text.py legacy_text.zip new_text.zip --out comparison
 
 Matches client codes before the first underscore, ignoring filename timestamps.
-Ignores .raw.txt sidecars. Rejects duplicate clients instead of choosing a run.
+Ignores .raw.txt sidecars. Accepts identical normalized-text duplicates.
+Conflicting duplicates fail only for clients in the legacy comparison scope.
 Legacy defines the comparison scope; extra new clients are informational only.
 Writes summary.csv, number_differences.csv and per-client text diffs.
 Numbers compare decimal values AND occurrence counts, including zero. Numeric
@@ -26,7 +27,7 @@ from pathlib import Path, PurePosixPath
 NUMBER = re.compile(r"(?<![\w.])(?:\(\s*[+-]?\d[\d,]*\.\d+\s*\)|[+-]?\d[\d,]*\.\d+)(?![\w.])")
 
 
-def read_bundle(source):
+def read_bundle(source, comparison_clients=None, duplicates=None):
     records = {}
 
     def add(name, data):
@@ -36,11 +37,21 @@ def read_bundle(source):
         code = base[:-4].split('_', 1)[0].upper()
         if not re.fullmatch(r'[A-Z0-9-]+', code):
             raise ValueError(f'Unsupported client filename: {name}')
-        if code in records:
-            raise ValueError(f'Duplicate client {code} in {source}: {records[code][0]} and {name}')
         content = data.decode('utf-8-sig')
         if not content.strip():
             raise ValueError(f'Empty statement text: {source}: {name}')
+        if code in records:
+            if lines(records[code][1]) == lines(content):
+                reason = 'IDENTICAL_NORMALIZED_TEXT'
+            elif comparison_clients is not None and code not in comparison_clients:
+                reason = 'OUTSIDE_LEGACY_SCOPE'
+            else:
+                raise ValueError(
+                    f'Conflicting texts for client {code} in {source}: '
+                    f'{records[code][0]} and {name}. Select one statement run for this client.')
+            if duplicates is not None:
+                duplicates.append([str(source), code, records[code][0], name, reason])
+            return
         records[code] = (name, content)
 
     if source.is_dir():
@@ -85,7 +96,9 @@ def main():
     parser.add_argument('new', type=Path)
     parser.add_argument('--out', type=Path, default=Path('statement_text_comparison'))
     args = parser.parse_args()
-    legacy, new = read_bundle(args.legacy), read_bundle(args.new)
+    duplicates = []
+    legacy = read_bundle(args.legacy, duplicates=duplicates)
+    new = read_bundle(args.new, comparison_clients=set(legacy), duplicates=duplicates)
     # Refuse reuse so old diff files cannot look like current results.
     args.out.mkdir(parents=True, exist_ok=False)
     diff_dir = args.out / 'diffs'
@@ -122,7 +135,11 @@ def main():
               ['client', 'status', 'legacy_file', 'new_file', 'legacy_only_numbers', 'new_only_numbers'], summary)
     write_csv(args.out / 'number_differences.csv',
               ['client', 'value', 'legacy_occurrences', 'new_occurrences'], numeric)
+    write_csv(args.out / 'duplicate_files.csv',
+              ['source', 'client', 'retained_file', 'skipped_file', 'reason'], duplicates)
     print(f'Legacy: {len(legacy)} clients; new: {len(new)} clients')
+    if duplicates:
+        print(f'Duplicate files skipped: {len(duplicates)} (see duplicate_files.csv)')
     for status, count in sorted(counts.items()):
         print(f'{status}: {count}')
     print(f'Results: {args.out.resolve()}')
