@@ -61,12 +61,12 @@
   <!-- 3 view -->
   <sql id="view-dev" db="postgres-dev" timeout="120" export="full"><![CDATA[
     SELECT 'netting_trade_view' AS view_name,
-           md5(regexp_replace(pg_get_viewdef('opera.netting_trade_view'::regclass), '\s+', ' ', 'g')) AS definition_md5,
+           md5(regexp_replace(pg_get_viewdef('opera.netting_trade_view'::regclass), '[[:space:]]+', ' ', 'g')) AS definition_md5,
            length(pg_get_viewdef('opera.netting_trade_view'::regclass)) AS definition_length
   ]]></sql>
   <sql id="view-uat" db="postgres-uat" timeout="120" export="full"><![CDATA[
     SELECT 'netting_trade_view' AS view_name,
-           md5(regexp_replace(pg_get_viewdef('opera.netting_trade_view'::regclass), '\s+', ' ', 'g')) AS definition_md5,
+           md5(regexp_replace(pg_get_viewdef('opera.netting_trade_view'::regclass), '[[:space:]]+', ' ', 'g')) AS definition_md5,
            length(pg_get_viewdef('opera.netting_trade_view'::regclass)) AS definition_length
   ]]></sql>
   <compare id="cmp-view" source="view-dev" target="view-uat" export="full">
