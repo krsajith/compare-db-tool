@@ -158,6 +158,8 @@ public class Rules {
         @JacksonXmlProperty(isAttribute = true) public int timeout = 300;
         @JacksonXmlProperty(isAttribute = true) public boolean analyze = true;
         @JacksonXmlProperty(isAttribute = true) public boolean buffers = true;
+        /** PostgreSQL only: plan the statement as a prepared statement with plan_cache_mode=force_generic_plan, like the application after its fifth execution on a connection (pgjdbc prepareThreshold). Without it the plan is made for the bound values. */
+        @JacksonXmlProperty(isAttribute = true) public boolean generic;
         /** Non-production only: lets the statement call a function that creates temp tables (a report function). Always rolled back, refused on production. */
         @JacksonXmlProperty(isAttribute = true) public boolean tempTables;
         /** Inputs from earlier queries, like <sql uses="...">: "alias=query-id"; the statement refers to :alias.column (one row) or :alias.column[] (a list). */

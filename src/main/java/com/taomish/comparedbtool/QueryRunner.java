@@ -278,6 +278,7 @@ public final class QueryRunner implements AutoCloseable {
         String options = explain.analyze ? "ANALYZE" + (explain.buffers ? ", BUFFERS" : "") + ", FORMAT JSON" : "FORMAT JSON";
         LOG.info("Explain {} datasource={} analyze={} timeoutSeconds={}", explain.id, explain.db, explain.analyze, explain.timeout);
         if (explain.tempTables) LOG.warn("Temp-table mode datasource={} explain={}; transaction will be rolled back", explain.db, explain.id);
+        if (explain.generic) return explainGeneric(explain, sql, parameters, options);
         var template = new NamedParameterJdbcTemplate(datasource(explain.db, explain.tempTables));
         return template.execute("EXPLAIN (" + options + ") " + sql, parameters, (PreparedStatementCallback<Plan>) statement -> {
             try {
@@ -292,6 +293,52 @@ public final class QueryRunner implements AutoCloseable {
                     if (warning.getMessage() != null) notices.add(warning.getMessage().strip());
                 return new Plan(text.toString(), List.copyOf(notices));
             } finally { statement.getConnection().rollback(); }
+        });
+    }
+
+    /** Plans the statement as a prepared statement with a generic plan (what the application gets after pgjdbc's prepareThreshold), then rolls back and cleans up the connection. */
+    private Plan explainGeneric(Rules.Explain explain, String sql, Map<String, Object> parameters, String options) {
+        var source = new org.springframework.jdbc.core.namedparam.MapSqlParameterSource(parameters);
+        var parsed = NamedParameterUtils.parseSqlStatement(sql);
+        String jdbcSql = NamedParameterUtils.substituteNamedParameters(parsed, source);
+        Object[] values = NamedParameterUtils.buildValueArray(parsed, source, null);
+        StringBuilder numbered = new StringBuilder();
+        int count = 0;
+        boolean quoted = false;
+        for (char c : jdbcSql.toCharArray()) {
+            if (c == '\'') quoted = !quoted;
+            if (c == '?' && !quoted) numbered.append('$').append(++count); else numbered.append(c);
+        }
+        if (count != values.length) throw new ToolException("<explain> " + explain.id + " generic=true: could not number the parameters of the statement.");
+        String marks = String.join(",", Collections.nCopies(count, "?"));
+        var template = new NamedParameterJdbcTemplate(datasource(explain.db, explain.tempTables));
+        return template.getJdbcOperations().execute((org.springframework.jdbc.core.ConnectionCallback<Plan>) connection -> {
+            try {
+                try (Statement setup = connection.createStatement()) {
+                    setup.setQueryTimeout(explain.timeout);
+                    setup.execute("SET plan_cache_mode = force_generic_plan");
+                    setup.execute("PREPARE cdt_generic AS " + numbered);
+                }
+                try (PreparedStatement statement = connection.prepareStatement("EXPLAIN (" + options + ") EXECUTE cdt_generic(" + marks + ")")) {
+                    statement.setQueryTimeout(explain.timeout);
+                    for (int i = 0; i < values.length; i++) statement.setObject(i + 1, values[i]);
+                    StringBuilder text = new StringBuilder();
+                    try (ResultSet result = statement.executeQuery()) {
+                        while (result.next()) text.append(Objects.toString(result.getString(1), ""));
+                    }
+                    List<String> notices = new ArrayList<>();
+                    for (SQLWarning warning = statement.getWarnings(); warning != null; warning = warning.getNextWarning())
+                        if (warning.getMessage() != null) notices.add(warning.getMessage().strip());
+                    return new Plan(text.toString(), List.copyOf(notices));
+                }
+            } finally {
+                try { connection.rollback(); } catch (SQLException ignored) { }
+                try (Statement cleanup = connection.createStatement()) {
+                    cleanup.execute("DEALLOCATE cdt_generic");
+                    cleanup.execute("RESET plan_cache_mode");
+                } catch (SQLException ignored) { }
+                try { connection.rollback(); } catch (SQLException ignored) { }
+            }
         });
     }
 

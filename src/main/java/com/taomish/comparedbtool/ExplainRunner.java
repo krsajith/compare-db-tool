@@ -189,6 +189,7 @@ final class ExplainRunner {
 
     static String markdown(Rules.Explain explain, Result r, long wallMs) {
         StringBuilder md = new StringBuilder("# Explain " + explain.id + "\n\nDatasource: `" + explain.db + "`\n\n"
+            + (explain.generic ? "Generic plan: prepared statement with plan_cache_mode=force_generic_plan (what the application uses after its fifth execution on a connection).\n\n" : "")
             + (r.analyze() ? "Mode: EXPLAIN ANALYZE" + (explain.buffers ? ", BUFFERS" : "") + (explain.tempTables ? " in temp-table mode (non-production only); the transaction was rolled back."
                 : " in a read-only transaction that was rolled back.") + " The statement was executed.\n\n"
                 : "Mode: plan only. The statement was not executed, so there are no actual rows or times.\n\n")

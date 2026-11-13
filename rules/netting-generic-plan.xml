@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Netting options: does the plan change when the statement is planned the way the application's JDBC driver plans it after the fifth execution on a connection
+     (a generic plan that does not know the business unit)? Every probe is the same query as in netting-facet-plans, executed with generic set to true and analyze on.
+     Compare the time and the plan with the earlier custom-plan run: a different plan or a much longer time is the cause of the slow screen.
+     Read only (rolled back), 90 s timeout per probe, so a bad generic plan cannot hang the database. Run once per environment:
+       .\compare.ps1 rules\netting-generic-plan.xml, with the target-env flag set to postgres-uat, then postgres-dev -->
+<rules name="netting-generic-plan">
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+    <param name="bu" type="string" value="CFS"/>
+  </parameters>
+
+  <explain id="g1" db="target" generic="true" timeout="90"><![CDATA[
+    WITH RECURSIVE s AS (
+      (SELECT c.subportfolio FROM opera.cloned_deal_ticket_table c
+       WHERE c.tenant_id = :tenant AND c.business_unit = :bu AND c.subportfolio IS NOT NULL
+         AND c.lots_to_be_netted <> 0 AND (c.deal_status = 'Live' OR c.deal_status IS NULL)
+       ORDER BY c.subportfolio LIMIT 1)
+      UNION ALL
+      SELECT (SELECT c.subportfolio FROM opera.cloned_deal_ticket_table c
+              WHERE c.tenant_id = :tenant AND c.business_unit = :bu AND c.subportfolio > s.subportfolio
+                AND c.lots_to_be_netted <> 0 AND (c.deal_status = 'Live' OR c.deal_status IS NULL)
+              ORDER BY c.subportfolio LIMIT 1)
+      FROM s WHERE s.subportfolio IS NOT NULL
+    )
+    SELECT subportfolio FROM s WHERE subportfolio IS NOT NULL
+  ]]></explain>
+
+  <explain id="g2" db="target" generic="true" timeout="90"><![CDATA[
+    SELECT DISTINCT c.counterparty_parent FROM opera.cloned_deal_ticket_table c
+    WHERE c.tenant_id = :tenant AND c.business_unit = :bu AND c.lots_to_be_netted <> 0 AND (c.deal_status = 'Live' OR c.deal_status IS NULL)
+  ]]></explain>
+
+  <explain id="g3" db="target" generic="true" timeout="90"><![CDATA[
+    SELECT DISTINCT c.trade_group_type FROM opera.cloned_deal_ticket_table c
+    WHERE c.tenant_id = :tenant AND c.business_unit = :bu AND c.lots_to_be_netted <> 0 AND (c.deal_status = 'Live' OR c.deal_status IS NULL)
+  ]]></explain>
+
+  <explain id="g4" db="target" generic="true" timeout="90"><![CDATA[
+    SELECT DISTINCT c.contract_number FROM opera.cloned_deal_ticket_table c
+    WHERE c.tenant_id = :tenant AND c.business_unit = :bu AND c.lots_to_be_netted <> 0 AND (c.deal_status = 'Live' OR c.deal_status IS NULL)
+  ]]></explain>
+
+  <explain id="g5" db="target" generic="true" timeout="90"><![CDATA[
+    SELECT DISTINCT si.derivative_type
+    FROM (SELECT DISTINCT c.security_id FROM opera.cloned_deal_ticket_table c
+          WHERE c.tenant_id = :tenant AND c.business_unit = :bu AND c.lots_to_be_netted <> 0 AND (c.deal_status = 'Live' OR c.deal_status IS NULL)) s
+    JOIN opera.security_info_table si ON si.tenant_id = :tenant AND si.business_unit = :bu AND si.security_id = s.security_id
+  ]]></explain>
+
+  <expect ref="g1" max-ms="2000" reason="loose index scan"/>
+  <expect ref="g2" max-ms="3000" reason="counterparty list; 0.4 s to 8 s with a custom plan"/>
+  <expect ref="g3" max-ms="3000"/>
+  <expect ref="g4" max-ms="3000"/>
+  <expect ref="g5" max-ms="5000"/>
+  <expect ref="g2" no-seq-scan="cloned_deal_ticket_table" reason="a generic plan must not fall back to a table scan"/>
+  <expect ref="g5" no-seq-scan="cloned_deal_ticket_table" reason="a generic plan must not fall back to a table scan"/>
+
+  <compress id="bundle" file="netting-generic-plan.zip">
+    <include ref="g1"/><include ref="g2"/><include ref="g3"/><include ref="g4"/><include ref="g5"/>
+  </compress>
+</rules>
