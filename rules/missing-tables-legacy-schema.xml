@@ -1,0 +1,63 @@
+<rules name="missing-tables-legacy-schema">
+  <!-- Legacy MySQL structure of the 25 tables from "Missing tables.xlsx" that do not exist in the new schema (DEV backup of 15 Nov 2026).
+       Purpose: write Liquibase changesets for them from the legacy definitions (types, nullability, defaults, keys, indexes).
+       Read only. Legacy kept one table per business unit (name_cfs, name_rba, ...), so each base name is matched with and without a three letter BU suffix.
+       1. tables: which legacy tables matched (one row per table, with row estimate and create time).
+       2. columns: every column of every matched table. Tables of different BUs that share a base name normally have the same columns;
+          the per base name signature in the last query shows whether they really do.
+       3. indexes: keys and indexes of the matched tables.
+       4. name-probe: broader LIKE search on key words, to catch a sheet name that is not the real legacy name.
+       Not included: dbtodw_mapping and curr_mult_table (already in the new schema). -->
+
+  <!-- 1. matched tables -->
+  <sql id="tables" db="mysql-oprdb02" export="full"><![CDATA[
+    SELECT table_name, table_type, table_rows AS est_rows, create_time, table_comment
+    FROM information_schema.tables
+    WHERE table_schema = 'dbsystemuat'
+      AND (table_name REGEXP '^(accounting_actual_report_store_table|accounting_tr_drawdown_table|accounting_traders_report_data_table|actual_previous_settle_vol_accounting_tr_summary_table|asia_working_day_map_table|bbg_productcode_table|bbg_ticker_mapping_table|bi_counterparty_mapping_table|broker_bbg_mapping_table|broker_column_name_mapping_table|broker_deal_mapping_table|broker_trade_deal_master_table|brokerage_rate_type_table|client_cash_balance_contractwise_table|cost_master_table|dripping_counter_party_report_store_table|frequency_type_table|grasa_client_master_data|helper_screen_netting_table|input_security_settlement_value_cache_table|subportfolio_fy_monthwise_opening_balance_table|subportfolio_portfolio_table|helper_dbtodw_otctrade_dump_table|helper_dbtodw_exchtrade_dump_table|activity_log)(_[a-z0-9][a-z0-9][a-z0-9])?$')
+    ORDER BY table_name
+  ]]></sql>
+
+  <!-- 2. columns of the matched tables -->
+  <sql id="columns" db="mysql-oprdb02" export="full"><![CDATA[
+    SELECT table_name, ordinal_position, column_name, column_type, data_type,
+           character_maximum_length AS char_len, numeric_precision AS num_precision, numeric_scale AS num_scale,
+           is_nullable, column_default, column_key, extra, column_comment
+    FROM information_schema.columns
+    WHERE table_schema = 'dbsystemuat'
+      AND (table_name REGEXP '^(accounting_actual_report_store_table|accounting_tr_drawdown_table|accounting_traders_report_data_table|actual_previous_settle_vol_accounting_tr_summary_table|asia_working_day_map_table|bbg_productcode_table|bbg_ticker_mapping_table|bi_counterparty_mapping_table|broker_bbg_mapping_table|broker_column_name_mapping_table|broker_deal_mapping_table|broker_trade_deal_master_table|brokerage_rate_type_table|client_cash_balance_contractwise_table|cost_master_table|dripping_counter_party_report_store_table|frequency_type_table|grasa_client_master_data|helper_screen_netting_table|input_security_settlement_value_cache_table|subportfolio_fy_monthwise_opening_balance_table|subportfolio_portfolio_table|helper_dbtodw_otctrade_dump_table|helper_dbtodw_exchtrade_dump_table|activity_log)(_[a-z0-9][a-z0-9][a-z0-9])?$')
+    ORDER BY table_name, ordinal_position
+  ]]></sql>
+
+  <!-- 3. keys and indexes -->
+  <sql id="indexes" db="mysql-oprdb02" export="full"><![CDATA[
+    SELECT table_name, index_name, non_unique, seq_in_index, column_name, index_type
+    FROM information_schema.statistics
+    WHERE table_schema = 'dbsystemuat'
+      AND (table_name REGEXP '^(accounting_actual_report_store_table|accounting_tr_drawdown_table|accounting_traders_report_data_table|actual_previous_settle_vol_accounting_tr_summary_table|asia_working_day_map_table|bbg_productcode_table|bbg_ticker_mapping_table|bi_counterparty_mapping_table|broker_bbg_mapping_table|broker_column_name_mapping_table|broker_deal_mapping_table|broker_trade_deal_master_table|brokerage_rate_type_table|client_cash_balance_contractwise_table|cost_master_table|dripping_counter_party_report_store_table|frequency_type_table|grasa_client_master_data|helper_screen_netting_table|input_security_settlement_value_cache_table|subportfolio_fy_monthwise_opening_balance_table|subportfolio_portfolio_table|helper_dbtodw_otctrade_dump_table|helper_dbtodw_exchtrade_dump_table|activity_log)(_[a-z0-9][a-z0-9][a-z0-9])?$')
+    ORDER BY table_name, index_name, seq_in_index
+  ]]></sql>
+
+  <!-- 4. broader name search, tables and views, to catch names that differ from the sheet -->
+  <sql id="name-probe" db="mysql-oprdb02" export="full"><![CDATA[
+    SELECT table_name, table_type, table_rows AS est_rows
+    FROM information_schema.tables
+    WHERE table_schema = 'dbsystemuat'
+      AND (table_name LIKE '%activity%log%' OR table_name LIKE '%working_day%' OR table_name LIKE '%bbg_product%' OR table_name LIKE '%bbg_ticker%'
+        OR table_name LIKE '%bi_counterparty%' OR table_name LIKE '%broker_bbg%' OR table_name LIKE '%broker_column%' OR table_name LIKE '%broker_deal_mapping%'
+        OR table_name LIKE '%broker_trade_deal%' OR table_name LIKE '%brokerage_rate%' OR table_name LIKE '%cash_balance_contract%' OR table_name LIKE '%cost_master%'
+        OR table_name LIKE '%frequency_type%' OR table_name LIKE '%grasa_client_master%' OR table_name LIKE '%screen_netting%'
+        OR table_name LIKE '%security_settlement_value_cache%' OR table_name LIKE '%fy_monthwise%' OR table_name LIKE '%subportfolio_portfolio%'
+        OR table_name LIKE '%dbtodw%' OR table_name LIKE '%actual_previous_settle%' OR table_name LIKE '%tr_drawdown%'
+        OR table_name LIKE '%traders_report_data%' OR table_name LIKE '%dripping_counter_party%' OR table_name LIKE '%actual_report_store%')
+    ORDER BY table_name
+  ]]></sql>
+
+  <expect ref="tables" rows="&gt;=25" reason="25 base names, most with several BU variants; fewer rows means some sheet names are not the real legacy names (see name-probe)"/>
+  <expect ref="columns" rows="&gt;=1" reason="the matched tables must have columns"/>
+  <expect ref="indexes" rows="&gt;=1" reason="at least some of the tables have keys"/>
+  <expect ref="name-probe" rows="&gt;=1" reason="broader search must find names"/>
+  <compress id="bundle" file="missing-tables-legacy-schema.zip">
+    <include ref="tables"/><include ref="columns"/><include ref="indexes"/><include ref="name-probe"/>
+  </compress>
+</rules>
