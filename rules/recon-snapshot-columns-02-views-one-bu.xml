@@ -11,7 +11,7 @@
                     (2) mtm_usd must equal that product within 0.01. Before the change all fx_nc_factor and mtm_usd were NULL because the live fx
                     view was joined on the snapshot trade_id, which has the BU suffix.
     eod-and-risk    information only: how many rows the EOD month-end view and the risk office view return for the BU and how many of the
-                    rows lack the data that is joined on source_trade_id (deal status, netting group, premium paid). A trade can legitimately be
+                    rows lack the data that is joined on source_trade_id (deal status and netting group on the EOD view, total_pnl_usd on the risk office view, which needs the fx factor). A trade can legitimately be
                     missing there, so there is no expectation; compare the share with the BU before the change.
     Parameters: tenant, bu.
   -->
@@ -55,7 +55,7 @@
 
   <sql id="risk" db="target" timeout="1800" export="full"><![CDATA[
     SELECT count(*) AS risk_rows,
-           count(*) FILTER (WHERE r.is_premium_paid IS NULL) AS premium_paid_missing
+           count(*) FILTER (WHERE r.total_pnl_usd IS NULL) AS total_pnl_usd_null
     FROM opera.helper_risk_office_otc_report_new r
     WHERE r.tenant_id = :tenant AND r.business_unit = :bu
       AND r.settlement_date = (SELECT max(p.settlement_date) FROM opera.recon_snapshot_pointer p
