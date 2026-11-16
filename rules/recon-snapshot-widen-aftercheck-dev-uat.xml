@@ -1,0 +1,197 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rules name="recon-snapshot-widen-aftercheck-dev-uat">
+  <!--
+    Question: the widen DO block for the recon snapshot tables was cancelled part way.
+    Did it leave anything behind (dropped views, changed columns, a session still running, locks, invalid indexes)?
+
+    The block is one statement, so a cancel should roll back everything. This rule proves it, read only, per environment:
+      views      the six views that must exist (three helper cache views and the three views built on them)
+      deps       every view that depends on the three snapshot tables, however deep (same walk the block uses)
+      narrow     snapshot columns still narrower than deal_ticket_table: unchanged means the block did nothing
+      sessions   any session still running the block or an ALTER on the snapshot tables
+      locks      exclusive locks held or waited for on the three snapshot tables
+      badindex   invalid indexes on the three snapshot tables
+
+    Expected after a clean cancel: 6 views, at least 6 dependents, narrow count the same as before the run, no sessions, no locks, no invalid indexes.
+    Read only. Datasources postgres-dev and postgres-uat.
+  -->
+
+  <sql id="dev-views" db="postgres-dev" export="full"><![CDATA[
+    SELECT c.relname AS view_name, c.relkind::text AS kind, coalesce(c.relacl::text, '') AS acl
+    FROM pg_class c
+    WHERE c.relnamespace = 'opera'::regnamespace
+      AND c.relname IN ('helper_settle_p_and_g_view_cache_table', 'helper_actual_settle_p_and_g_view_cache_table',
+                        'helper_traders_p_and_g_view_cache_table', 'helper_settle_pricing_subportfoliovalues_view',
+                        'helper_risk_office_otc_report_new', 'helper_eod_monthend_report_view')
+    ORDER BY c.relname
+  ]]></sql>
+  <sql id="uat-views" db="postgres-uat" export="full"><![CDATA[
+    SELECT c.relname AS view_name, c.relkind::text AS kind, coalesce(c.relacl::text, '') AS acl
+    FROM pg_class c
+    WHERE c.relnamespace = 'opera'::regnamespace
+      AND c.relname IN ('helper_settle_p_and_g_view_cache_table', 'helper_actual_settle_p_and_g_view_cache_table',
+                        'helper_traders_p_and_g_view_cache_table', 'helper_settle_pricing_subportfoliovalues_view',
+                        'helper_risk_office_otc_report_new', 'helper_eod_monthend_report_view')
+    ORDER BY c.relname
+  ]]></sql>
+
+  <sql id="dev-deps" db="postgres-dev" export="full"><![CDATA[
+    WITH RECURSIVE dep(oid, lvl) AS (
+      SELECT v.oid, 1
+      FROM pg_depend dp
+      JOIN pg_rewrite rw ON rw.oid = dp.objid
+      JOIN pg_class v ON v.oid = rw.ev_class
+      WHERE dp.refclassid = 'pg_class'::regclass
+        AND dp.refobjid IN (SELECT c.oid FROM pg_class c WHERE c.relnamespace = 'opera'::regnamespace
+                             AND c.relname IN ('recon_settle_snapshot', 'recon_actual_snapshot', 'recon_traders_snapshot'))
+        AND v.oid <> dp.refobjid
+      UNION
+      SELECT v.oid, dep.lvl + 1
+      FROM dep
+      JOIN pg_depend dp ON dp.refclassid = 'pg_class'::regclass AND dp.refobjid = dep.oid
+      JOIN pg_rewrite rw ON rw.oid = dp.objid
+      JOIN pg_class v ON v.oid = rw.ev_class
+      WHERE v.oid <> dep.oid
+    )
+    SELECT c.relname AS view_name, c.relkind::text AS kind, max(dep.lvl) AS lvl
+    FROM dep JOIN pg_class c ON c.oid = dep.oid
+    GROUP BY c.relname, c.relkind
+    ORDER BY max(dep.lvl), c.relname
+  ]]></sql>
+  <sql id="uat-deps" db="postgres-uat" export="full"><![CDATA[
+    WITH RECURSIVE dep(oid, lvl) AS (
+      SELECT v.oid, 1
+      FROM pg_depend dp
+      JOIN pg_rewrite rw ON rw.oid = dp.objid
+      JOIN pg_class v ON v.oid = rw.ev_class
+      WHERE dp.refclassid = 'pg_class'::regclass
+        AND dp.refobjid IN (SELECT c.oid FROM pg_class c WHERE c.relnamespace = 'opera'::regnamespace
+                             AND c.relname IN ('recon_settle_snapshot', 'recon_actual_snapshot', 'recon_traders_snapshot'))
+        AND v.oid <> dp.refobjid
+      UNION
+      SELECT v.oid, dep.lvl + 1
+      FROM dep
+      JOIN pg_depend dp ON dp.refclassid = 'pg_class'::regclass AND dp.refobjid = dep.oid
+      JOIN pg_rewrite rw ON rw.oid = dp.objid
+      JOIN pg_class v ON v.oid = rw.ev_class
+      WHERE v.oid <> dep.oid
+    )
+    SELECT c.relname AS view_name, c.relkind::text AS kind, max(dep.lvl) AS lvl
+    FROM dep JOIN pg_class c ON c.oid = dep.oid
+    GROUP BY c.relname, c.relkind
+    ORDER BY max(dep.lvl), c.relname
+  ]]></sql>
+
+  <sql id="dev-narrow" db="postgres-dev" export="full"><![CDATA[
+    SELECT s.table_name, s.column_name,
+           s.character_maximum_length AS snapshot_len,
+           d.character_maximum_length AS source_len
+    FROM information_schema.columns s
+    JOIN information_schema.columns d
+      ON d.table_schema = 'opera' AND d.table_name = 'deal_ticket_table' AND d.column_name = s.column_name
+    WHERE s.table_schema = 'opera'
+      AND s.table_name IN ('recon_settle_snapshot', 'recon_actual_snapshot', 'recon_traders_snapshot')
+      AND s.data_type = 'character varying'
+      AND s.character_maximum_length < d.character_maximum_length
+    ORDER BY s.table_name, s.column_name
+  ]]></sql>
+  <sql id="uat-narrow" db="postgres-uat" export="full"><![CDATA[
+    SELECT s.table_name, s.column_name,
+           s.character_maximum_length AS snapshot_len,
+           d.character_maximum_length AS source_len
+    FROM information_schema.columns s
+    JOIN information_schema.columns d
+      ON d.table_schema = 'opera' AND d.table_name = 'deal_ticket_table' AND d.column_name = s.column_name
+    WHERE s.table_schema = 'opera'
+      AND s.table_name IN ('recon_settle_snapshot', 'recon_actual_snapshot', 'recon_traders_snapshot')
+      AND s.data_type = 'character varying'
+      AND s.character_maximum_length < d.character_maximum_length
+    ORDER BY s.table_name, s.column_name
+  ]]></sql>
+
+  <sql id="dev-sessions" db="postgres-dev" export="full"><![CDATA[
+    SELECT a.pid, a.usename, a.state, a.wait_event_type, a.wait_event,
+           a.xact_start, now() - a.query_start AS running_for, left(a.query, 120) AS query_start_text
+    FROM pg_stat_activity a
+    WHERE a.datname = current_database()
+      AND a.pid <> pg_backend_pid()
+      AND a.query NOT ILIKE '%pg_stat_activity%'
+      AND (a.query ILIKE '%tmp_widen%' OR a.query ILIKE '%DO $widen$%'
+           OR a.query ILIKE '%ALTER TABLE%recon_%_snapshot%' OR a.query ILIKE '%DROP VIEW%helper_%')
+    ORDER BY a.query_start
+  ]]></sql>
+  <sql id="uat-sessions" db="postgres-uat" export="full"><![CDATA[
+    SELECT a.pid, a.usename, a.state, a.wait_event_type, a.wait_event,
+           a.xact_start, now() - a.query_start AS running_for, left(a.query, 120) AS query_start_text
+    FROM pg_stat_activity a
+    WHERE a.datname = current_database()
+      AND a.pid <> pg_backend_pid()
+      AND a.query NOT ILIKE '%pg_stat_activity%'
+      AND (a.query ILIKE '%tmp_widen%' OR a.query ILIKE '%DO $widen$%'
+           OR a.query ILIKE '%ALTER TABLE%recon_%_snapshot%' OR a.query ILIKE '%DROP VIEW%helper_%')
+    ORDER BY a.query_start
+  ]]></sql>
+
+  <sql id="dev-locks" db="postgres-dev" export="full"><![CDATA[
+    SELECT l.pid, c.relname, l.mode, l.granted, a.state, a.xact_start, left(a.query, 100) AS query_start_text
+    FROM pg_locks l
+    JOIN pg_class c ON c.oid = l.relation
+    LEFT JOIN pg_stat_activity a ON a.pid = l.pid
+    WHERE c.relnamespace = 'opera'::regnamespace
+      AND c.relname IN ('recon_settle_snapshot', 'recon_actual_snapshot', 'recon_traders_snapshot')
+      AND l.pid <> pg_backend_pid()
+      AND (NOT l.granted OR l.mode = 'AccessExclusiveLock')
+    ORDER BY c.relname, l.pid
+  ]]></sql>
+  <sql id="uat-locks" db="postgres-uat" export="full"><![CDATA[
+    SELECT l.pid, c.relname, l.mode, l.granted, a.state, a.xact_start, left(a.query, 100) AS query_start_text
+    FROM pg_locks l
+    JOIN pg_class c ON c.oid = l.relation
+    LEFT JOIN pg_stat_activity a ON a.pid = l.pid
+    WHERE c.relnamespace = 'opera'::regnamespace
+      AND c.relname IN ('recon_settle_snapshot', 'recon_actual_snapshot', 'recon_traders_snapshot')
+      AND l.pid <> pg_backend_pid()
+      AND (NOT l.granted OR l.mode = 'AccessExclusiveLock')
+    ORDER BY c.relname, l.pid
+  ]]></sql>
+
+  <sql id="dev-badindex" db="postgres-dev" export="full"><![CDATA[
+    SELECT t.relname AS table_name, i.relname AS index_name, x.indisvalid, x.indisready
+    FROM pg_index x
+    JOIN pg_class t ON t.oid = x.indrelid
+    JOIN pg_class i ON i.oid = x.indexrelid
+    WHERE t.relnamespace = 'opera'::regnamespace
+      AND t.relname IN ('recon_settle_snapshot', 'recon_actual_snapshot', 'recon_traders_snapshot')
+      AND (NOT x.indisvalid OR NOT x.indisready)
+  ]]></sql>
+  <sql id="uat-badindex" db="postgres-uat" export="full"><![CDATA[
+    SELECT t.relname AS table_name, i.relname AS index_name, x.indisvalid, x.indisready
+    FROM pg_index x
+    JOIN pg_class t ON t.oid = x.indrelid
+    JOIN pg_class i ON i.oid = x.indexrelid
+    WHERE t.relnamespace = 'opera'::regnamespace
+      AND t.relname IN ('recon_settle_snapshot', 'recon_actual_snapshot', 'recon_traders_snapshot')
+      AND (NOT x.indisvalid OR NOT x.indisready)
+  ]]></sql>
+
+  <expect ref="dev-views" rows="6" reason="all six helper views must still exist on dev (a missing one means a partial drop)"/>
+  <expect ref="uat-views" rows="6" reason="all six helper views must still exist on UAT"/>
+  <expect ref="dev-deps" rows=">=6" reason="the dependent view tree must be intact on dev"/>
+  <expect ref="uat-deps" rows=">=6" reason="the dependent view tree must be intact on UAT"/>
+  <expect ref="dev-narrow" rows=">=50" reason="a rolled back run leaves the columns narrow (about 53 before the widening)"/>
+  <expect ref="uat-narrow" rows=">=50" reason="a rolled back run leaves the columns narrow (about 53 before the widening)"/>
+  <expect ref="dev-sessions" rows="0" reason="no session may still run the cancelled block on dev"/>
+  <expect ref="uat-sessions" rows="0" reason="no session may still run the cancelled block on UAT"/>
+  <expect ref="dev-locks" rows="0" reason="no exclusive or waiting lock on the snapshot tables on dev"/>
+  <expect ref="uat-locks" rows="0" reason="no exclusive or waiting lock on the snapshot tables on UAT"/>
+  <expect ref="dev-badindex" rows="0" reason="no invalid index on dev"/>
+  <expect ref="uat-badindex" rows="0" reason="no invalid index on UAT"/>
+  <compress id="bundle" file="recon-snapshot-widen-aftercheck.zip">
+    <include ref="dev-views"/><include ref="uat-views"/>
+    <include ref="dev-deps"/><include ref="uat-deps"/>
+    <include ref="dev-narrow"/><include ref="uat-narrow"/>
+    <include ref="dev-sessions"/><include ref="uat-sessions"/>
+    <include ref="dev-locks"/><include ref="uat-locks"/>
+    <include ref="dev-badindex"/><include ref="uat-badindex"/>
+  </compress>
+</rules>
