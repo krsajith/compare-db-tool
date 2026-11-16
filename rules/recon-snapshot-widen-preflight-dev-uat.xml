@@ -1,0 +1,407 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rules name="recon-snapshot-widen-preflight-dev-uat">
+  <!--
+    Question: can the recon snapshot widening block lose anything? Run this BEFORE the block and again AFTER, then compare.
+
+    The block runs in one transaction, so a failure rolls everything back. The only way to lose something is a silent loss:
+    DROP VIEW also drops triggers, rules, column privileges, column comments and publication membership of the view,
+    and the block restores only the definition, owner, table privileges, options and the view comment.
+    Each lost-* query must return no rows; any row means the block would silently drop that item, so do not run it.
+
+      deps              every view that depends on the two tables (the ones the block drops and recreates), with owner,
+                        grants, options, comment and a fingerprint of the column names and types. Must be identical before and after.
+      lost-*            items the block would not restore. Expect none.
+      other-dependents  functions or columns using the view or table row types. Informational: the two fn_recon_materialize_settle_v2_trial
+                        functions return the settle row type and are known to survive the change.
+      row-counts        rows per snapshot table. Must be identical before and after (widening never touches data).
+
+    Read only. Datasources postgres-dev and postgres-uat. For production the user runs it with the allow-prod flag.
+  -->
+  <sql id="dev-deps" db="postgres-dev" export="full" timeout="300"><![CDATA[
+    WITH RECURSIVE dep(oid, lvl) AS (
+      SELECT v.oid, 1
+      FROM pg_depend dp
+      JOIN pg_rewrite rw ON rw.oid = dp.objid
+      JOIN pg_class v ON v.oid = rw.ev_class
+      WHERE dp.refclassid = 'pg_class'::regclass
+        AND dp.refobjid IN (SELECT c.oid FROM pg_class c WHERE c.relnamespace = 'opera'::regnamespace
+                             AND c.relname IN ('recon_settle_snapshot', 'recon_actual_snapshot'))
+        AND v.oid <> dp.refobjid
+      UNION
+      SELECT v.oid, dep.lvl + 1
+      FROM dep
+      JOIN pg_depend dp ON dp.refclassid = 'pg_class'::regclass AND dp.refobjid = dep.oid
+      JOIN pg_rewrite rw ON rw.oid = dp.objid
+      JOIN pg_class v ON v.oid = rw.ev_class
+      WHERE v.oid <> dep.oid
+    ),
+    vw AS (SELECT oid, max(lvl) AS lvl FROM dep GROUP BY oid)
+    SELECT c.relname AS view_name, c.relkind::text AS kind, vw.lvl, pg_get_userbyid(c.relowner) AS owner,
+           coalesce(c.relacl::text, '') AS acl, coalesce(array_to_string(c.reloptions, ','), '') AS options,
+           coalesce(obj_description(c.oid, 'pg_class'), '') AS view_comment,
+           (SELECT count(*) FROM pg_attribute a WHERE a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped) AS columns,
+           (SELECT md5(string_agg(a.attname || ':' || a.atttypid::regtype::text, ',' ORDER BY a.attnum))
+              FROM pg_attribute a WHERE a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped) AS column_fingerprint
+    FROM vw JOIN pg_class c ON c.oid = vw.oid
+    ORDER BY vw.lvl, c.relname
+  ]]></sql>
+  <sql id="dev-lost-triggers" db="postgres-dev" export="full" timeout="300"><![CDATA[
+    WITH RECURSIVE dep(oid, lvl) AS (
+      SELECT v.oid, 1
+      FROM pg_depend dp
+      JOIN pg_rewrite rw ON rw.oid = dp.objid
+      JOIN pg_class v ON v.oid = rw.ev_class
+      WHERE dp.refclassid = 'pg_class'::regclass
+        AND dp.refobjid IN (SELECT c.oid FROM pg_class c WHERE c.relnamespace = 'opera'::regnamespace
+                             AND c.relname IN ('recon_settle_snapshot', 'recon_actual_snapshot'))
+        AND v.oid <> dp.refobjid
+      UNION
+      SELECT v.oid, dep.lvl + 1
+      FROM dep
+      JOIN pg_depend dp ON dp.refclassid = 'pg_class'::regclass AND dp.refobjid = dep.oid
+      JOIN pg_rewrite rw ON rw.oid = dp.objid
+      JOIN pg_class v ON v.oid = rw.ev_class
+      WHERE v.oid <> dep.oid
+    ),
+    vw AS (SELECT oid, max(lvl) AS lvl FROM dep GROUP BY oid)
+    SELECT c.relname AS view_name, t.tgname AS trigger_name
+    FROM vw JOIN pg_class c ON c.oid = vw.oid JOIN pg_trigger t ON t.tgrelid = c.oid
+    WHERE NOT t.tgisinternal
+  ]]></sql>
+  <sql id="dev-lost-rules" db="postgres-dev" export="full" timeout="300"><![CDATA[
+    WITH RECURSIVE dep(oid, lvl) AS (
+      SELECT v.oid, 1
+      FROM pg_depend dp
+      JOIN pg_rewrite rw ON rw.oid = dp.objid
+      JOIN pg_class v ON v.oid = rw.ev_class
+      WHERE dp.refclassid = 'pg_class'::regclass
+        AND dp.refobjid IN (SELECT c.oid FROM pg_class c WHERE c.relnamespace = 'opera'::regnamespace
+                             AND c.relname IN ('recon_settle_snapshot', 'recon_actual_snapshot'))
+        AND v.oid <> dp.refobjid
+      UNION
+      SELECT v.oid, dep.lvl + 1
+      FROM dep
+      JOIN pg_depend dp ON dp.refclassid = 'pg_class'::regclass AND dp.refobjid = dep.oid
+      JOIN pg_rewrite rw ON rw.oid = dp.objid
+      JOIN pg_class v ON v.oid = rw.ev_class
+      WHERE v.oid <> dep.oid
+    ),
+    vw AS (SELECT oid, max(lvl) AS lvl FROM dep GROUP BY oid)
+    SELECT c.relname AS view_name, r.rulename AS rule_name
+    FROM vw JOIN pg_class c ON c.oid = vw.oid JOIN pg_rewrite r ON r.ev_class = c.oid
+    WHERE r.rulename <> '_RETURN'
+  ]]></sql>
+  <sql id="dev-lost-column-acl" db="postgres-dev" export="full" timeout="300"><![CDATA[
+    WITH RECURSIVE dep(oid, lvl) AS (
+      SELECT v.oid, 1
+      FROM pg_depend dp
+      JOIN pg_rewrite rw ON rw.oid = dp.objid
+      JOIN pg_class v ON v.oid = rw.ev_class
+      WHERE dp.refclassid = 'pg_class'::regclass
+        AND dp.refobjid IN (SELECT c.oid FROM pg_class c WHERE c.relnamespace = 'opera'::regnamespace
+                             AND c.relname IN ('recon_settle_snapshot', 'recon_actual_snapshot'))
+        AND v.oid <> dp.refobjid
+      UNION
+      SELECT v.oid, dep.lvl + 1
+      FROM dep
+      JOIN pg_depend dp ON dp.refclassid = 'pg_class'::regclass AND dp.refobjid = dep.oid
+      JOIN pg_rewrite rw ON rw.oid = dp.objid
+      JOIN pg_class v ON v.oid = rw.ev_class
+      WHERE v.oid <> dep.oid
+    ),
+    vw AS (SELECT oid, max(lvl) AS lvl FROM dep GROUP BY oid)
+    SELECT c.relname AS relation_name, a.attname AS column_name, a.attacl::text AS column_acl
+    FROM (SELECT oid FROM vw UNION SELECT c2.oid FROM pg_class c2 WHERE c2.relnamespace = 'opera'::regnamespace
+                                 AND c2.relname IN ('recon_settle_snapshot', 'recon_actual_snapshot')) x
+    JOIN pg_class c ON c.oid = x.oid
+    JOIN pg_attribute a ON a.attrelid = c.oid AND a.attacl IS NOT NULL AND NOT a.attisdropped
+  ]]></sql>
+  <sql id="dev-lost-column-comments" db="postgres-dev" export="full" timeout="300"><![CDATA[
+    WITH RECURSIVE dep(oid, lvl) AS (
+      SELECT v.oid, 1
+      FROM pg_depend dp
+      JOIN pg_rewrite rw ON rw.oid = dp.objid
+      JOIN pg_class v ON v.oid = rw.ev_class
+      WHERE dp.refclassid = 'pg_class'::regclass
+        AND dp.refobjid IN (SELECT c.oid FROM pg_class c WHERE c.relnamespace = 'opera'::regnamespace
+                             AND c.relname IN ('recon_settle_snapshot', 'recon_actual_snapshot'))
+        AND v.oid <> dp.refobjid
+      UNION
+      SELECT v.oid, dep.lvl + 1
+      FROM dep
+      JOIN pg_depend dp ON dp.refclassid = 'pg_class'::regclass AND dp.refobjid = dep.oid
+      JOIN pg_rewrite rw ON rw.oid = dp.objid
+      JOIN pg_class v ON v.oid = rw.ev_class
+      WHERE v.oid <> dep.oid
+    ),
+    vw AS (SELECT oid, max(lvl) AS lvl FROM dep GROUP BY oid)
+    SELECT c.relname AS view_name, a.attname AS column_name, d.description
+    FROM vw JOIN pg_class c ON c.oid = vw.oid
+    JOIN pg_description d ON d.objoid = c.oid AND d.classoid = 'pg_class'::regclass AND d.objsubid > 0
+    JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = d.objsubid
+  ]]></sql>
+  <sql id="dev-lost-publications" db="postgres-dev" export="full" timeout="300"><![CDATA[
+    WITH RECURSIVE dep(oid, lvl) AS (
+      SELECT v.oid, 1
+      FROM pg_depend dp
+      JOIN pg_rewrite rw ON rw.oid = dp.objid
+      JOIN pg_class v ON v.oid = rw.ev_class
+      WHERE dp.refclassid = 'pg_class'::regclass
+        AND dp.refobjid IN (SELECT c.oid FROM pg_class c WHERE c.relnamespace = 'opera'::regnamespace
+                             AND c.relname IN ('recon_settle_snapshot', 'recon_actual_snapshot'))
+        AND v.oid <> dp.refobjid
+      UNION
+      SELECT v.oid, dep.lvl + 1
+      FROM dep
+      JOIN pg_depend dp ON dp.refclassid = 'pg_class'::regclass AND dp.refobjid = dep.oid
+      JOIN pg_rewrite rw ON rw.oid = dp.objid
+      JOIN pg_class v ON v.oid = rw.ev_class
+      WHERE v.oid <> dep.oid
+    ),
+    vw AS (SELECT oid, max(lvl) AS lvl FROM dep GROUP BY oid)
+    SELECT c.relname AS view_name, p.pubname
+    FROM vw JOIN pg_class c ON c.oid = vw.oid
+    JOIN pg_publication_rel pr ON pr.prrelid = c.oid JOIN pg_publication p ON p.oid = pr.prpubid
+  ]]></sql>
+  <sql id="dev-other-dependents" db="postgres-dev" export="full" timeout="300"><![CDATA[
+    WITH RECURSIVE dep(oid, lvl) AS (
+      SELECT v.oid, 1
+      FROM pg_depend dp
+      JOIN pg_rewrite rw ON rw.oid = dp.objid
+      JOIN pg_class v ON v.oid = rw.ev_class
+      WHERE dp.refclassid = 'pg_class'::regclass
+        AND dp.refobjid IN (SELECT c.oid FROM pg_class c WHERE c.relnamespace = 'opera'::regnamespace
+                             AND c.relname IN ('recon_settle_snapshot', 'recon_actual_snapshot'))
+        AND v.oid <> dp.refobjid
+      UNION
+      SELECT v.oid, dep.lvl + 1
+      FROM dep
+      JOIN pg_depend dp ON dp.refclassid = 'pg_class'::regclass AND dp.refobjid = dep.oid
+      JOIN pg_rewrite rw ON rw.oid = dp.objid
+      JOIN pg_class v ON v.oid = rw.ev_class
+      WHERE v.oid <> dep.oid
+    ),
+    vw AS (SELECT oid, max(lvl) AS lvl FROM dep GROUP BY oid)
+    SELECT pg_describe_object(dp.classid, dp.objid, dp.objsubid) AS dependent_object, dp.deptype::text AS deptype,
+           coalesce(c.relname, t0.relname) AS depends_on
+    FROM pg_depend dp
+    LEFT JOIN pg_class c ON c.oid = dp.refobjid AND dp.refclassid = 'pg_class'::regclass
+    LEFT JOIN pg_type ty ON ty.oid = dp.refobjid AND dp.refclassid = 'pg_type'::regclass
+    LEFT JOIN pg_class t0 ON t0.reltype = ty.oid
+    WHERE dp.deptype <> 'i'
+      AND dp.classid <> 'pg_rewrite'::regclass
+      AND ((dp.refclassid = 'pg_class'::regclass AND dp.refobjid IN (SELECT oid FROM vw) AND dp.refobjsubid = 0)
+        OR (dp.refclassid = 'pg_type'::regclass AND dp.refobjid IN (
+              SELECT c3.reltype FROM pg_class c3
+              WHERE c3.oid IN (SELECT oid FROM vw)
+                 OR (c3.relnamespace = 'opera'::regnamespace AND c3.relname IN ('recon_settle_snapshot', 'recon_actual_snapshot'))))) 
+    ORDER BY 1
+  ]]></sql>
+  <sql id="dev-row-counts" db="postgres-dev" export="full" timeout="300"><![CDATA[
+    SELECT 'recon_settle_snapshot' AS table_name, count(*) AS row_count, max(length(trade_source)) AS max_trade_source FROM opera.recon_settle_snapshot
+    UNION ALL
+    SELECT 'recon_actual_snapshot', count(*), max(length(trade_source)) FROM opera.recon_actual_snapshot
+  ]]></sql>
+  <sql id="uat-deps" db="postgres-uat" export="full" timeout="300"><![CDATA[
+    WITH RECURSIVE dep(oid, lvl) AS (
+      SELECT v.oid, 1
+      FROM pg_depend dp
+      JOIN pg_rewrite rw ON rw.oid = dp.objid
+      JOIN pg_class v ON v.oid = rw.ev_class
+      WHERE dp.refclassid = 'pg_class'::regclass
+        AND dp.refobjid IN (SELECT c.oid FROM pg_class c WHERE c.relnamespace = 'opera'::regnamespace
+                             AND c.relname IN ('recon_settle_snapshot', 'recon_actual_snapshot'))
+        AND v.oid <> dp.refobjid
+      UNION
+      SELECT v.oid, dep.lvl + 1
+      FROM dep
+      JOIN pg_depend dp ON dp.refclassid = 'pg_class'::regclass AND dp.refobjid = dep.oid
+      JOIN pg_rewrite rw ON rw.oid = dp.objid
+      JOIN pg_class v ON v.oid = rw.ev_class
+      WHERE v.oid <> dep.oid
+    ),
+    vw AS (SELECT oid, max(lvl) AS lvl FROM dep GROUP BY oid)
+    SELECT c.relname AS view_name, c.relkind::text AS kind, vw.lvl, pg_get_userbyid(c.relowner) AS owner,
+           coalesce(c.relacl::text, '') AS acl, coalesce(array_to_string(c.reloptions, ','), '') AS options,
+           coalesce(obj_description(c.oid, 'pg_class'), '') AS view_comment,
+           (SELECT count(*) FROM pg_attribute a WHERE a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped) AS columns,
+           (SELECT md5(string_agg(a.attname || ':' || a.atttypid::regtype::text, ',' ORDER BY a.attnum))
+              FROM pg_attribute a WHERE a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped) AS column_fingerprint
+    FROM vw JOIN pg_class c ON c.oid = vw.oid
+    ORDER BY vw.lvl, c.relname
+  ]]></sql>
+  <sql id="uat-lost-triggers" db="postgres-uat" export="full" timeout="300"><![CDATA[
+    WITH RECURSIVE dep(oid, lvl) AS (
+      SELECT v.oid, 1
+      FROM pg_depend dp
+      JOIN pg_rewrite rw ON rw.oid = dp.objid
+      JOIN pg_class v ON v.oid = rw.ev_class
+      WHERE dp.refclassid = 'pg_class'::regclass
+        AND dp.refobjid IN (SELECT c.oid FROM pg_class c WHERE c.relnamespace = 'opera'::regnamespace
+                             AND c.relname IN ('recon_settle_snapshot', 'recon_actual_snapshot'))
+        AND v.oid <> dp.refobjid
+      UNION
+      SELECT v.oid, dep.lvl + 1
+      FROM dep
+      JOIN pg_depend dp ON dp.refclassid = 'pg_class'::regclass AND dp.refobjid = dep.oid
+      JOIN pg_rewrite rw ON rw.oid = dp.objid
+      JOIN pg_class v ON v.oid = rw.ev_class
+      WHERE v.oid <> dep.oid
+    ),
+    vw AS (SELECT oid, max(lvl) AS lvl FROM dep GROUP BY oid)
+    SELECT c.relname AS view_name, t.tgname AS trigger_name
+    FROM vw JOIN pg_class c ON c.oid = vw.oid JOIN pg_trigger t ON t.tgrelid = c.oid
+    WHERE NOT t.tgisinternal
+  ]]></sql>
+  <sql id="uat-lost-rules" db="postgres-uat" export="full" timeout="300"><![CDATA[
+    WITH RECURSIVE dep(oid, lvl) AS (
+      SELECT v.oid, 1
+      FROM pg_depend dp
+      JOIN pg_rewrite rw ON rw.oid = dp.objid
+      JOIN pg_class v ON v.oid = rw.ev_class
+      WHERE dp.refclassid = 'pg_class'::regclass
+        AND dp.refobjid IN (SELECT c.oid FROM pg_class c WHERE c.relnamespace = 'opera'::regnamespace
+                             AND c.relname IN ('recon_settle_snapshot', 'recon_actual_snapshot'))
+        AND v.oid <> dp.refobjid
+      UNION
+      SELECT v.oid, dep.lvl + 1
+      FROM dep
+      JOIN pg_depend dp ON dp.refclassid = 'pg_class'::regclass AND dp.refobjid = dep.oid
+      JOIN pg_rewrite rw ON rw.oid = dp.objid
+      JOIN pg_class v ON v.oid = rw.ev_class
+      WHERE v.oid <> dep.oid
+    ),
+    vw AS (SELECT oid, max(lvl) AS lvl FROM dep GROUP BY oid)
+    SELECT c.relname AS view_name, r.rulename AS rule_name
+    FROM vw JOIN pg_class c ON c.oid = vw.oid JOIN pg_rewrite r ON r.ev_class = c.oid
+    WHERE r.rulename <> '_RETURN'
+  ]]></sql>
+  <sql id="uat-lost-column-acl" db="postgres-uat" export="full" timeout="300"><![CDATA[
+    WITH RECURSIVE dep(oid, lvl) AS (
+      SELECT v.oid, 1
+      FROM pg_depend dp
+      JOIN pg_rewrite rw ON rw.oid = dp.objid
+      JOIN pg_class v ON v.oid = rw.ev_class
+      WHERE dp.refclassid = 'pg_class'::regclass
+        AND dp.refobjid IN (SELECT c.oid FROM pg_class c WHERE c.relnamespace = 'opera'::regnamespace
+                             AND c.relname IN ('recon_settle_snapshot', 'recon_actual_snapshot'))
+        AND v.oid <> dp.refobjid
+      UNION
+      SELECT v.oid, dep.lvl + 1
+      FROM dep
+      JOIN pg_depend dp ON dp.refclassid = 'pg_class'::regclass AND dp.refobjid = dep.oid
+      JOIN pg_rewrite rw ON rw.oid = dp.objid
+      JOIN pg_class v ON v.oid = rw.ev_class
+      WHERE v.oid <> dep.oid
+    ),
+    vw AS (SELECT oid, max(lvl) AS lvl FROM dep GROUP BY oid)
+    SELECT c.relname AS relation_name, a.attname AS column_name, a.attacl::text AS column_acl
+    FROM (SELECT oid FROM vw UNION SELECT c2.oid FROM pg_class c2 WHERE c2.relnamespace = 'opera'::regnamespace
+                                 AND c2.relname IN ('recon_settle_snapshot', 'recon_actual_snapshot')) x
+    JOIN pg_class c ON c.oid = x.oid
+    JOIN pg_attribute a ON a.attrelid = c.oid AND a.attacl IS NOT NULL AND NOT a.attisdropped
+  ]]></sql>
+  <sql id="uat-lost-column-comments" db="postgres-uat" export="full" timeout="300"><![CDATA[
+    WITH RECURSIVE dep(oid, lvl) AS (
+      SELECT v.oid, 1
+      FROM pg_depend dp
+      JOIN pg_rewrite rw ON rw.oid = dp.objid
+      JOIN pg_class v ON v.oid = rw.ev_class
+      WHERE dp.refclassid = 'pg_class'::regclass
+        AND dp.refobjid IN (SELECT c.oid FROM pg_class c WHERE c.relnamespace = 'opera'::regnamespace
+                             AND c.relname IN ('recon_settle_snapshot', 'recon_actual_snapshot'))
+        AND v.oid <> dp.refobjid
+      UNION
+      SELECT v.oid, dep.lvl + 1
+      FROM dep
+      JOIN pg_depend dp ON dp.refclassid = 'pg_class'::regclass AND dp.refobjid = dep.oid
+      JOIN pg_rewrite rw ON rw.oid = dp.objid
+      JOIN pg_class v ON v.oid = rw.ev_class
+      WHERE v.oid <> dep.oid
+    ),
+    vw AS (SELECT oid, max(lvl) AS lvl FROM dep GROUP BY oid)
+    SELECT c.relname AS view_name, a.attname AS column_name, d.description
+    FROM vw JOIN pg_class c ON c.oid = vw.oid
+    JOIN pg_description d ON d.objoid = c.oid AND d.classoid = 'pg_class'::regclass AND d.objsubid > 0
+    JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = d.objsubid
+  ]]></sql>
+  <sql id="uat-lost-publications" db="postgres-uat" export="full" timeout="300"><![CDATA[
+    WITH RECURSIVE dep(oid, lvl) AS (
+      SELECT v.oid, 1
+      FROM pg_depend dp
+      JOIN pg_rewrite rw ON rw.oid = dp.objid
+      JOIN pg_class v ON v.oid = rw.ev_class
+      WHERE dp.refclassid = 'pg_class'::regclass
+        AND dp.refobjid IN (SELECT c.oid FROM pg_class c WHERE c.relnamespace = 'opera'::regnamespace
+                             AND c.relname IN ('recon_settle_snapshot', 'recon_actual_snapshot'))
+        AND v.oid <> dp.refobjid
+      UNION
+      SELECT v.oid, dep.lvl + 1
+      FROM dep
+      JOIN pg_depend dp ON dp.refclassid = 'pg_class'::regclass AND dp.refobjid = dep.oid
+      JOIN pg_rewrite rw ON rw.oid = dp.objid
+      JOIN pg_class v ON v.oid = rw.ev_class
+      WHERE v.oid <> dep.oid
+    ),
+    vw AS (SELECT oid, max(lvl) AS lvl FROM dep GROUP BY oid)
+    SELECT c.relname AS view_name, p.pubname
+    FROM vw JOIN pg_class c ON c.oid = vw.oid
+    JOIN pg_publication_rel pr ON pr.prrelid = c.oid JOIN pg_publication p ON p.oid = pr.prpubid
+  ]]></sql>
+  <sql id="uat-other-dependents" db="postgres-uat" export="full" timeout="300"><![CDATA[
+    WITH RECURSIVE dep(oid, lvl) AS (
+      SELECT v.oid, 1
+      FROM pg_depend dp
+      JOIN pg_rewrite rw ON rw.oid = dp.objid
+      JOIN pg_class v ON v.oid = rw.ev_class
+      WHERE dp.refclassid = 'pg_class'::regclass
+        AND dp.refobjid IN (SELECT c.oid FROM pg_class c WHERE c.relnamespace = 'opera'::regnamespace
+                             AND c.relname IN ('recon_settle_snapshot', 'recon_actual_snapshot'))
+        AND v.oid <> dp.refobjid
+      UNION
+      SELECT v.oid, dep.lvl + 1
+      FROM dep
+      JOIN pg_depend dp ON dp.refclassid = 'pg_class'::regclass AND dp.refobjid = dep.oid
+      JOIN pg_rewrite rw ON rw.oid = dp.objid
+      JOIN pg_class v ON v.oid = rw.ev_class
+      WHERE v.oid <> dep.oid
+    ),
+    vw AS (SELECT oid, max(lvl) AS lvl FROM dep GROUP BY oid)
+    SELECT pg_describe_object(dp.classid, dp.objid, dp.objsubid) AS dependent_object, dp.deptype::text AS deptype,
+           coalesce(c.relname, t0.relname) AS depends_on
+    FROM pg_depend dp
+    LEFT JOIN pg_class c ON c.oid = dp.refobjid AND dp.refclassid = 'pg_class'::regclass
+    LEFT JOIN pg_type ty ON ty.oid = dp.refobjid AND dp.refclassid = 'pg_type'::regclass
+    LEFT JOIN pg_class t0 ON t0.reltype = ty.oid
+    WHERE dp.deptype <> 'i'
+      AND dp.classid <> 'pg_rewrite'::regclass
+      AND ((dp.refclassid = 'pg_class'::regclass AND dp.refobjid IN (SELECT oid FROM vw) AND dp.refobjsubid = 0)
+        OR (dp.refclassid = 'pg_type'::regclass AND dp.refobjid IN (
+              SELECT c3.reltype FROM pg_class c3
+              WHERE c3.oid IN (SELECT oid FROM vw)
+                 OR (c3.relnamespace = 'opera'::regnamespace AND c3.relname IN ('recon_settle_snapshot', 'recon_actual_snapshot'))))) 
+    ORDER BY 1
+  ]]></sql>
+  <sql id="uat-row-counts" db="postgres-uat" export="full" timeout="300"><![CDATA[
+    SELECT 'recon_settle_snapshot' AS table_name, count(*) AS row_count, max(length(trade_source)) AS max_trade_source FROM opera.recon_settle_snapshot
+    UNION ALL
+    SELECT 'recon_actual_snapshot', count(*), max(length(trade_source)) FROM opera.recon_actual_snapshot
+  ]]></sql>
+  <expect ref="dev-deps" rows="&gt;=6" reason="the dependent view tree must be found on dev"/>
+  <expect ref="dev-lost-triggers" rows="0" reason="the block would silently drop a trigger on a view on dev"/>
+  <expect ref="dev-lost-rules" rows="0" reason="the block would silently drop a rule on a view on dev"/>
+  <expect ref="dev-lost-column-acl" rows="0" reason="the block would silently drop a column privilege on dev"/>
+  <expect ref="dev-lost-column-comments" rows="0" reason="the block would silently drop a column comment on a view on dev"/>
+  <expect ref="dev-lost-publications" rows="0" reason="the block would silently drop a publication entry for a view on dev"/>
+  <expect ref="dev-row-counts" rows="2"/>
+  <expect ref="uat-deps" rows="&gt;=6" reason="the dependent view tree must be found on uat"/>
+  <expect ref="uat-lost-triggers" rows="0" reason="the block would silently drop a trigger on a view on uat"/>
+  <expect ref="uat-lost-rules" rows="0" reason="the block would silently drop a rule on a view on uat"/>
+  <expect ref="uat-lost-column-acl" rows="0" reason="the block would silently drop a column privilege on uat"/>
+  <expect ref="uat-lost-column-comments" rows="0" reason="the block would silently drop a column comment on a view on uat"/>
+  <expect ref="uat-lost-publications" rows="0" reason="the block would silently drop a publication entry for a view on uat"/>
+  <expect ref="uat-row-counts" rows="2"/>
+  <compress id="bundle" file="recon-snapshot-widen-preflight.zip">
+    <include ref="dev-deps"/><include ref="dev-lost-triggers"/><include ref="dev-lost-rules"/><include ref="dev-lost-column-acl"/><include ref="dev-lost-column-comments"/><include ref="dev-lost-publications"/><include ref="dev-other-dependents"/><include ref="dev-row-counts"/><include ref="uat-deps"/><include ref="uat-lost-triggers"/><include ref="uat-lost-rules"/><include ref="uat-lost-column-acl"/><include ref="uat-lost-column-comments"/><include ref="uat-lost-publications"/><include ref="uat-other-dependents"/><include ref="uat-row-counts"/>
+  </compress>
+</rules>
