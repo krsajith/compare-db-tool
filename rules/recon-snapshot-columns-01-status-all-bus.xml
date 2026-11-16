@@ -1,0 +1,103 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rules name="recon-snapshot-columns-01-status-all-bus">
+  <!--
+    Status of the recon snapshot columns change on ONE environment, for ALL business units. Read only.
+    Run it on dev and on UAT with the target-env flag (postgres-dev, postgres-uat). Same tenant on both by default.
+
+    What the change is: source_trade_id (trade id without the BU suffix) on the settle, actual and traders snapshots, plus nc_factor,
+    fx_nc_factor, invenio_product_code, product_name and exchange_name on the settle snapshot. Liquibase adds the columns, the v4 builders
+    fill them when a BU is refreshed. Rows of a run that was refreshed before the change keep NULL.
+
+    Checks:
+      columns         the new columns exist on the three snapshot tables and on the three published views (6 on settle, 1 on actual and traders)
+      builders        the deployed recon_materialize_settle, _actual and _traders are the v4 versions (source contains source_trade_id)
+      refresh-status  for every BU and view type, the latest published snapshot: rows, rows with source_trade_id, rows where
+                      trade_id = source_trade_id plus the BU suffix, and for settle the stored factors. A row with fewer filled rows than rows
+                      is a BU that still has to be refreshed.
+    The expectations fail while any BU is not refreshed, so the last check doubles as the list of BUs still to do (see refresh-status.csv).
+    Parameter: tenant.
+  -->
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+  </parameters>
+
+  <sql id="columns" db="target" timeout="60" export="full"><![CDATA[
+    SELECT w.object_name, w.kind, w.expected_columns,
+           (SELECT count(*) FROM information_schema.columns c
+             WHERE c.table_schema = 'opera' AND c.table_name = w.object_name
+               AND c.column_name = ANY (CASE WHEN w.expected_columns = 6
+                      THEN ARRAY['nc_factor','fx_nc_factor','invenio_product_code','product_name','exchange_name','source_trade_id']
+                      ELSE ARRAY['source_trade_id'] END)) AS found_columns
+    FROM (VALUES
+        ('recon_settle_snapshot', 'table', 6),
+        ('recon_actual_snapshot', 'table', 1),
+        ('recon_traders_snapshot', 'table', 1),
+        ('helper_settle_p_and_g_view_cache_table', 'published view', 6),
+        ('helper_actual_settle_p_and_g_view_cache_table', 'published view', 1),
+        ('helper_traders_p_and_g_view_cache_table', 'published view', 1)
+    ) AS w(object_name, kind, expected_columns)
+    ORDER BY w.kind, w.object_name
+  ]]></sql>
+
+  <sql id="builders" db="target" timeout="60" export="full"><![CDATA[
+    SELECT p.proname, position('source_trade_id' IN p.prosrc) > 0 AS is_v4
+    FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+    WHERE n.nspname = 'opera' AND p.proname IN ('recon_materialize_settle', 'recon_materialize_actual', 'recon_materialize_traders')
+    ORDER BY p.proname
+  ]]></sql>
+
+  <sql id="refresh-status" db="target" timeout="1800" export="full"><![CDATA[
+    WITH ptr AS (
+      SELECT p.tenant_id, p.business_unit, p.view_type, p.settlement_date, p.published_run_id, p.published_at
+      FROM opera.recon_snapshot_pointer p
+      WHERE p.tenant_id = :tenant
+        AND p.settlement_date = (SELECT max(p2.settlement_date) FROM opera.recon_snapshot_pointer p2
+                                  WHERE p2.tenant_id = p.tenant_id AND p2.business_unit = p.business_unit AND p2.view_type = p.view_type)
+    )
+    SELECT p.business_unit, p.view_type, p.settlement_date, p.published_at,
+           count(s.uuid) AS row_count,
+           count(s.source_trade_id) AS has_source_trade_id,
+           count(*) FILTER (WHERE s.trade_id = s.source_trade_id || '-' || p.business_unit) AS suffix_ok,
+           count(s.nc_factor) AS has_nc_factor,
+           count(s.fx_nc_factor) AS has_fx_nc_factor,
+           count(s.invenio_product_code) AS has_product_code
+    FROM ptr p
+    LEFT JOIN opera.recon_settle_snapshot s
+           ON s.tenant_id = p.tenant_id AND s.business_unit = p.business_unit AND s.settlement_date = p.settlement_date AND s.run_id = p.published_run_id
+    WHERE p.view_type = 'SETTLE_PRICING'
+    GROUP BY p.business_unit, p.view_type, p.settlement_date, p.published_at
+    UNION ALL
+    SELECT p.business_unit, p.view_type, p.settlement_date, p.published_at,
+           count(s.uuid), count(s.source_trade_id),
+           count(*) FILTER (WHERE s.trade_id = s.source_trade_id || '-' || p.business_unit),
+           NULL::bigint, NULL::bigint, NULL::bigint
+    FROM ptr p
+    LEFT JOIN opera.recon_actual_snapshot s
+           ON s.tenant_id = p.tenant_id AND s.business_unit = p.business_unit AND s.settlement_date = p.settlement_date AND s.run_id = p.published_run_id
+    WHERE p.view_type = 'SETTLE_ACTUAL_PRICING'
+    GROUP BY p.business_unit, p.view_type, p.settlement_date, p.published_at
+    UNION ALL
+    SELECT p.business_unit, p.view_type, p.settlement_date, p.published_at,
+           count(s.uuid), count(s.source_trade_id),
+           count(*) FILTER (WHERE s.trade_id = s.source_trade_id || '-' || p.business_unit),
+           NULL::bigint, NULL::bigint, NULL::bigint
+    FROM ptr p
+    LEFT JOIN opera.recon_traders_snapshot s
+           ON s.tenant_id = p.tenant_id AND s.business_unit = p.business_unit AND s.settlement_date = p.settlement_date AND s.run_id = p.published_run_id
+    WHERE p.view_type = 'TRADERS_PRICING'
+    GROUP BY p.business_unit, p.view_type, p.settlement_date, p.published_at
+    ORDER BY 2, 1
+  ]]></sql>
+
+  <expect expr="#size(#rows('columns').?[found_columns != expected_columns]) == 0" reason="all new columns exist on the three snapshot tables and on the three published views"/>
+  <expect ref="builders" rows="3" reason="the three builders exist"/>
+  <expect expr="#size(#rows('builders').?[is_v4 == false]) == 0" reason="all three deployed builders are the v4 versions"/>
+  <expect ref="refresh-status" rows=">=1" reason="at least one published snapshot exists"/>
+  <expect expr="#size(#rows('refresh-status').?[has_source_trade_id != row_count]) == 0" reason="every published snapshot row has source_trade_id: no BU is left to refresh"/>
+  <expect expr="#size(#rows('refresh-status').?[suffix_ok != row_count]) == 0" reason="trade_id is exactly source_trade_id plus the BU suffix on every published row"/>
+  <expect expr="#size(#rows('refresh-status').?[view_type == 'SETTLE_PRICING' and has_nc_factor == 0]) == 0" reason="every settle snapshot has stored nc_factor values"/>
+
+  <compress id="bundle" file="recon-snapshot-columns-01-status-all-bus.zip">
+    <include ref="columns"/><include ref="builders"/><include ref="refresh-status"/>
+  </compress>
+</rules>

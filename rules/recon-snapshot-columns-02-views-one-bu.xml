@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rules name="recon-snapshot-columns-02-views-one-bu">
+  <!--
+    Checks the consumer views of the snapshot columns change for ONE business unit on ONE environment. Read only.
+    Run after the BU was refreshed and the v4 views were created (part 2). Run it for every BU, on dev and on UAT, giving the BU with the
+    param flag (bu=CFS) and the target-env flag (postgres-dev or postgres-uat) and loop over the BU list of rule recon-snapshot-columns-01-status-all-bus (column business_unit where view_type is SETTLE_PRICING).
+    The BU list is in refresh-status.csv of rule recon-snapshot-columns-01-status-all-bus. The date is the latest published settle snapshot of the BU.
+
+    view-summary    helper_settle_pricing_subportfoliovalues_view for the BU: rows, NULL counts and two shape independent invariants.
+                    In every shape mtm_usd = mtm_nc x nc_factor x fx_nc_factor, so (1) mtm_usd must not be NULL when all three are present and
+                    (2) mtm_usd must equal that product within 0.01. Before the change all fx_nc_factor and mtm_usd were NULL because the live fx
+                    view was joined on the snapshot trade_id, which has the BU suffix.
+    eod-and-risk    information only: how many rows the EOD month-end view and the risk office view return for the BU and how many of the
+                    rows lack the data that is joined on source_trade_id (deal status, netting group, premium paid). A trade can legitimately be
+                    missing there, so there is no expectation; compare the share with the BU before the change.
+    Parameters: tenant, bu.
+  -->
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+    <param name="bu" type="string" value="CFS"/>
+  </parameters>
+
+  <sql id="settle-date" db="target" timeout="60" export="full"><![CDATA[
+    SELECT p.business_unit, max(p.settlement_date) AS settlement_date
+    FROM opera.recon_snapshot_pointer p
+    WHERE p.tenant_id = :tenant AND p.business_unit = :bu AND p.view_type = 'SETTLE_PRICING'
+    GROUP BY p.business_unit
+  ]]></sql>
+
+  <sql id="view-summary" db="target" timeout="1800" export="full"><![CDATA[
+    SELECT count(*) AS view_rows,
+           count(DISTINCT v.trade_id) AS trades,
+           count(*) FILTER (WHERE v.source_trade_id IS NULL) AS source_trade_id_null,
+           count(*) FILTER (WHERE v.nc_factor IS NULL) AS nc_factor_null,
+           count(*) FILTER (WHERE v.fx_nc_factor IS NULL) AS fx_nc_factor_null,
+           count(*) FILTER (WHERE v.mtm_usd IS NULL) AS mtm_usd_null,
+           count(*) FILTER (WHERE v.mtm_usd IS NULL AND v.mtm_nc IS NOT NULL AND v.nc_factor IS NOT NULL AND v.fx_nc_factor IS NOT NULL) AS mtm_usd_null_with_factors,
+           count(*) FILTER (WHERE v.mtm_usd IS NOT NULL AND v.mtm_nc IS NOT NULL AND v.nc_factor IS NOT NULL AND v.fx_nc_factor IS NOT NULL
+                              AND abs(v.mtm_usd - v.mtm_nc * v.nc_factor * v.fx_nc_factor) > 0.01 + 0.000000001 * abs(v.mtm_usd)) AS mtm_usd_not_equal_product
+    FROM opera.helper_settle_pricing_subportfoliovalues_view v
+    WHERE v.tenant_id = :tenant AND v.business_unit = :bu
+      AND v.settlement_date = (SELECT max(p.settlement_date) FROM opera.recon_snapshot_pointer p
+                                WHERE p.tenant_id = :tenant AND p.business_unit = :bu AND p.view_type = 'SETTLE_PRICING')
+  ]]></sql>
+
+  <sql id="eod" db="target" timeout="1800" export="full"><![CDATA[
+    SELECT count(*) AS eod_rows,
+           count(*) FILTER (WHERE e.deal_status IS NULL) AS deal_status_missing,
+           count(*) FILTER (WHERE e.acc_group IS NULL) AS netting_group_missing
+    FROM opera.helper_eod_monthend_report_view e
+    WHERE e.tenant_id = :tenant AND e.business_unit = :bu
+      AND e.settlement_date = (SELECT max(p.settlement_date) FROM opera.recon_snapshot_pointer p
+                                WHERE p.tenant_id = :tenant AND p.business_unit = :bu AND p.view_type = 'SETTLE_PRICING')
+  ]]></sql>
+
+  <sql id="risk" db="target" timeout="1800" export="full"><![CDATA[
+    SELECT count(*) AS risk_rows,
+           count(*) FILTER (WHERE r.is_premium_paid IS NULL) AS premium_paid_missing
+    FROM opera.helper_risk_office_otc_report_new r
+    WHERE r.tenant_id = :tenant AND r.business_unit = :bu
+      AND r.settlement_date = (SELECT max(p.settlement_date) FROM opera.recon_snapshot_pointer p
+                                WHERE p.tenant_id = :tenant AND p.business_unit = :bu AND p.view_type = 'SETTLE_PRICING')
+  ]]></sql>
+
+  <expect ref="settle-date" rows="1" reason="the BU has a published settle snapshot"/>
+  <expect ref="view-summary" column="view_rows" min="1" reason="the consumer view returns rows for the BU"/>
+  <expect ref="view-summary" column="source_trade_id_null" max="0" reason="the view exposes source_trade_id on every row (the BU is refreshed with the v4 builder)"/>
+  <expect ref="view-summary" column="mtm_usd_null_with_factors" max="0" reason="mtm_usd is never NULL when mtm_nc, nc_factor and fx_nc_factor are present"/>
+  <expect ref="view-summary" column="mtm_usd_not_equal_product" max="0" reason="mtm_usd equals mtm_nc times nc_factor times fx_nc_factor on every row"/>
+
+  <compress id="bundle" file="recon-snapshot-columns-02-views-one-bu.zip">
+    <include ref="settle-date"/><include ref="view-summary"/><include ref="eod"/><include ref="risk"/>
+  </compress>
+</rules>
