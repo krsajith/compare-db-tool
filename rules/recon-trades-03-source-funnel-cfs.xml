@@ -1,0 +1,410 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rules name="recon-trades-03-source-funnel-cfs">
+  <!--
+    Question from the testers: the number of trades in the recon settle report does not match the source tables
+    (CFS: about 1.85 million trades in cloned_deal_ticket_table, 1,042,694 in the recon snapshot). Nobody says the code is wrong;
+    this rule shows, stage by stage, where the other trades drop out and why, using only the new PostgreSQL tables (no MySQL).
+
+    The stages repeat exactly what recon_materialize_settle (transaction-core, recon_materialize_settle_v3.sql) does:
+      stage 1 to 2  cloned_deal_ticket_table, only is_latest_version = 1 (older versions are history)
+      stage 3       join latest_active_lot: a trade with no active-lots history has no row
+      stage 4       transaction_date is before the run value date; consolidation sub-portfolios are excluded for 12 BUs
+      stage 5       inner join premium_fy_table on the valuation financial year: no premium row means no report row
+      stage 6       the Live or Dead rule (rb_deal): maturity, netting status, reset, barrier. Deals that fit none of the
+                    branches are not written (for example netting_status values other than not_netted, partially_netted, fully_netted
+                    while the maturity is in the future)
+      stage 7       the snapshot as published (trade_id has the suffix of the BU, removed here)
+    The funnel is a chain: each stage is a subset of the one before, the report shows how many trades leave at each stage,
+    which kind they are (NET- and DUP- ids come from netting and duplication, other ids are normal) and their netting status.
+    The stage 6 numbers must equal stage 7. If they do, the count is fully explained by the rules and nothing is lost.
+
+    Value date: taken from the refresh run behind the published snapshot, so it is the date the snapshot was really built with.
+    Parameters: tenant, bu, settlementDate (the snapshot date, 2026-10-01 on dev). Run with the target-env flag.
+  -->
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+    <param name="bu" type="string" value="CFS"/>
+    <param name="settlementDate" type="date" value="2026-10-01"/>
+  </parameters>
+
+  <sql id="run-info" db="target" timeout="60" export="full"><![CDATA[
+    SELECT p.business_unit, p.settlement_date, r.resolved_value_date, r.status, r.row_count, r.requested_at, p.published_at
+    FROM opera.recon_snapshot_pointer p
+    JOIN opera.recon_refresh_run r ON r.uuid = p.published_run_id
+    WHERE p.tenant_id = :tenant AND p.business_unit = :bu AND p.view_type = 'SETTLE_PRICING' AND p.settlement_date = :settlementDate
+  ]]></sql>
+
+  <sql id="stage-counts" db="target" timeout="900" export="full"><![CDATA[
+    WITH run AS (
+      SELECT r.resolved_value_date AS v_date
+      FROM opera.recon_snapshot_pointer p
+      JOIN opera.recon_refresh_run r ON r.uuid = p.published_run_id
+      WHERE p.tenant_id = :tenant AND p.business_unit = :bu AND p.view_type = 'SETTLE_PRICING'
+        AND p.settlement_date = :settlementDate
+    ),
+    base AS (
+      SELECT c.trade_id::text AS trade_id, c.security_id, c.transaction_date, c.netting_status, c.netting_date,
+             c.reset_status, c.reset_date, c.subportfolio, c.portfolio,
+             CASE WHEN c.trade_id::text LIKE 'NET-%' THEN 'NET-' WHEN c.trade_id::text LIKE 'DUP-%' THEN 'DUP-' ELSE 'normal' END AS trade_kind
+      FROM opera.cloned_deal_ticket_table c
+      WHERE c.tenant_id = :tenant AND c.business_unit = :bu AND c.is_latest_version = 1
+    ),
+    lal AS (
+      SELECT DISTINCT l.trade_id::text AS trade_id
+      FROM opera.latest_active_lot l
+      WHERE l.tenant_id = :tenant AND l.business_unit = :bu
+    ),
+    fy AS (
+      SELECT DISTINCT p.trade_id::text AS trade_id
+      FROM opera.premium_fy_table p
+      JOIN opera.valuation_financial_year_view v
+        ON v.tenant_id = p.tenant_id AND v.business_unit = p.business_unit AND v.financial_year = p.financial_year
+      WHERE p.tenant_id = :tenant AND p.business_unit = :bu
+    ),
+    vdt AS (
+      SELECT max(value_date) AS v_max FROM opera.valuation_date_table WHERE tenant_id = :tenant AND business_unit = :bu
+    ),
+    bar AS (
+      SELECT bmt.security_id, max(bmt.isbarrier1_breached) AS b1
+      FROM opera.barrier_monitoring_table bmt, vdt
+      WHERE bmt.tenant_id = :tenant AND bmt.business_unit = :bu AND bmt.value_date <= vdt.v_max
+      GROUP BY bmt.security_id
+    ),
+    sec AS (
+      SELECT s0.security_id, s0.maturity_date, s0.derivative_type
+      FROM opera.cloned_security_info_table s0
+      WHERE s0.tenant_id = :tenant AND s0.business_unit = :bu
+    ),
+    snap AS (
+      SELECT DISTINCT CASE WHEN x.trade_id::text LIKE '%-' || CAST(:bu AS text)
+                           THEN left(x.trade_id::text, length(x.trade_id::text) - length(CAST(:bu AS text)) - 1)
+                           ELSE x.trade_id::text END AS trade_id
+      FROM opera.helper_settle_p_and_g_view_cache_table x
+      WHERE x.tenant_id = :tenant AND x.business_unit = :bu AND x.settlement_date = :settlementDate
+    ),
+    t AS (
+      SELECT b.trade_id, b.trade_kind, b.netting_status,
+             (l.trade_id IS NOT NULL) AS in_lal,
+             (b.transaction_date < r.v_date AND (CAST(:bu AS text) NOT IN ('ALM','BKR','EBO','GPC','OAD','ODR','OG2','OGP','SPC','STG','TSY','USG') OR lower(b.subportfolio) NOT LIKE 'conso%')) AS date_ok,
+             (f.trade_id IS NOT NULL) AS has_fy,
+             CASE WHEN
+            s.maturity_date < r.v_date
+         OR (UPPER(CAST(:bu AS text)) IN ('PF6','PF9','QF1','QF2','RBA','RBC','RBH') AND b.reset_status IS NOT NULL AND b.reset_date <= r.v_date)
+         OR (b.netting_status = 'fully_netted' AND b.netting_date <= r.v_date)
+         OR (s.derivative_type ILIKE '%out%' AND COALESCE(br.b1, 0) <> 0)
+         OR ((UPPER(CAST(:bu AS text)) NOT IN ('PF6','PF9','QF1','QF2','RBA','RBC','RBH') OR b.reset_status IS NULL OR b.reset_date > r.v_date)
+             AND (s.maturity_date IS NULL
+                  OR (b.netting_status = 'fully_netted' AND b.netting_date > r.v_date)
+                  OR (r.v_date <= s.maturity_date AND b.netting_status IN ('not_netted','partially_netted')
+                      AND (s.derivative_type NOT ILIKE '%out%' OR COALESCE(br.b1, 0) = 0))))
+       THEN 1 ELSE 0 END AS classified,
+             (sn.trade_id IS NOT NULL) AS in_snapshot
+      FROM base b
+      CROSS JOIN run r
+      LEFT JOIN lal l ON l.trade_id = b.trade_id
+      LEFT JOIN fy f ON f.trade_id = b.trade_id
+      LEFT JOIN sec s ON s.security_id = b.security_id
+      LEFT JOIN bar br ON br.security_id = b.security_id
+      LEFT JOIN snap sn ON sn.trade_id = b.trade_id
+    )
+    SELECT count(*) AS s2_latest_version_trades,
+           count(*) FILTER (WHERE in_lal) AS s3_active_lot_row,
+           count(*) FILTER (WHERE in_lal AND date_ok) AS s4_transaction_before_value_date,
+           count(*) FILTER (WHERE in_lal AND date_ok AND has_fy) AS s5_premium_fy_row,
+           count(*) FILTER (WHERE in_lal AND date_ok AND has_fy AND classified = 1) AS s6_live_or_dead_rule,
+           count(*) FILTER (WHERE in_snapshot) AS s7_in_snapshot,
+           count(*) FILTER (WHERE in_lal AND date_ok AND has_fy AND classified = 1 AND NOT in_snapshot) AS rule_says_yes_snapshot_missing,
+           count(*) FILTER (WHERE in_snapshot AND NOT (in_lal AND date_ok AND has_fy AND classified = 1)) AS snapshot_has_more_than_rule
+    FROM t
+  ]]></sql>
+
+  <sql id="drop-reasons" db="target" timeout="900" export="full"><![CDATA[
+    WITH run AS (
+      SELECT r.resolved_value_date AS v_date
+      FROM opera.recon_snapshot_pointer p
+      JOIN opera.recon_refresh_run r ON r.uuid = p.published_run_id
+      WHERE p.tenant_id = :tenant AND p.business_unit = :bu AND p.view_type = 'SETTLE_PRICING'
+        AND p.settlement_date = :settlementDate
+    ),
+    base AS (
+      SELECT c.trade_id::text AS trade_id, c.security_id, c.transaction_date, c.netting_status, c.netting_date,
+             c.reset_status, c.reset_date, c.subportfolio, c.portfolio,
+             CASE WHEN c.trade_id::text LIKE 'NET-%' THEN 'NET-' WHEN c.trade_id::text LIKE 'DUP-%' THEN 'DUP-' ELSE 'normal' END AS trade_kind
+      FROM opera.cloned_deal_ticket_table c
+      WHERE c.tenant_id = :tenant AND c.business_unit = :bu AND c.is_latest_version = 1
+    ),
+    lal AS (
+      SELECT DISTINCT l.trade_id::text AS trade_id
+      FROM opera.latest_active_lot l
+      WHERE l.tenant_id = :tenant AND l.business_unit = :bu
+    ),
+    fy AS (
+      SELECT DISTINCT p.trade_id::text AS trade_id
+      FROM opera.premium_fy_table p
+      JOIN opera.valuation_financial_year_view v
+        ON v.tenant_id = p.tenant_id AND v.business_unit = p.business_unit AND v.financial_year = p.financial_year
+      WHERE p.tenant_id = :tenant AND p.business_unit = :bu
+    ),
+    vdt AS (
+      SELECT max(value_date) AS v_max FROM opera.valuation_date_table WHERE tenant_id = :tenant AND business_unit = :bu
+    ),
+    bar AS (
+      SELECT bmt.security_id, max(bmt.isbarrier1_breached) AS b1
+      FROM opera.barrier_monitoring_table bmt, vdt
+      WHERE bmt.tenant_id = :tenant AND bmt.business_unit = :bu AND bmt.value_date <= vdt.v_max
+      GROUP BY bmt.security_id
+    ),
+    sec AS (
+      SELECT s0.security_id, s0.maturity_date, s0.derivative_type
+      FROM opera.cloned_security_info_table s0
+      WHERE s0.tenant_id = :tenant AND s0.business_unit = :bu
+    ),
+    snap AS (
+      SELECT DISTINCT CASE WHEN x.trade_id::text LIKE '%-' || CAST(:bu AS text)
+                           THEN left(x.trade_id::text, length(x.trade_id::text) - length(CAST(:bu AS text)) - 1)
+                           ELSE x.trade_id::text END AS trade_id
+      FROM opera.helper_settle_p_and_g_view_cache_table x
+      WHERE x.tenant_id = :tenant AND x.business_unit = :bu AND x.settlement_date = :settlementDate
+    ),
+    t AS (
+      SELECT b.trade_id, b.trade_kind, b.netting_status,
+             (l.trade_id IS NOT NULL) AS in_lal,
+             (b.transaction_date < r.v_date AND (CAST(:bu AS text) NOT IN ('ALM','BKR','EBO','GPC','OAD','ODR','OG2','OGP','SPC','STG','TSY','USG') OR lower(b.subportfolio) NOT LIKE 'conso%')) AS date_ok,
+             (f.trade_id IS NOT NULL) AS has_fy,
+             CASE WHEN
+            s.maturity_date < r.v_date
+         OR (UPPER(CAST(:bu AS text)) IN ('PF6','PF9','QF1','QF2','RBA','RBC','RBH') AND b.reset_status IS NOT NULL AND b.reset_date <= r.v_date)
+         OR (b.netting_status = 'fully_netted' AND b.netting_date <= r.v_date)
+         OR (s.derivative_type ILIKE '%out%' AND COALESCE(br.b1, 0) <> 0)
+         OR ((UPPER(CAST(:bu AS text)) NOT IN ('PF6','PF9','QF1','QF2','RBA','RBC','RBH') OR b.reset_status IS NULL OR b.reset_date > r.v_date)
+             AND (s.maturity_date IS NULL
+                  OR (b.netting_status = 'fully_netted' AND b.netting_date > r.v_date)
+                  OR (r.v_date <= s.maturity_date AND b.netting_status IN ('not_netted','partially_netted')
+                      AND (s.derivative_type NOT ILIKE '%out%' OR COALESCE(br.b1, 0) = 0))))
+       THEN 1 ELSE 0 END AS classified,
+             (sn.trade_id IS NOT NULL) AS in_snapshot
+      FROM base b
+      CROSS JOIN run r
+      LEFT JOIN lal l ON l.trade_id = b.trade_id
+      LEFT JOIN fy f ON f.trade_id = b.trade_id
+      LEFT JOIN sec s ON s.security_id = b.security_id
+      LEFT JOIN bar br ON br.security_id = b.security_id
+      LEFT JOIN snap sn ON sn.trade_id = b.trade_id
+    )
+    SELECT CASE WHEN NOT in_lal THEN 's3 no active-lot row'
+                WHEN NOT date_ok THEN 's4 transaction on or after value date (or consolidation sub-portfolio)'
+                WHEN NOT has_fy THEN 's5 no premium row for the valuation FY'
+                WHEN classified = 0 THEN 's6 no Live or Dead branch applies'
+                ELSE 'kept' END AS dropped_at,
+           trade_kind, netting_status, count(*) AS trades
+    FROM t
+    GROUP BY 1, 2, 3
+    ORDER BY 1, 4 DESC
+  ]]></sql>
+
+  <sql id="q1" db="target" timeout="900" fetchSize="5000"><![CDATA[
+    SELECT DISTINCT c.trade_id::text AS trade_id,
+           CASE WHEN c.trade_id::text LIKE 'NET-%' THEN 'NET-' WHEN c.trade_id::text LIKE 'DUP-%' THEN 'DUP-' ELSE 'normal' END AS trade_kind,
+           c.netting_status, c.portfolio
+    FROM opera.cloned_deal_ticket_table c
+    WHERE c.tenant_id = :tenant AND c.business_unit = :bu
+  ]]></sql>
+
+  <sql id="q2" db="target" timeout="900" fetchSize="5000"><![CDATA[
+    WITH run AS (
+      SELECT r.resolved_value_date AS v_date
+      FROM opera.recon_snapshot_pointer p
+      JOIN opera.recon_refresh_run r ON r.uuid = p.published_run_id
+      WHERE p.tenant_id = :tenant AND p.business_unit = :bu AND p.view_type = 'SETTLE_PRICING'
+        AND p.settlement_date = :settlementDate
+    ),
+    base AS (
+      SELECT c.trade_id::text AS trade_id, c.security_id, c.transaction_date, c.netting_status, c.netting_date,
+             c.reset_status, c.reset_date, c.subportfolio, c.portfolio,
+             CASE WHEN c.trade_id::text LIKE 'NET-%' THEN 'NET-' WHEN c.trade_id::text LIKE 'DUP-%' THEN 'DUP-' ELSE 'normal' END AS trade_kind
+      FROM opera.cloned_deal_ticket_table c
+      WHERE c.tenant_id = :tenant AND c.business_unit = :bu AND c.is_latest_version = 1
+    )
+    SELECT b.trade_id, b.trade_kind, b.netting_status, b.portfolio
+    FROM base b CROSS JOIN run r
+    WHERE TRUE
+  ]]></sql>
+
+  <sql id="q3" db="target" timeout="900" fetchSize="5000"><![CDATA[
+    WITH run AS (
+      SELECT r.resolved_value_date AS v_date
+      FROM opera.recon_snapshot_pointer p
+      JOIN opera.recon_refresh_run r ON r.uuid = p.published_run_id
+      WHERE p.tenant_id = :tenant AND p.business_unit = :bu AND p.view_type = 'SETTLE_PRICING'
+        AND p.settlement_date = :settlementDate
+    ),
+    base AS (
+      SELECT c.trade_id::text AS trade_id, c.security_id, c.transaction_date, c.netting_status, c.netting_date,
+             c.reset_status, c.reset_date, c.subportfolio, c.portfolio,
+             CASE WHEN c.trade_id::text LIKE 'NET-%' THEN 'NET-' WHEN c.trade_id::text LIKE 'DUP-%' THEN 'DUP-' ELSE 'normal' END AS trade_kind
+      FROM opera.cloned_deal_ticket_table c
+      WHERE c.tenant_id = :tenant AND c.business_unit = :bu AND c.is_latest_version = 1
+    ),
+    lal AS (
+      SELECT DISTINCT l.trade_id::text AS trade_id
+      FROM opera.latest_active_lot l
+      WHERE l.tenant_id = :tenant AND l.business_unit = :bu
+    )
+    SELECT b.trade_id, b.trade_kind, b.netting_status, b.portfolio
+    FROM base b CROSS JOIN run r
+      JOIN lal l ON l.trade_id = b.trade_id
+    WHERE TRUE
+  ]]></sql>
+
+  <sql id="q4" db="target" timeout="900" fetchSize="5000"><![CDATA[
+    WITH run AS (
+      SELECT r.resolved_value_date AS v_date
+      FROM opera.recon_snapshot_pointer p
+      JOIN opera.recon_refresh_run r ON r.uuid = p.published_run_id
+      WHERE p.tenant_id = :tenant AND p.business_unit = :bu AND p.view_type = 'SETTLE_PRICING'
+        AND p.settlement_date = :settlementDate
+    ),
+    base AS (
+      SELECT c.trade_id::text AS trade_id, c.security_id, c.transaction_date, c.netting_status, c.netting_date,
+             c.reset_status, c.reset_date, c.subportfolio, c.portfolio,
+             CASE WHEN c.trade_id::text LIKE 'NET-%' THEN 'NET-' WHEN c.trade_id::text LIKE 'DUP-%' THEN 'DUP-' ELSE 'normal' END AS trade_kind
+      FROM opera.cloned_deal_ticket_table c
+      WHERE c.tenant_id = :tenant AND c.business_unit = :bu AND c.is_latest_version = 1
+    ),
+    lal AS (
+      SELECT DISTINCT l.trade_id::text AS trade_id
+      FROM opera.latest_active_lot l
+      WHERE l.tenant_id = :tenant AND l.business_unit = :bu
+    )
+    SELECT b.trade_id, b.trade_kind, b.netting_status, b.portfolio
+    FROM base b CROSS JOIN run r
+      JOIN lal l ON l.trade_id = b.trade_id
+    WHERE TRUE
+        AND b.transaction_date < r.v_date AND (CAST(:bu AS text) NOT IN ('ALM','BKR','EBO','GPC','OAD','ODR','OG2','OGP','SPC','STG','TSY','USG') OR lower(b.subportfolio) NOT LIKE 'conso%')
+  ]]></sql>
+
+  <sql id="q5" db="target" timeout="900" fetchSize="5000"><![CDATA[
+    WITH run AS (
+      SELECT r.resolved_value_date AS v_date
+      FROM opera.recon_snapshot_pointer p
+      JOIN opera.recon_refresh_run r ON r.uuid = p.published_run_id
+      WHERE p.tenant_id = :tenant AND p.business_unit = :bu AND p.view_type = 'SETTLE_PRICING'
+        AND p.settlement_date = :settlementDate
+    ),
+    base AS (
+      SELECT c.trade_id::text AS trade_id, c.security_id, c.transaction_date, c.netting_status, c.netting_date,
+             c.reset_status, c.reset_date, c.subportfolio, c.portfolio,
+             CASE WHEN c.trade_id::text LIKE 'NET-%' THEN 'NET-' WHEN c.trade_id::text LIKE 'DUP-%' THEN 'DUP-' ELSE 'normal' END AS trade_kind
+      FROM opera.cloned_deal_ticket_table c
+      WHERE c.tenant_id = :tenant AND c.business_unit = :bu AND c.is_latest_version = 1
+    ),
+    lal AS (
+      SELECT DISTINCT l.trade_id::text AS trade_id
+      FROM opera.latest_active_lot l
+      WHERE l.tenant_id = :tenant AND l.business_unit = :bu
+    ),
+    fy AS (
+      SELECT DISTINCT p.trade_id::text AS trade_id
+      FROM opera.premium_fy_table p
+      JOIN opera.valuation_financial_year_view v
+        ON v.tenant_id = p.tenant_id AND v.business_unit = p.business_unit AND v.financial_year = p.financial_year
+      WHERE p.tenant_id = :tenant AND p.business_unit = :bu
+    )
+    SELECT b.trade_id, b.trade_kind, b.netting_status, b.portfolio
+    FROM base b CROSS JOIN run r
+      JOIN lal l ON l.trade_id = b.trade_id
+      JOIN fy f ON f.trade_id = b.trade_id
+    WHERE TRUE
+        AND b.transaction_date < r.v_date AND (CAST(:bu AS text) NOT IN ('ALM','BKR','EBO','GPC','OAD','ODR','OG2','OGP','SPC','STG','TSY','USG') OR lower(b.subportfolio) NOT LIKE 'conso%')
+  ]]></sql>
+
+  <sql id="q6" db="target" timeout="900" fetchSize="5000"><![CDATA[
+    WITH run AS (
+      SELECT r.resolved_value_date AS v_date
+      FROM opera.recon_snapshot_pointer p
+      JOIN opera.recon_refresh_run r ON r.uuid = p.published_run_id
+      WHERE p.tenant_id = :tenant AND p.business_unit = :bu AND p.view_type = 'SETTLE_PRICING'
+        AND p.settlement_date = :settlementDate
+    ),
+    base AS (
+      SELECT c.trade_id::text AS trade_id, c.security_id, c.transaction_date, c.netting_status, c.netting_date,
+             c.reset_status, c.reset_date, c.subportfolio, c.portfolio,
+             CASE WHEN c.trade_id::text LIKE 'NET-%' THEN 'NET-' WHEN c.trade_id::text LIKE 'DUP-%' THEN 'DUP-' ELSE 'normal' END AS trade_kind
+      FROM opera.cloned_deal_ticket_table c
+      WHERE c.tenant_id = :tenant AND c.business_unit = :bu AND c.is_latest_version = 1
+    ),
+    lal AS (
+      SELECT DISTINCT l.trade_id::text AS trade_id
+      FROM opera.latest_active_lot l
+      WHERE l.tenant_id = :tenant AND l.business_unit = :bu
+    ),
+    fy AS (
+      SELECT DISTINCT p.trade_id::text AS trade_id
+      FROM opera.premium_fy_table p
+      JOIN opera.valuation_financial_year_view v
+        ON v.tenant_id = p.tenant_id AND v.business_unit = p.business_unit AND v.financial_year = p.financial_year
+      WHERE p.tenant_id = :tenant AND p.business_unit = :bu
+    ),
+    vdt AS (
+      SELECT max(value_date) AS v_max FROM opera.valuation_date_table WHERE tenant_id = :tenant AND business_unit = :bu
+    ),
+    bar AS (
+      SELECT bmt.security_id, max(bmt.isbarrier1_breached) AS b1
+      FROM opera.barrier_monitoring_table bmt, vdt
+      WHERE bmt.tenant_id = :tenant AND bmt.business_unit = :bu AND bmt.value_date <= vdt.v_max
+      GROUP BY bmt.security_id
+    ),
+    sec AS (
+      SELECT s0.security_id, s0.maturity_date, s0.derivative_type
+      FROM opera.cloned_security_info_table s0
+      WHERE s0.tenant_id = :tenant AND s0.business_unit = :bu
+    )
+    SELECT b.trade_id, b.trade_kind, b.netting_status, b.portfolio
+    FROM base b CROSS JOIN run r
+      JOIN lal l ON l.trade_id = b.trade_id
+      JOIN fy f ON f.trade_id = b.trade_id
+      LEFT JOIN sec s ON s.security_id = b.security_id
+      LEFT JOIN bar br ON br.security_id = b.security_id
+    WHERE TRUE
+        AND b.transaction_date < r.v_date AND (CAST(:bu AS text) NOT IN ('ALM','BKR','EBO','GPC','OAD','ODR','OG2','OGP','SPC','STG','TSY','USG') OR lower(b.subportfolio) NOT LIKE 'conso%')
+        AND CASE WHEN
+            s.maturity_date < r.v_date
+         OR (UPPER(CAST(:bu AS text)) IN ('PF6','PF9','QF1','QF2','RBA','RBC','RBH') AND b.reset_status IS NOT NULL AND b.reset_date <= r.v_date)
+         OR (b.netting_status = 'fully_netted' AND b.netting_date <= r.v_date)
+         OR (s.derivative_type ILIKE '%out%' AND COALESCE(br.b1, 0) <> 0)
+         OR ((UPPER(CAST(:bu AS text)) NOT IN ('PF6','PF9','QF1','QF2','RBA','RBC','RBH') OR b.reset_status IS NULL OR b.reset_date > r.v_date)
+             AND (s.maturity_date IS NULL
+                  OR (b.netting_status = 'fully_netted' AND b.netting_date > r.v_date)
+                  OR (r.v_date <= s.maturity_date AND b.netting_status IN ('not_netted','partially_netted')
+                      AND (s.derivative_type NOT ILIKE '%out%' OR COALESCE(br.b1, 0) = 0))))
+       THEN 1 ELSE 0 END = 1
+  ]]></sql>
+
+  <sql id="q7" db="target" timeout="900" fetchSize="5000"><![CDATA[
+    SELECT DISTINCT CASE WHEN x.trade_id::text LIKE '%-' || CAST(:bu AS text)
+                           THEN left(x.trade_id::text, length(x.trade_id::text) - length(CAST(:bu AS text)) - 1)
+                           ELSE x.trade_id::text END AS trade_id,
+           CASE WHEN x.trade_id::text LIKE 'NET-%' THEN 'NET-' WHEN x.trade_id::text LIKE 'DUP-%' THEN 'DUP-' ELSE 'normal' END AS trade_kind,
+           x.netting_status, x.portfolio
+    FROM opera.helper_settle_p_and_g_view_cache_table x
+    WHERE x.tenant_id = :tenant AND x.business_unit = :bu AND x.settlement_date = :settlementDate
+  ]]></sql>
+
+  <funnel id="trades" key="trade_id" mode="chain">
+    <stage id="s1-deal-ticket-all-versions" source="q1" reason="every trade_id in cloned_deal_ticket_table for the BU (all versions)"/>
+    <stage id="s2-latest-version" source="q2" reason="latest version only: is_latest_version = 1 (what the recon reads)"/>
+    <stage id="s3-active-lot-row" source="q3" reason="has a row in latest_active_lot (latest active lots as of the valuation date, zero lots included)"/>
+    <stage id="s4-transaction-before-value-date" source="q4" reason="transaction_date is before the run value date (and not a consolidation sub-portfolio for the BUs that exclude them)"/>
+    <stage id="s5-premium-fy-row" source="q5" reason="has a premium_fy_table row for the valuation financial year"/>
+    <stage id="s6-live-or-dead-rule" source="q6" reason="survives the recon deal-status rule (maturity, netting, reset, barrier): the rule that decides which deals are written"/>
+    <stage id="s7-in-snapshot" source="q7" reason="trades really in the published settle snapshot (BU suffix removed)"/>
+  </funnel>
+
+  <expect ref="run-info" rows="1" reason="the settle snapshot of the date must be published by exactly one refresh run"/>
+  <expect ref="stage-counts" column="rule_says_yes_snapshot_missing" max="0" reason="every trade the recon rules should write is in the snapshot: nothing is lost"/>
+  <expect ref="stage-counts" column="snapshot_has_more_than_rule" max="0" reason="the snapshot holds no trade that the rules would not write: nothing extra"/>
+
+  <compress id="bundle" file="recon-trades-03-source-funnel-cfs.zip">
+    <include ref="run-info"/><include ref="stage-counts"/><include ref="drop-reasons"/><include ref="trades"/>
+  </compress>
+</rules>

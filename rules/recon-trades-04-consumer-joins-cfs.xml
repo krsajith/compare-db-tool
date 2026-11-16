@@ -1,0 +1,104 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rules name="recon-trades-04-consumer-joins-cfs">
+  <!--
+    Question: the recon SETTLE snapshot holds trade_id with the BU suffix (123-CFS, written by recon_postprocess_settle), while the
+    source tables hold the bare id (123). Which other views join snapshot.trade_id to a bare trade_id and therefore silently miss?
+
+    Found by reading the deployed view definitions and the Liquibase files (transaction-core, db/changelog/views):
+      helper_risk_office_otc_report_new          joins the settle cache view to rms_premium_paid_table, fx_nc_factor_view,
+                                                 helper_calculate_trade_price_yield_view (RBA and RBC) on trade_id
+      helper_settle_pricing_subportfoliovalues_view  joins the settle cache view to fx_nc_factor_view and
+                                                 helper_calculate_trade_price_yield_view on trade_id
+      helper_eod_monthend_report_view            reads the view above and joins helper_netting_deal_ticket_table_fy_view and
+                                                 deal_ticket_table_deal_status_view on trade_id
+    Joins that are fine: settle snapshot to actual snapshot (both carry the suffix), and the postprocess functions themselves
+    (they strip the suffix with regexp_replace before joining).
+    The traders snapshot has its own postprocess; the date and BU specific check is left to the first rule of this series.
+
+    This rule measures each of those joins on the published settle snapshot: how many snapshot trades the join finds as written
+    (matched_as_the_views_join) and how many it would find if the suffix were removed (matched_after_suffix_removed).
+    When the second number is larger the consumer view silently loses its joined columns for those trades.
+    Read only. Parameters: tenant, bu, settlementDate. Run with the target-env flag.
+  -->
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+    <param name="bu" type="string" value="CFS"/>
+    <param name="settlementDate" type="date" value="2026-10-01"/>
+  </parameters>
+
+  <sql id="join-match" db="target" timeout="900" export="full"><![CDATA[
+    WITH s AS (
+      SELECT DISTINCT x.trade_id::text AS raw_id,
+             CASE WHEN x.trade_id::text LIKE '%-' || CAST(:bu AS text)
+                  THEN left(x.trade_id::text, length(x.trade_id::text) - length(CAST(:bu AS text)) - 1)
+                  ELSE x.trade_id::text END AS stripped_id
+      FROM opera.helper_settle_p_and_g_view_cache_table x
+      WHERE x.tenant_id = :tenant AND x.business_unit = :bu AND x.settlement_date = :settlementDate
+    ),
+    c0 AS (
+      SELECT DISTINCT x.trade_id::text AS trade_id FROM opera.fx_nc_factor_view x
+      WHERE x.tenant_id = :tenant AND x.business_unit = :bu
+    ),
+    c1 AS (
+      SELECT DISTINCT x.trade_id::text AS trade_id FROM opera.rms_premium_paid_table x
+      WHERE x.tenant_id = :tenant AND x.business_unit = :bu
+    ),
+    c2 AS (
+      SELECT DISTINCT x.trade_id::text AS trade_id FROM opera.helper_calculate_trade_price_yield_view x
+      WHERE x.tenant_id = :tenant AND x.business_unit = :bu
+    ),
+    c3 AS (
+      SELECT DISTINCT x.trade_id::text AS trade_id FROM opera.deal_ticket_table_deal_status_view x
+      WHERE x.tenant_id = :tenant AND x.business_unit = :bu
+    ),
+    c4 AS (
+      SELECT DISTINCT x.trade_id::text AS trade_id FROM opera.helper_netting_deal_ticket_table_fy_view x
+      WHERE x.tenant_id = :tenant AND x.business_unit = :bu
+    ),
+    c5 AS (
+      SELECT DISTINCT x.trade_id::text AS trade_id FROM opera.cloned_deal_ticket_table x
+      WHERE x.tenant_id = :tenant AND x.business_unit = :bu
+    )
+    SELECT 'fx_nc_factor_view' AS joined_source, 'helper_settle_pricing_subportfoliovalues_view, helper_risk_office_otc_report_new' AS used_by,
+           (SELECT count(*) FROM s) AS snapshot_trades,
+           (SELECT count(*) FROM c0) AS source_trades,
+           (SELECT count(*) FROM s JOIN c0 ON c0.trade_id = s.raw_id) AS matched_as_the_views_join,
+           (SELECT count(*) FROM s JOIN c0 ON c0.trade_id = s.stripped_id) AS matched_after_suffix_removed
+    UNION ALL
+    SELECT 'rms_premium_paid_table' AS joined_source, 'helper_risk_office_otc_report_new' AS used_by,
+           (SELECT count(*) FROM s) AS snapshot_trades,
+           (SELECT count(*) FROM c1) AS source_trades,
+           (SELECT count(*) FROM s JOIN c1 ON c1.trade_id = s.raw_id) AS matched_as_the_views_join,
+           (SELECT count(*) FROM s JOIN c1 ON c1.trade_id = s.stripped_id) AS matched_after_suffix_removed
+    UNION ALL
+    SELECT 'helper_calculate_trade_price_yield_view' AS joined_source, 'helper_settle_pricing_subportfoliovalues_view, helper_risk_office_otc_report_new (RBA, RBC only)' AS used_by,
+           (SELECT count(*) FROM s) AS snapshot_trades,
+           (SELECT count(*) FROM c2) AS source_trades,
+           (SELECT count(*) FROM s JOIN c2 ON c2.trade_id = s.raw_id) AS matched_as_the_views_join,
+           (SELECT count(*) FROM s JOIN c2 ON c2.trade_id = s.stripped_id) AS matched_after_suffix_removed
+    UNION ALL
+    SELECT 'deal_ticket_table_deal_status_view' AS joined_source, 'helper_eod_monthend_report_view' AS used_by,
+           (SELECT count(*) FROM s) AS snapshot_trades,
+           (SELECT count(*) FROM c3) AS source_trades,
+           (SELECT count(*) FROM s JOIN c3 ON c3.trade_id = s.raw_id) AS matched_as_the_views_join,
+           (SELECT count(*) FROM s JOIN c3 ON c3.trade_id = s.stripped_id) AS matched_after_suffix_removed
+    UNION ALL
+    SELECT 'helper_netting_deal_ticket_table_fy_view' AS joined_source, 'helper_eod_monthend_report_view' AS used_by,
+           (SELECT count(*) FROM s) AS snapshot_trades,
+           (SELECT count(*) FROM c4) AS source_trades,
+           (SELECT count(*) FROM s JOIN c4 ON c4.trade_id = s.raw_id) AS matched_as_the_views_join,
+           (SELECT count(*) FROM s JOIN c4 ON c4.trade_id = s.stripped_id) AS matched_after_suffix_removed
+    UNION ALL
+    SELECT 'cloned_deal_ticket_table' AS joined_source, 'control: the deal ticket itself, bare trade_id' AS used_by,
+           (SELECT count(*) FROM s) AS snapshot_trades,
+           (SELECT count(*) FROM c5) AS source_trades,
+           (SELECT count(*) FROM s JOIN c5 ON c5.trade_id = s.raw_id) AS matched_as_the_views_join,
+           (SELECT count(*) FROM s JOIN c5 ON c5.trade_id = s.stripped_id) AS matched_after_suffix_removed
+  ]]></sql>
+
+  <expect ref="join-match" rows="6" reason="one row per joined source"/>
+  <expect expr="#size(#rows('join-match').?[matched_after_suffix_removed > matched_as_the_views_join]) == 0"
+          reason="every consumer join finds the same trades with and without the BU suffix: no view loses columns because of the suffix"/>
+
+  <compress id="bundle" file="recon-trades-04-consumer-joins-cfs.zip"><include ref="join-match"/></compress>
+</rules>
