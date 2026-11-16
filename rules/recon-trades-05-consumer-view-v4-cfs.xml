@@ -1,0 +1,109 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rules name="recon-trades-05-consumer-view-v4-cfs">
+  <!--
+    Proof for the snapshot factor columns package (steps 1 to 5, folder analysis/snapshot-factor-columns-2026-11-16).
+    Run AFTER the CFS snapshot was refreshed with the v4 builders and the v4 consumer view was created. Read only, PostgreSQL only.
+
+    Background: helper_settle_pricing_subportfoliovalues_view v3 joined fx_nc_factor_view on the snapshot trade_id, which carries the
+    BU suffix (123-CFS) while the live view has 123, so every fx_nc_factor and every *_usd column was NULL. v4 reads the stored
+    factors from the snapshot. source_trade_id is the bare id.
+
+    Checks:
+      run-info           the refresh run behind the published snapshot (status, row count, value date)
+      snapshot-evidence  the v4 builder filled the columns: source_trade_id, suffix rule (trade_id = source_trade_id + suffix), stored factors,
+                         and every source_trade_id exists in cloned_deal_ticket_table
+      consumer-summary   the consumer view for one subportfolio: rows, NULL mtm_usd, sums
+      reference          what the CFS shape of the view must return if the old view had joined the live fx view on source_trade_id
+                         (pricing view by security, fx view by source_trade_id, same formulas as v3 for mtm_nc and mtm_usd)
+      parity             consumer view versus reference, trade by trade, inside the database: columns and amounts must be equal
+    Shapes other than CFS and ROV (shape B) are not covered by the reference formulas; run the first three checks with another bu for them.
+    Parameters: tenant, bu, settlementDate, subportfolio (the 312 trade subportfolio of the report, give the large one for a bigger test).
+    Run with the target-env flag.
+  -->
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+    <param name="bu" type="string" value="CFS"/>
+    <param name="settlementDate" type="date" value="2026-10-01"/>
+    <param name="subportfolio" type="string" value="RMS-DF-LIF-OIR"/>
+  </parameters>
+
+  <sql id="run-info" db="target" timeout="60" export="full"><![CDATA[
+    SELECT p.business_unit, p.settlement_date, r.resolved_value_date, r.status, r.row_count, r.requested_at, p.published_at
+    FROM opera.recon_snapshot_pointer p
+    JOIN opera.recon_refresh_run r ON r.uuid = p.published_run_id
+    WHERE p.tenant_id = :tenant AND p.business_unit = :bu AND p.view_type = 'SETTLE_PRICING' AND p.settlement_date = :settlementDate
+  ]]></sql>
+
+  <sql id="snapshot-evidence" db="target" timeout="600" export="full"><![CDATA[
+    WITH s AS (
+      SELECT h.trade_id, h.source_trade_id, h.nc_factor, h.fx_nc_factor, h.invenio_product_code, h.product_name, h.exchange_name
+      FROM opera.helper_settle_p_and_g_view_cache_table h
+      WHERE h.tenant_id = :tenant AND h.business_unit = :bu AND h.settlement_date = :settlementDate
+    ),
+    c AS (
+      SELECT DISTINCT trade_id::text AS trade_id FROM opera.cloned_deal_ticket_table
+      WHERE tenant_id = :tenant AND business_unit = :bu
+    )
+    SELECT count(*) AS row_count,
+           count(s.source_trade_id) AS has_source_trade_id,
+           count(*) FILTER (WHERE s.trade_id = s.source_trade_id || '-' || CAST(:bu AS text)) AS suffix_rule_ok,
+           count(s.nc_factor) AS has_nc_factor,
+           count(s.fx_nc_factor) AS has_fx_nc_factor,
+           count(s.invenio_product_code) AS has_product_code,
+           count(c.trade_id) AS source_id_found_in_live_cloned
+    FROM s LEFT JOIN c ON c.trade_id = s.source_trade_id
+  ]]></sql>
+
+  <sql id="consumer-summary" db="target" timeout="900" export="full"><![CDATA[
+    SELECT count(*) AS consumer_rows,
+           count(*) FILTER (WHERE mtm_usd IS NULL) AS mtm_usd_null,
+           count(*) FILTER (WHERE fx_nc_factor IS NULL) AS fx_nc_factor_null,
+           sum(mtm_nc) AS sum_mtm_nc, sum(mtm_usd) AS sum_mtm_usd
+    FROM opera.helper_settle_pricing_subportfoliovalues_view
+    WHERE tenant_id = :tenant AND business_unit = :bu AND settlement_date = :settlementDate AND subportfolio = :subportfolio
+  ]]></sql>
+
+  <sql id="v4-rows" db="target" timeout="900" export="none"><![CDATA[
+    SELECT v.trade_id, v.asset_class, v.invenio_product_code, v.product_name, v.exchange_name,
+           v.lot_mult1, v.curr_mult1, v.mult_factor, v.nc_factor, v.fx_nc_factor, v.mtm_nc, v.mtm_usd
+    FROM opera.helper_settle_pricing_subportfoliovalues_view v
+    WHERE v.tenant_id = :tenant AND v.business_unit = :bu AND v.settlement_date = :settlementDate AND v.subportfolio = :subportfolio
+  ]]></sql>
+
+  <sql id="reference-rows" db="target" timeout="900" export="none"><![CDATA[
+    SELECT h.trade_id, sp.asset_class, sp.invenio_product_code, sp.product_name, sp.exchange_name,
+           sp.lot_mult1::double precision AS lot_mult1, sp.curr_mult1::double precision AS curr_mult1,
+           sp.mult_factor::double precision AS mult_factor, sp.nc_factor::double precision AS nc_factor,
+           fx.fx_nc_factor::double precision AS fx_nc_factor,
+           (((h.settle_price * h.active_lots) - (h.current_premium * h.active_lots)) * sp.mult_factor)::double precision AS mtm_nc,
+           (((((h.settle_price * h.active_lots) - (h.current_premium * h.active_lots)) * sp.mult_factor) * sp.nc_factor) * fx.fx_nc_factor)::double precision AS mtm_usd
+    FROM opera.helper_settle_p_and_g_view_cache_table h
+    LEFT JOIN opera.helper_settle_pricing_and_traders_pricing_view sp
+           ON sp.tenant_id = h.tenant_id AND sp.business_unit = h.business_unit AND sp.security_id = h.security_id
+    LEFT JOIN opera.fx_nc_factor_view fx
+           ON fx.tenant_id = h.tenant_id AND fx.business_unit = h.business_unit AND fx.trade_id = h.source_trade_id
+    WHERE h.tenant_id = :tenant AND h.business_unit = :bu AND h.settlement_date = :settlementDate AND h.subportfolio = :subportfolio
+  ]]></sql>
+
+  <compare id="parity" source="v4-rows" target="reference-rows" engine="db" export="sample">
+    <key columns="trade_id"/>
+    <column name="lot_mult1" absTol="0.000001"/>
+    <column name="curr_mult1" absTol="0.000001"/>
+    <column name="mult_factor" absTol="0.000001"/>
+    <column name="nc_factor" absTol="0.000001"/>
+    <column name="fx_nc_factor" absTol="0.000001"/>
+    <column name="mtm_nc" absTol="0.01"/>
+    <column name="mtm_usd" absTol="0.01"/>
+  </compare>
+
+  <expect ref="run-info" rows="1" reason="the settle snapshot of the date must be published by exactly one refresh run"/>
+  <expect expr="#size(#rows('snapshot-evidence').?[has_source_trade_id != row_count]) == 0" reason="the v4 builder filled source_trade_id on every row of the published snapshot"/>
+  <expect expr="#size(#rows('snapshot-evidence').?[suffix_rule_ok != row_count]) == 0" reason="trade_id is exactly source_trade_id plus the BU suffix on every row"/>
+  <expect expr="#size(#rows('snapshot-evidence').?[source_id_found_in_live_cloned != row_count]) == 0" reason="every source_trade_id exists in cloned_deal_ticket_table: the key the views must join on is correct"/>
+  <expect ref="consumer-summary" column="consumer_rows" min="1" reason="the consumer view returns rows for the subportfolio"/>
+  <expect ref="parity" different="0" only-source="0" only-target="0" reason="the v4 consumer view returns the same trades and the same factors and amounts as the pricing view and the live fx view joined on source_trade_id"/>
+
+  <compress id="bundle" file="recon-trades-05-consumer-view-v4-cfs.zip">
+    <include ref="run-info"/><include ref="snapshot-evidence"/><include ref="consumer-summary"/><include ref="parity"/>
+  </compress>
+</rules>
