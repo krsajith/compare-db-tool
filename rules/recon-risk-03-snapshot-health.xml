@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rules name="recon-risk-03-snapshot-health">
+  <!--
+    Question: since the release, are the recon refreshes healthy? Do failed or stuck runs exist, does every published
+    pointer lead to a COMPLETED run that really has snapshot rows, and are refreshes still inside the time we agreed?
+
+    Background: recon_materialize_*_v2/v3 write recon_*_snapshot rows for a run_id, then recon_snapshot_pointer moves to it.
+    The helper_*_p_and_g_view_cache_table views show only the pointed run. A pointer to a missing, failed or empty run
+    shows as an empty report, not as an error.
+
+    Checks (read only, tenant first in every filter so the tenant leading indexes are used):
+      run-counts    runs since :since by view type and status
+      run-problems  FAILED runs, and RUNNING runs older than :stuckHours, with the error text
+      pointers      every pointer published since :since: run status, rows counted in the right snapshot table
+      slowest       the slowest COMPLETED runs; the expectation accepts up to 900 seconds (first run target is about 5 minutes)
+    The expectations on pointers read the pointers rows: run not COMPLETED or missing, or a snapshot with no rows.
+    Parameters: tenant, since (date, default 14 days back), stuckHours.
+  -->
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+    <param name="since" type="date" expr="#minusDays(#today(), 14)"/>
+    <param name="stuckHours" type="integer" value="2"/>
+  </parameters>
+
+  <sql id="run-counts" db="target" timeout="60" export="full"><![CDATA[
+    SELECT view_type, status, count(*) AS runs, max(requested_at) AS last_requested
+    FROM opera.recon_refresh_run
+    WHERE tenant_id = :tenant AND requested_at >= :since AND status <> 'MANUAL_TEST'
+    GROUP BY view_type, status
+    ORDER BY view_type, status
+  ]]></sql>
+
+  <sql id="run-problems" db="target" timeout="60" export="full"><![CDATA[
+    SELECT business_unit, view_type, status, resolved_settlement_date, requested_by, requested_at, started_at,
+           left(error_message, 300) AS error_message
+    FROM opera.recon_refresh_run
+    WHERE tenant_id = :tenant AND requested_at >= :since
+      AND (status = 'FAILED'
+           OR (status = 'RUNNING' AND started_at < now() - make_interval(hours => :stuckHours)))
+    ORDER BY requested_at DESC
+    LIMIT 50
+  ]]></sql>
+
+  <sql id="pointers" db="target" timeout="120" export="full"><![CDATA[
+    SELECT p.business_unit, p.view_type, p.settlement_date, p.published_at, p.published_run_id,
+           r.status AS run_status, r.row_count AS run_row_count,
+           CASE p.view_type
+             WHEN 'SETTLE_PRICING' THEN
+               (SELECT count(*) FROM opera.recon_settle_snapshot s
+                 WHERE s.tenant_id = p.tenant_id AND s.business_unit = p.business_unit
+                   AND s.settlement_date = p.settlement_date AND s.run_id = p.published_run_id)
+             WHEN 'SETTLE_ACTUAL_PRICING' THEN
+               (SELECT count(*) FROM opera.recon_actual_snapshot s
+                 WHERE s.tenant_id = p.tenant_id AND s.business_unit = p.business_unit
+                   AND s.settlement_date = p.settlement_date AND s.run_id = p.published_run_id)
+             WHEN 'TRADERS_PRICING' THEN
+               (SELECT count(*) FROM opera.recon_traders_snapshot s
+                 WHERE s.tenant_id = p.tenant_id AND s.business_unit = p.business_unit
+                   AND s.settlement_date = p.settlement_date AND s.run_id = p.published_run_id)
+           END AS snapshot_rows
+    FROM opera.recon_snapshot_pointer p
+    LEFT JOIN opera.recon_refresh_run r ON r.uuid = p.published_run_id
+    WHERE p.tenant_id = :tenant AND p.settlement_date >= :since
+    ORDER BY p.published_at DESC
+    LIMIT 200
+  ]]></sql>
+
+  <sql id="slowest" db="target" timeout="60" export="full"><![CDATA[
+    SELECT business_unit, view_type, resolved_settlement_date, row_count,
+           round(extract(epoch FROM (completed_at - started_at))::numeric, 0) AS seconds
+    FROM opera.recon_refresh_run
+    WHERE tenant_id = :tenant AND requested_at >= :since AND status = 'COMPLETED'
+      AND started_at IS NOT NULL AND completed_at IS NOT NULL
+    ORDER BY (completed_at - started_at) DESC
+    LIMIT 10
+  ]]></sql>
+
+  <expect ref="run-problems" rows="0" reason="no FAILED run and no run stuck in RUNNING since the release"/>
+  <expect expr="#size(#rows('pointers').?[run_status != 'COMPLETED' or run_status == null]) == 0" reason="every published pointer leads to a COMPLETED run"/>
+  <expect expr="#size(#rows('pointers').?[snapshot_rows == 0]) == 0" reason="no published pointer shows an empty snapshot"/>
+  <expect ref="slowest" column="seconds" max="900" row="1" reason="the slowest refresh stays inside the agreed time (default 900 s, edit maxSeconds in the text if needed)"/>
+
+  <compress id="bundle" file="recon-risk-03-snapshot-health.zip">
+    <include ref="run-counts"/><include ref="run-problems"/><include ref="pointers"/><include ref="slowest"/>
+  </compress>
+</rules>

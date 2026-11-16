@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rules name="recon-risk-04-explain-readers">
+  <!--
+    Question: after the release, do the two lookups that readers depend on still use their indexes with the plan the
+    application really gets (generic plan after the fifth execution on one connection)?
+
+      cache-view   helper_settle_p_and_g_view_cache_table filtered by tenant, business unit and settlement date.
+                   Readers: recon views, position report views, the settle pricing view. A sequential scan of
+                   recon_settle_snapshot here reads every run of every day.
+      usv-lower    underlying_settle_value_table by tenant, lower(underlying_id) and value_date. The 12 Nov index
+                   idx_usv_tenant_lower_underlying_valdate exists for this lookup (client statement, multipliers).
+    The statements are keyed single lookups, so ANALYZE is safe: read only pool, always rolled back.
+    Parameters: tenant, bu. The settlement date and the underlying are picked from the data, newest first.
+    Run per environment with the target-env flag. Needs PostgreSQL.
+  -->
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+    <param name="bu" type="string" value="CFS"/>
+  </parameters>
+
+  <sql id="pick-date" db="target" timeout="60" export="full"><![CDATA[
+    SELECT settlement_date
+    FROM opera.recon_snapshot_pointer
+    WHERE tenant_id = :tenant AND business_unit = :bu AND view_type = 'SETTLE_PRICING'
+    ORDER BY published_at DESC
+    LIMIT 1
+  ]]></sql>
+
+  <sql id="pick-usv" db="target" timeout="60" export="full"><![CDATA[
+    SELECT underlying_id, value_date
+    FROM opera.underlying_settle_value_table
+    WHERE tenant_id = :tenant
+    ORDER BY value_date DESC
+    LIMIT 1
+  ]]></sql>
+
+  <explain id="cache-view" db="target" timeout="120" generic="true" uses="d=pick-date"><![CDATA[
+    SELECT count(*) AS n, sum(h.mtm_usd) AS mtm
+    FROM opera.helper_settle_p_and_g_view_cache_table h
+    WHERE h.tenant_id = :tenant AND h.business_unit = :bu AND h.settlement_date = :d.settlement_date
+  ]]></explain>
+
+  <explain id="usv-lower" db="target" timeout="120" generic="true" uses="u=pick-usv"><![CDATA[
+    SELECT v.settle_value
+    FROM opera.underlying_settle_value_table v
+    WHERE v.tenant_id = :tenant AND lower(v.underlying_id) = lower(:u.underlying_id) AND v.value_date = :u.value_date
+  ]]></explain>
+
+  <expect ref="pick-date" rows="1" reason="the BU has a published SETTLE_PRICING pointer"/>
+  <expect ref="pick-usv" rows="1" reason="the tenant has settle values"/>
+  <expect ref="cache-view" no-seq-scan="recon_settle_snapshot, recon_snapshot_pointer" reason="the cache view lookup must use its indexes"/>
+  <expect ref="cache-view" max-ms="2000" reason="a one BU, one date read of the published snapshot"/>
+  <expect ref="usv-lower" no-seq-scan="underlying_settle_value_table" reason="the lower(underlying_id) index is used"/>
+  <expect ref="usv-lower" max-ms="200" reason="a single key lookup"/>
+
+  <compress id="bundle" file="recon-risk-04-explain-readers.zip">
+    <include ref="cache-view"/><include ref="usv-lower"/>
+  </compress>
+</rules>

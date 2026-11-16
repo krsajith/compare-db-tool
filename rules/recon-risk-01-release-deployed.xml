@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rules name="recon-risk-01-release-deployed">
+  <!--
+    Question: after the stable release, is every recon change that came in after 27 Oct really deployed in this database,
+    and is the deployed function text the new one (not an old copy that was created by hand)?
+
+    Changes covered (all in oga-opera-transaction-core, procedures/create-recon-optimised-functions.xml unless noted):
+      XOGA-65   fn_deal_ticket_table_with_fy_premium_source-v3   fixing_table joined only for OG2 OGP RBA RBC USG
+      XOGA-710  recon_materialize_settle-v3                      futures last price read from futures_price_table
+      5 Nov     recon_postprocess_{settle,actual}-v2             Price/Hedge mapping matched with upper(trim())
+      6 Nov     recon_postprocess_{settle,actual}-v3             unmapped rows keep h_p = B
+      5 Nov     recon_materialize_traders-v3-bu-join and fn_input_security_traders_value_source_v1-v2-bu-join
+      12 Nov    create-idx-usv-tenant-lower-underlying-valdate   index for the lower(underlying_id) lookups
+
+    Checks (read only, small catalog queries):
+      changesets   the ten changesets are in databasechangelog with status EXECUTED
+      index        the lower(underlying_id) index exists and is valid and ready
+      functions    the live function text carries the new logic (a hand made copy or a rollback would not)
+    Run per environment with the target-env flag (postgres-dev, then postgres-uat, then prod with the allow-prod flag only when the user says so).
+  -->
+
+  <sql id="changesets" db="target" timeout="60" export="full"><![CDATA[
+    SELECT id, author, exectype, dateexecuted
+    FROM opera.databasechangelog
+    WHERE id IN ('fn_deal_ticket_table_with_fy_premium_source-v3',
+                 'recon_materialize_settle-v3',
+                 'recon_postprocess_settle-v2', 'recon_postprocess_actual-v2',
+                 'recon_postprocess_settle-v3', 'recon_postprocess_actual-v3',
+                 'recon_materialize_traders-v3-bu-join',
+                 'fn_input_security_traders_value_source_v1-v2-bu-join',
+                 'create-idx-usv-tenant-lower-underlying-valdate')
+    ORDER BY dateexecuted
+  ]]></sql>
+
+  <sql id="changeset-problems" db="target" timeout="60" export="full"><![CDATA[
+    SELECT w.id AS missing_or_bad, coalesce(d.exectype, 'NOT IN databasechangelog') AS status
+    FROM (VALUES ('fn_deal_ticket_table_with_fy_premium_source-v3'), ('recon_materialize_settle-v3'),
+                 ('recon_postprocess_settle-v2'), ('recon_postprocess_actual-v2'),
+                 ('recon_postprocess_settle-v3'), ('recon_postprocess_actual-v3'),
+                 ('recon_materialize_traders-v3-bu-join'),
+                 ('fn_input_security_traders_value_source_v1-v2-bu-join'),
+                 ('create-idx-usv-tenant-lower-underlying-valdate')) AS w(id)
+    LEFT JOIN opera.databasechangelog d ON d.id = w.id
+    WHERE d.id IS NULL OR d.exectype <> 'EXECUTED'
+  ]]></sql>
+
+  <sql id="usv-index" db="target" timeout="60" export="full"><![CDATA[
+    SELECT ic.relname AS index_name, i.indisvalid, i.indisready, pg_get_indexdef(i.indexrelid) AS definition
+    FROM pg_index i
+    JOIN pg_class ic ON ic.oid = i.indexrelid
+    WHERE ic.relnamespace = 'opera'::regnamespace
+      AND ic.relname = 'idx_usv_tenant_lower_underlying_valdate'
+  ]]></sql>
+
+  <sql id="functions" db="target" timeout="60" export="full"><![CDATA[
+    SELECT p.proname,
+           (p.prosrc ILIKE '%futures_price_table%')::int            AS reads_futures_price_table,
+           (p.prosrc ILIKE '%recon_futures_price_input%')::int      AS reads_old_futures_input,
+           (p.prosrc ILIKE '%upper(trim(m.portfolio))%')::int       AS mapping_case_insensitive,
+           (p.prosrc ILIKE '%h_p = ''B''%')::int                    AS default_h_p_b
+    FROM pg_proc p
+    WHERE p.pronamespace = 'opera'::regnamespace
+      AND p.proname IN ('recon_materialize_settle', 'recon_postprocess_settle', 'recon_postprocess_actual')
+    ORDER BY p.proname
+  ]]></sql>
+
+  <expect ref="changesets" rows="9" reason="all nine changesets of the release are recorded"/>
+  <expect ref="changeset-problems" rows="0" reason="none is missing or in a state other than EXECUTED"/>
+  <expect ref="usv-index" rows="1" reason="the lower(underlying_id) index exists"/>
+  <expect ref="usv-index" column="indisvalid" equals="true" reason="a concurrent build that failed leaves an invalid index"/>
+  <expect ref="usv-index" column="indisready" equals="true"/>
+  <expect ref="functions" rows="3" reason="settle materializer and the two post processors exist"/>
+  <expect expr="#sum(#values('functions', 'reads_old_futures_input')) == 0" reason="no recon function still reads recon_futures_price_input"/>
+  <expect expr="#size(#rows('functions').?[proname == 'recon_materialize_settle' and reads_futures_price_table == 1]) == 1" reason="XOGA-710 text is live in the settle materializer"/>
+  <expect expr="#sum(#values('functions', 'mapping_case_insensitive')) == 2" reason="both post processors match the mapping with upper(trim())"/>
+  <expect expr="#sum(#values('functions', 'default_h_p_b')) == 2" reason="both post processors keep h_p = B for unmapped rows"/>
+
+  <compress id="bundle" file="recon-risk-01-release-deployed.zip">
+    <include ref="changesets"/><include ref="changeset-problems"/><include ref="usv-index"/><include ref="functions"/>
+  </compress>
+</rules>

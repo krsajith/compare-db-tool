@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rules name="recon-risk-02-futures-price-fanout">
+  <!--
+    Question: XOGA-710 changed the settle materializer stage rb_fp. It now joins futures_price_table on
+    (tenant_id, underlying_id = security underlying1_id, value_date = security maturity_date).
+    The old text read recon_futures_price_input with DISTINCT ON one row per security.
+    If futures_price_table holds two rows for one tenant, underlying and date, a security gets two prices and every deal
+    of that security is repeated in the snapshot (fan-out). Does that happen for this business unit?
+
+    Checks, all read only and scoped by tenant and business unit:
+      fanout      rows of the rb_fp join against distinct securities (equal means no fan-out)
+      dup-keys    futures_price_table keys with more than one row that a security of this BU actually joins to
+      no-price    securities of the BU with a futures maturity date but no price row (they get a NULL last_price)
+    Parameters: tenant, bu. Run per business unit that has futures (CFS first), per environment with the target-env flag.
+    Prod: the join touches cloned_security_info_table of one BU and futures_price_table by key only.
+  -->
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+    <param name="bu" type="string" value="CFS"/>
+  </parameters>
+
+  <sql id="fanout" db="target" timeout="120" export="full"><![CDATA[
+    SELECT count(*)                    AS join_rows,
+           count(DISTINCT s.security_id) AS securities,
+           count(*) - count(DISTINCT s.security_id) AS extra_rows
+    FROM opera.cloned_security_info_table s
+    JOIN opera.futures_price_table x
+      ON x.tenant_id = s.tenant_id
+     AND x.underlying_id = s.underlying1_id
+     AND x.value_date = s.maturity_date
+    WHERE s.tenant_id = :tenant AND s.business_unit = :bu
+  ]]></sql>
+
+  <sql id="dup-keys" db="target" timeout="120" export="full"><![CDATA[
+    SELECT x.underlying_id, x.value_date, count(*) AS price_rows,
+           min(x.last_price) AS min_price, max(x.last_price) AS max_price,
+           max(x.updated_timestamp) AS last_updated, max(x.updated_by) AS updated_by
+    FROM opera.futures_price_table x
+    WHERE x.tenant_id = :tenant
+      AND EXISTS (SELECT 1 FROM opera.cloned_security_info_table s
+                  WHERE s.tenant_id = :tenant AND s.business_unit = :bu
+                    AND s.underlying1_id = x.underlying_id AND s.maturity_date = x.value_date)
+    GROUP BY x.underlying_id, x.value_date
+    HAVING count(*) > 1
+    ORDER BY count(*) DESC, x.value_date DESC
+    LIMIT 50
+  ]]></sql>
+
+  <sql id="no-price" db="target" timeout="120" export="full"><![CDATA[
+    SELECT count(*) AS securities_without_price
+    FROM opera.cloned_security_info_table s
+    WHERE s.tenant_id = :tenant AND s.business_unit = :bu
+      AND s.underlying1_id IS NOT NULL AND s.maturity_date IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM opera.futures_price_table x
+                      WHERE x.tenant_id = s.tenant_id AND x.underlying_id = s.underlying1_id
+                        AND x.value_date = s.maturity_date)
+  ]]></sql>
+
+  <expect ref="fanout" rows="1"/>
+  <expect ref="fanout" column="extra_rows" equals="0" reason="one price row per security: the rb_fp join does not repeat deals"/>
+  <expect ref="dup-keys" rows="0" reason="futures_price_table has one row per tenant, underlying and date for this BU"/>
+  <expect ref="no-price" rows="1" reason="information only: securities_without_price is a plain count to compare with the previous release"/>
+
+  <compress id="bundle" file="recon-risk-02-futures-price-fanout.zip">
+    <include ref="fanout"/><include ref="dup-keys"/><include ref="no-price"/>
+  </compress>
+</rules>
