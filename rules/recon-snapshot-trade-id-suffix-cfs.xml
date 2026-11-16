@@ -1,0 +1,96 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rules name="recon-snapshot-trade-id-suffix-cfs">
+  <!--
+    Question: the recon snapshot (helper_settle_p_and_g_view_cache_table) shows 1,042,694 trades for CFS and not one of
+    them is found in opera.cloned_deal_ticket_table (which holds about 1.8 million CFS trades). Are deals missing, or is
+    it the trade_id format?
+
+    Where the suffix comes from (read from the transaction-core source, not from legacy):
+      recon_materialize_settle / _actual / _traders write d.trade_id exactly as it is in the deal ticket, no suffix.
+      Then recon_postprocess_settle and recon_postprocess_actual (files recon_postprocess_settle_v3.sql and
+      recon_postprocess_actual_v3.sql, first UPDATE) run
+         trade_id = CASE WHEN trade_id IS NULL OR trade_id LIKE '%-' || v_bu THEN trade_id ELSE trade_id || '-' || v_bu END
+      where v_bu is the business_unit of the refresh run. So a SETTLE or ACTUAL snapshot row holds "123-CFS" while the
+      cloned deal ticket holds "123". The TRADERS postprocess has no such step. The suffix was added to match the legacy
+      MATLAB output; that legacy origin is NOT proven by this rule.
+    A direct join snapshot.trade_id = cloned.trade_id therefore never matches. Join on the stripped id instead.
+
+    Steps (read only, tenant first in every filter):
+      deployed-code   does the deployed postprocess function contain the suffix step (so the cause is the code, not data)
+      samples         one raw trade_id on each side, to see the format with your own eyes
+      suffix-share    how many snapshot ids end with the BU suffix and how many do not
+      match-counts    raw join versus join on the stripped id, plus trades only in cloned
+    Parameters: tenant, bu, settlementDate. Run it with db target; use the target-env flag for dev or UAT.
+  -->
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+    <param name="bu" type="string" value="CFS"/>
+    <param name="settlementDate" type="date" value="2026-10-01"/>
+  </parameters>
+
+  <sql id="deployed-code" db="target" timeout="60" export="full"><![CDATA[
+    SELECT p.proname,
+           position('trade_id || ''-'' || v_bu' IN p.prosrc) > 0 AS appends_bu_suffix
+    FROM pg_proc p
+    JOIN pg_namespace n ON n.oid = p.pronamespace
+    WHERE n.nspname = 'opera' AND p.proname IN ('recon_postprocess_settle', 'recon_postprocess_actual')
+    ORDER BY p.proname
+  ]]></sql>
+
+  <sql id="samples" db="target" timeout="60" export="full"><![CDATA[
+    SELECT 'snapshot' AS side, trade_id::text AS trade_id
+    FROM (SELECT trade_id FROM opera.helper_settle_p_and_g_view_cache_table
+          WHERE tenant_id = :tenant AND business_unit = :bu AND settlement_date = :settlementDate
+          LIMIT 3) a
+    UNION ALL
+    SELECT 'cloned_deal_ticket', trade_id::text
+    FROM (SELECT trade_id FROM opera.cloned_deal_ticket_table
+          WHERE tenant_id = :tenant AND business_unit = :bu
+          LIMIT 3) b
+  ]]></sql>
+
+  <sql id="suffix-share" db="target" timeout="180" export="full"><![CDATA[
+    WITH s AS (
+      SELECT DISTINCT trade_id::text AS trade_id
+      FROM opera.helper_settle_p_and_g_view_cache_table
+      WHERE tenant_id = :tenant AND business_unit = :bu AND settlement_date = :settlementDate
+    )
+    SELECT count(*) AS snapshot_trades,
+           count(*) FILTER (WHERE trade_id LIKE '%-' || CAST(:bu AS text)) AS with_bu_suffix,
+           count(*) FILTER (WHERE trade_id NOT LIKE '%-' || CAST(:bu AS text)) AS without_suffix
+    FROM s
+  ]]></sql>
+
+  <sql id="match-counts" db="target" timeout="300" export="full"><![CDATA[
+    WITH s AS (
+      SELECT DISTINCT trade_id::text AS raw_id,
+             CASE WHEN trade_id::text LIKE '%-' || CAST(:bu AS text)
+                  THEN left(trade_id::text, length(trade_id::text) - length(CAST(:bu AS text)) - 1)
+                  ELSE trade_id::text END AS stripped_id
+      FROM opera.helper_settle_p_and_g_view_cache_table
+      WHERE tenant_id = :tenant AND business_unit = :bu AND settlement_date = :settlementDate
+    ),
+    c AS (
+      SELECT DISTINCT trade_id::text AS trade_id
+      FROM opera.cloned_deal_ticket_table
+      WHERE tenant_id = :tenant AND business_unit = :bu
+    )
+    SELECT (SELECT count(*) FROM s) AS snapshot_trades,
+           (SELECT count(*) FROM s JOIN c ON c.trade_id = s.raw_id) AS found_raw,
+           (SELECT count(*) FROM s JOIN c ON c.trade_id = s.stripped_id) AS found_after_strip,
+           (SELECT count(*) FROM s WHERE NOT EXISTS (SELECT 1 FROM c WHERE c.trade_id = s.stripped_id)) AS missing_after_strip,
+           (SELECT count(*) FROM c) AS cloned_trades,
+           (SELECT count(*) FROM c WHERE NOT EXISTS (SELECT 1 FROM s WHERE s.stripped_id = c.trade_id)) AS cloned_not_in_snapshot
+  ]]></sql>
+
+  <expect ref="deployed-code" rows="2" reason="both recon_postprocess_settle and recon_postprocess_actual must exist in the opera schema"/>
+  <expect expr="#size(#rows('deployed-code').?[appends_bu_suffix == false]) == 0"
+          reason="the deployed postprocess functions append the BU suffix to trade_id, this is the cause of the raw mismatch"/>
+  <expect ref="match-counts" column="missing_after_strip" max="0"
+          reason="once the BU suffix is stripped every snapshot trade exists in cloned_deal_ticket_table: no deal is missing"/>
+  <expect ref="match-counts" column="found_after_strip" min="1" reason="the stripped join must match at least one trade"/>
+
+  <compress id="bundle" file="recon-snapshot-trade-id-suffix-cfs.zip">
+    <include ref="deployed-code"/><include ref="samples"/><include ref="suffix-share"/><include ref="match-counts"/>
+  </compress>
+</rules>
