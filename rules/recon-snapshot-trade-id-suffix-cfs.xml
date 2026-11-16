@@ -11,8 +11,10 @@
       recon_postprocess_actual_v3.sql, first UPDATE) run
          trade_id = CASE WHEN trade_id IS NULL OR trade_id LIKE '%-' || v_bu THEN trade_id ELSE trade_id || '-' || v_bu END
       where v_bu is the business_unit of the refresh run. So a SETTLE or ACTUAL snapshot row holds "123-CFS" while the
-      cloned deal ticket holds "123". The TRADERS postprocess has no such step. The suffix was added to match the legacy
-      MATLAB output; that legacy origin is NOT proven by this rule.
+      cloned deal ticket holds "123". The TRADERS postprocess has no such step. Legacy does the same: MySQL procedures
+      create_recon_refresh_view_cache_table (line 1810) and create_recon_refresh_view_ws_cache_table (line 1896) in
+      db-schema/opera_stored_procedures.sql runs
+      update <cache table> set trade_id = concat(trade_id,'-',UPPER(last 3 letters of the table name)) on every row, with no guard.
     A direct join snapshot.trade_id = cloned.trade_id therefore never matches. Join on the stripped id instead.
 
     Steps (read only, tenant first in every filter):
@@ -80,6 +82,7 @@
            (SELECT count(*) FROM s JOIN c ON c.trade_id = s.stripped_id) AS found_after_strip,
            (SELECT count(*) FROM s WHERE NOT EXISTS (SELECT 1 FROM c WHERE c.trade_id = s.stripped_id)) AS missing_after_strip,
            (SELECT count(*) FROM c) AS cloned_trades,
+           (SELECT count(*) FROM c WHERE c.trade_id LIKE '%-' || CAST(:bu AS text)) AS cloned_ids_already_with_suffix,
            (SELECT count(*) FROM c WHERE NOT EXISTS (SELECT 1 FROM s WHERE s.stripped_id = c.trade_id)) AS cloned_not_in_snapshot
   ]]></sql>
 
