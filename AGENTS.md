@@ -11,6 +11,8 @@ The short version:
 
 Critical for every rule: a standalone `<sql>` keeps its rows only with `export="full"` (sample keeps none); add `<expect>` and, if the result is sent, `<compress>`; `--validate` and `--check` print `advice:` lines, read them. The export flag is `none|sample|full` (no `all`).
 
+Several queries on several environments (dev, UAT, legacy): read section 6.13 of HOW-TO-USE.md. In short: ids prefixed by environment (`dev-trades`, `uat-trades`), identical SQL with only `db=` changed (or `db="target"` plus `--target-env`), compare by business key and ignore per-environment ids and audit columns, add a freshness query and `<expect>` per environment before the comparison, `<presence>` for three or more sources, an unreachable or PARTIAL environment proves nothing, and every write (`--restore`, `--load`, `--change`) is one environment at a time, dev first.
+
 Hard rules: never pass `--allow-prod` or `--apply` unless the user asked for it; a restore is previewed first; do not read or edit `config/datasources.properties`; SQL is one `SELECT`/`WITH`
 with bound `:parameters`; never write `--` inside an XML comment.
 
