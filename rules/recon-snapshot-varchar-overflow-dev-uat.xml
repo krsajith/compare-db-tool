@@ -1,0 +1,169 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rules name="recon-snapshot-varchar-overflow-dev-uat">
+  <!--
+    Question: why does Refresh Recon View fail on dev with
+    "value too long for type character varying(20)" in recon_materialize_settle,
+    and is UAT exposed to the same problem?
+
+    Suspect: recon_settle_snapshot / recon_actual_snapshot / recon_traders_snapshot declare
+    trade_source, trade_category, prd_category and sw_id as varchar(20), while the source
+    deal_ticket_table declares them as varchar(255). XOGA-535 widened only the broker columns.
+
+    Steps, same SQL on each environment (dev-* and uat-*):
+      narrow     snapshot columns that are shorter than the same-named column of deal_ticket_table
+      maxlen     longest value in deal_ticket_table for the four suspect columns, and how many rows exceed 20
+      offenders  the actual values longer than 20 characters, by business unit
+      published  published run and row count per view type for the scope (parameters bu and settleDate)
+    Then narrow-dev-vs-uat shows whether the two environments have the same table definitions.
+
+    Run it with the rules flag, and the param flag for bu and settleDate (defaults GPC and 2026-09-30).
+    Read-only. The offenders and maxlen queries scan deal_ticket_table once per environment.
+  -->
+  <parameters>
+    <param name="bu" type="string" value="GPC"/>
+    <param name="settleDate" type="date" value="2026-09-30"/>
+  </parameters>
+
+  <sql id="dev-narrow" db="postgres-dev" export="full"><![CDATA[
+    SELECT s.table_name, s.column_name,
+           s.character_maximum_length AS snapshot_len,
+           d.character_maximum_length AS source_len
+    FROM information_schema.columns s
+    JOIN information_schema.columns d
+      ON d.table_schema = 'opera' AND d.table_name = 'deal_ticket_table' AND d.column_name = s.column_name
+    WHERE s.table_schema = 'opera'
+      AND s.table_name IN ('recon_settle_snapshot', 'recon_actual_snapshot', 'recon_traders_snapshot')
+      AND s.data_type = 'character varying'
+      AND s.character_maximum_length IS NOT NULL
+      AND (d.character_maximum_length IS NULL OR s.character_maximum_length < d.character_maximum_length)
+    ORDER BY s.table_name, s.column_name
+  ]]></sql>
+  <sql id="uat-narrow" db="postgres-uat" export="full"><![CDATA[
+    SELECT s.table_name, s.column_name,
+           s.character_maximum_length AS snapshot_len,
+           d.character_maximum_length AS source_len
+    FROM information_schema.columns s
+    JOIN information_schema.columns d
+      ON d.table_schema = 'opera' AND d.table_name = 'deal_ticket_table' AND d.column_name = s.column_name
+    WHERE s.table_schema = 'opera'
+      AND s.table_name IN ('recon_settle_snapshot', 'recon_actual_snapshot', 'recon_traders_snapshot')
+      AND s.data_type = 'character varying'
+      AND s.character_maximum_length IS NOT NULL
+      AND (d.character_maximum_length IS NULL OR s.character_maximum_length < d.character_maximum_length)
+    ORDER BY s.table_name, s.column_name
+  ]]></sql>
+
+  <sql id="dev-maxlen" db="postgres-dev" export="full" timeout="300"><![CDATA[
+    SELECT max(length(trade_source)) AS max_trade_source,
+           max(length(trade_category)) AS max_trade_category,
+           max(length(prd_category)) AS max_prd_category,
+           max(length(sw_id)) AS max_sw_id,
+           count(*) FILTER (WHERE length(trade_source) > 20 OR length(trade_category) > 20
+                              OR length(prd_category) > 20 OR length(sw_id) > 20) AS rows_over_20
+    FROM opera.deal_ticket_table
+  ]]></sql>
+  <sql id="uat-maxlen" db="postgres-uat" export="full" timeout="300"><![CDATA[
+    SELECT max(length(trade_source)) AS max_trade_source,
+           max(length(trade_category)) AS max_trade_category,
+           max(length(prd_category)) AS max_prd_category,
+           max(length(sw_id)) AS max_sw_id,
+           count(*) FILTER (WHERE length(trade_source) > 20 OR length(trade_category) > 20
+                              OR length(prd_category) > 20 OR length(sw_id) > 20) AS rows_over_20
+    FROM opera.deal_ticket_table
+  ]]></sql>
+
+  <sql id="dev-offenders" db="postgres-dev" export="full" timeout="300"><![CDATA[
+    SELECT col, val, len, business_unit, n FROM (
+      SELECT 'trade_source' AS col, trade_source AS val, length(trade_source) AS len, business_unit, count(*) AS n
+      FROM opera.deal_ticket_table WHERE length(trade_source) > 20 GROUP BY 1, 2, 3, 4
+      UNION ALL
+      SELECT 'trade_category', trade_category, length(trade_category), business_unit, count(*)
+      FROM opera.deal_ticket_table WHERE length(trade_category) > 20 GROUP BY 1, 2, 3, 4
+      UNION ALL
+      SELECT 'prd_category', prd_category, length(prd_category), business_unit, count(*)
+      FROM opera.deal_ticket_table WHERE length(prd_category) > 20 GROUP BY 1, 2, 3, 4
+      UNION ALL
+      SELECT 'sw_id', sw_id, length(sw_id), business_unit, count(*)
+      FROM opera.deal_ticket_table WHERE length(sw_id) > 20 GROUP BY 1, 2, 3, 4
+    ) x
+    ORDER BY len DESC, col, business_unit
+    LIMIT 100
+  ]]></sql>
+  <sql id="uat-offenders" db="postgres-uat" export="full" timeout="300"><![CDATA[
+    SELECT col, val, len, business_unit, n FROM (
+      SELECT 'trade_source' AS col, trade_source AS val, length(trade_source) AS len, business_unit, count(*) AS n
+      FROM opera.deal_ticket_table WHERE length(trade_source) > 20 GROUP BY 1, 2, 3, 4
+      UNION ALL
+      SELECT 'trade_category', trade_category, length(trade_category), business_unit, count(*)
+      FROM opera.deal_ticket_table WHERE length(trade_category) > 20 GROUP BY 1, 2, 3, 4
+      UNION ALL
+      SELECT 'prd_category', prd_category, length(prd_category), business_unit, count(*)
+      FROM opera.deal_ticket_table WHERE length(prd_category) > 20 GROUP BY 1, 2, 3, 4
+      UNION ALL
+      SELECT 'sw_id', sw_id, length(sw_id), business_unit, count(*)
+      FROM opera.deal_ticket_table WHERE length(sw_id) > 20 GROUP BY 1, 2, 3, 4
+    ) x
+    ORDER BY len DESC, col, business_unit
+    LIMIT 100
+  ]]></sql>
+
+  <sql id="dev-published" db="postgres-dev" export="full"><![CDATA[
+    SELECT p.view_type, p.published_run_id, p.published_at,
+           CASE p.view_type
+             WHEN 'SETTLE_PRICING' THEN
+               (SELECT count(*) FROM opera.recon_settle_snapshot s
+                 WHERE s.tenant_id = p.tenant_id AND s.business_unit = p.business_unit
+                   AND s.settlement_date = p.settlement_date AND s.run_id = p.published_run_id)
+             WHEN 'SETTLE_ACTUAL_PRICING' THEN
+               (SELECT count(*) FROM opera.recon_actual_snapshot s
+                 WHERE s.tenant_id = p.tenant_id AND s.business_unit = p.business_unit
+                   AND s.settlement_date = p.settlement_date AND s.run_id = p.published_run_id)
+             WHEN 'TRADERS_PRICING' THEN
+               (SELECT count(*) FROM opera.recon_traders_snapshot s
+                 WHERE s.tenant_id = p.tenant_id AND s.business_unit = p.business_unit
+                   AND s.settlement_date = p.settlement_date AND s.run_id = p.published_run_id)
+           END AS snapshot_rows
+    FROM opera.recon_snapshot_pointer p
+    WHERE p.business_unit = :bu AND p.settlement_date = :settleDate
+    ORDER BY p.view_type
+  ]]></sql>
+  <sql id="uat-published" db="postgres-uat" export="full"><![CDATA[
+    SELECT p.view_type, p.published_run_id, p.published_at,
+           CASE p.view_type
+             WHEN 'SETTLE_PRICING' THEN
+               (SELECT count(*) FROM opera.recon_settle_snapshot s
+                 WHERE s.tenant_id = p.tenant_id AND s.business_unit = p.business_unit
+                   AND s.settlement_date = p.settlement_date AND s.run_id = p.published_run_id)
+             WHEN 'SETTLE_ACTUAL_PRICING' THEN
+               (SELECT count(*) FROM opera.recon_actual_snapshot s
+                 WHERE s.tenant_id = p.tenant_id AND s.business_unit = p.business_unit
+                   AND s.settlement_date = p.settlement_date AND s.run_id = p.published_run_id)
+             WHEN 'TRADERS_PRICING' THEN
+               (SELECT count(*) FROM opera.recon_traders_snapshot s
+                 WHERE s.tenant_id = p.tenant_id AND s.business_unit = p.business_unit
+                   AND s.settlement_date = p.settlement_date AND s.run_id = p.published_run_id)
+           END AS snapshot_rows
+    FROM opera.recon_snapshot_pointer p
+    WHERE p.business_unit = :bu AND p.settlement_date = :settleDate
+    ORDER BY p.view_type
+  ]]></sql>
+
+  <compare id="narrow-dev-vs-uat" source="dev-narrow" target="uat-narrow">
+    <key columns="table_name,column_name"/>
+  </compare>
+
+  <expect ref="dev-narrow" rows="0" reason="no snapshot column may be shorter than its source column (dev)"/>
+  <expect ref="uat-narrow" rows="0" reason="no snapshot column may be shorter than its source column (UAT)"/>
+  <expect ref="dev-maxlen" rows="1"/>
+  <expect ref="uat-maxlen" rows="1"/>
+  <expect ref="dev-maxlen" column="rows_over_20" equals="0" reason="values over 20 characters overflow the snapshot insert (dev)"/>
+  <expect ref="uat-maxlen" column="rows_over_20" equals="0" reason="values over 20 characters overflow the snapshot insert (UAT)"/>
+  <expect ref="narrow-dev-vs-uat" different="0" only-source="0" only-target="0" reason="dev and UAT should have the same table definitions"/>
+  <compress id="bundle" file="recon-snapshot-varchar-overflow.zip">
+    <include ref="dev-narrow"/><include ref="uat-narrow"/>
+    <include ref="dev-maxlen"/><include ref="uat-maxlen"/>
+    <include ref="dev-offenders"/><include ref="uat-offenders"/>
+    <include ref="dev-published"/><include ref="uat-published"/>
+    <include ref="narrow-dev-vs-uat"/>
+  </compress>
+</rules>
