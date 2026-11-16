@@ -1,0 +1,136 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rules name="recon-gpc-varchar20-exact-source-dev-uat">
+  <!--
+    Question: which exact column and value made recon_materialize_settle fail for GPC with
+    "value too long for type character varying(20)" on INSERT INTO recon_settle_snapshot?
+
+    What the function does (recon_materialize_settle_v3.sql): rb_fy is built from cloned_deal_ticket_table
+    (is_latest_version = 1, business unit upper(trim)), then rb_deal, then the final INSERT.
+    The settle snapshot has exactly four varchar(20) columns: trade_source, trade_category, prd_category, sw_id.
+    All four are copied straight from cloned_deal_ticket_table, not from deal_ticket_table, which the first
+    rule measured. This rule measures the table the function really reads.
+
+    Steps per environment:
+      cols      the settle snapshot columns with a limit of exactly 20 (confirms the candidate list)
+      maxlen    one row: rows in scope, longest value of each candidate, how many exceed 20
+      offenders the actual values longer than 20, with tenant, business unit, length and number of rows
+
+    Read only. Scope parameter bu (default GPC). Datasources postgres-dev and postgres-uat.
+  -->
+  <parameters>
+    <param name="bu" type="string" value="GPC"/>
+  </parameters>
+
+  <sql id="dev-cols" db="postgres-dev" export="full"><![CDATA[
+    SELECT column_name, character_maximum_length AS max_len
+    FROM information_schema.columns
+    WHERE table_schema = 'opera' AND table_name = 'recon_settle_snapshot'
+      AND data_type = 'character varying' AND character_maximum_length = 20
+    ORDER BY column_name
+  ]]></sql>
+  <sql id="uat-cols" db="postgres-uat" export="full"><![CDATA[
+    SELECT column_name, character_maximum_length AS max_len
+    FROM information_schema.columns
+    WHERE table_schema = 'opera' AND table_name = 'recon_settle_snapshot'
+      AND data_type = 'character varying' AND character_maximum_length = 20
+    ORDER BY column_name
+  ]]></sql>
+
+  <sql id="dev-maxlen" db="postgres-dev" export="full" timeout="300"><![CDATA[
+    SELECT count(*) AS rows_in_scope,
+           max(length(trade_source)) AS max_trade_source,
+           max(length(trade_category)) AS max_trade_category,
+           max(length(prd_category)) AS max_prd_category,
+           max(length(sw_id)) AS max_sw_id,
+           count(*) FILTER (WHERE length(trade_source) > 20) AS trade_source_over_20,
+           count(*) FILTER (WHERE length(trade_category) > 20) AS trade_category_over_20,
+           count(*) FILTER (WHERE length(prd_category) > 20) AS prd_category_over_20,
+           count(*) FILTER (WHERE length(sw_id) > 20) AS sw_id_over_20
+    FROM opera.cloned_deal_ticket_table
+    WHERE upper(trim(business_unit)) = upper(trim(:bu)) AND is_latest_version = 1
+  ]]></sql>
+  <sql id="uat-maxlen" db="postgres-uat" export="full" timeout="300"><![CDATA[
+    SELECT count(*) AS rows_in_scope,
+           max(length(trade_source)) AS max_trade_source,
+           max(length(trade_category)) AS max_trade_category,
+           max(length(prd_category)) AS max_prd_category,
+           max(length(sw_id)) AS max_sw_id,
+           count(*) FILTER (WHERE length(trade_source) > 20) AS trade_source_over_20,
+           count(*) FILTER (WHERE length(trade_category) > 20) AS trade_category_over_20,
+           count(*) FILTER (WHERE length(prd_category) > 20) AS prd_category_over_20,
+           count(*) FILTER (WHERE length(sw_id) > 20) AS sw_id_over_20
+    FROM opera.cloned_deal_ticket_table
+    WHERE upper(trim(business_unit)) = upper(trim(:bu)) AND is_latest_version = 1
+  ]]></sql>
+
+  <sql id="dev-offenders" db="postgres-dev" export="full" timeout="300"><![CDATA[
+    SELECT col, '[' || val || ']' AS val_in_brackets, len, tenant_id, business_unit, n FROM (
+      SELECT 'trade_source' AS col, trade_source AS val, length(trade_source) AS len, tenant_id, business_unit, count(*) AS n
+      FROM opera.cloned_deal_ticket_table
+      WHERE upper(trim(business_unit)) = upper(trim(:bu)) AND is_latest_version = 1 AND length(trade_source) > 20
+      GROUP BY 1, 2, 3, 4, 5
+      UNION ALL
+      SELECT 'trade_category', trade_category, length(trade_category), tenant_id, business_unit, count(*)
+      FROM opera.cloned_deal_ticket_table
+      WHERE upper(trim(business_unit)) = upper(trim(:bu)) AND is_latest_version = 1 AND length(trade_category) > 20
+      GROUP BY 1, 2, 3, 4, 5
+      UNION ALL
+      SELECT 'prd_category', prd_category, length(prd_category), tenant_id, business_unit, count(*)
+      FROM opera.cloned_deal_ticket_table
+      WHERE upper(trim(business_unit)) = upper(trim(:bu)) AND is_latest_version = 1 AND length(prd_category) > 20
+      GROUP BY 1, 2, 3, 4, 5
+      UNION ALL
+      SELECT 'sw_id', sw_id, length(sw_id), tenant_id, business_unit, count(*)
+      FROM opera.cloned_deal_ticket_table
+      WHERE upper(trim(business_unit)) = upper(trim(:bu)) AND is_latest_version = 1 AND length(sw_id) > 20
+      GROUP BY 1, 2, 3, 4, 5
+    ) x
+    ORDER BY len DESC, col
+    LIMIT 100
+  ]]></sql>
+  <sql id="uat-offenders" db="postgres-uat" export="full" timeout="300"><![CDATA[
+    SELECT col, '[' || val || ']' AS val_in_brackets, len, tenant_id, business_unit, n FROM (
+      SELECT 'trade_source' AS col, trade_source AS val, length(trade_source) AS len, tenant_id, business_unit, count(*) AS n
+      FROM opera.cloned_deal_ticket_table
+      WHERE upper(trim(business_unit)) = upper(trim(:bu)) AND is_latest_version = 1 AND length(trade_source) > 20
+      GROUP BY 1, 2, 3, 4, 5
+      UNION ALL
+      SELECT 'trade_category', trade_category, length(trade_category), tenant_id, business_unit, count(*)
+      FROM opera.cloned_deal_ticket_table
+      WHERE upper(trim(business_unit)) = upper(trim(:bu)) AND is_latest_version = 1 AND length(trade_category) > 20
+      GROUP BY 1, 2, 3, 4, 5
+      UNION ALL
+      SELECT 'prd_category', prd_category, length(prd_category), tenant_id, business_unit, count(*)
+      FROM opera.cloned_deal_ticket_table
+      WHERE upper(trim(business_unit)) = upper(trim(:bu)) AND is_latest_version = 1 AND length(prd_category) > 20
+      GROUP BY 1, 2, 3, 4, 5
+      UNION ALL
+      SELECT 'sw_id', sw_id, length(sw_id), tenant_id, business_unit, count(*)
+      FROM opera.cloned_deal_ticket_table
+      WHERE upper(trim(business_unit)) = upper(trim(:bu)) AND is_latest_version = 1 AND length(sw_id) > 20
+      GROUP BY 1, 2, 3, 4, 5
+    ) x
+    ORDER BY len DESC, col
+    LIMIT 100
+  ]]></sql>
+
+  <expect ref="dev-cols" rows="4" reason="the settle snapshot has exactly four varchar(20) columns on dev"/>
+  <expect ref="uat-cols" rows="4" reason="the settle snapshot has exactly four varchar(20) columns on UAT"/>
+  <expect ref="dev-maxlen" rows="1"/>
+  <expect ref="uat-maxlen" rows="1"/>
+  <expect ref="dev-maxlen" column="rows_in_scope" min="1" reason="the business unit must have latest-version rows in cloned_deal_ticket_table (dev)"/>
+  <expect ref="uat-maxlen" column="rows_in_scope" min="1" reason="the business unit must have latest-version rows in cloned_deal_ticket_table (UAT)"/>
+  <expect ref="dev-maxlen" column="trade_source_over_20" equals="0" reason="trade_source over 20 characters overflows the snapshot (dev)"/>
+  <expect ref="uat-maxlen" column="trade_source_over_20" equals="0" reason="trade_source over 20 characters overflows the snapshot (UAT)"/>
+  <expect ref="dev-maxlen" column="trade_category_over_20" equals="0" reason="trade_category over 20 characters overflows the snapshot (dev)"/>
+  <expect ref="uat-maxlen" column="trade_category_over_20" equals="0" reason="trade_category over 20 characters overflows the snapshot (UAT)"/>
+  <expect ref="dev-maxlen" column="prd_category_over_20" equals="0" reason="prd_category over 20 characters overflows the snapshot (dev)"/>
+  <expect ref="uat-maxlen" column="prd_category_over_20" equals="0" reason="prd_category over 20 characters overflows the snapshot (UAT)"/>
+  <expect ref="dev-maxlen" column="sw_id_over_20" equals="0" reason="sw_id over 20 characters overflows the snapshot (dev)"/>
+  <expect ref="uat-maxlen" column="sw_id_over_20" equals="0" reason="sw_id over 20 characters overflows the snapshot (UAT)"/>
+  <compress id="bundle" file="recon-gpc-varchar20-exact-source.zip">
+    <include ref="dev-cols"/><include ref="uat-cols"/>
+    <include ref="dev-maxlen"/><include ref="uat-maxlen"/>
+    <include ref="dev-offenders"/><include ref="uat-offenders"/>
+  </compress>
+</rules>
