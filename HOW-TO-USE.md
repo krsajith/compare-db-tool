@@ -62,7 +62,6 @@ It can also restore rows from a backup table (always preview first) and move rep
 | Move report templates between environments | `--template-export`, `--template-import` | 6.10 |
 | Browse, re-run and confirm risky runs interactively | menu (`.\compare.ps1` with no arguments) | 6.11 |
 | Bundle selected outputs for sending | `<compress>` | 5.8 |
-| The same question on several environments (dev, UAT, legacy) | id prefixes, `--target-env`, freshness checks, presence for 3+ | 6.13 |
 | Why is a statement slow? Plan, time, sequential scans, bad estimates (PostgreSQL) | `<explain>` | 6.5b |
 
 ---
@@ -614,59 +613,6 @@ compare-db-tool: done in 6.1 s - exit 1 (differences, or an expectation was not 
   summary: out\trade-parity-...\SUMMARY.md
 ```
 A step slower than 30 s prints "still running (...)" every 30 s with rows so far.
-
-### 6.13 Several queries on several environments (dev, UAT, prod, legacy)
-Use this when one question needs the same data from more than one environment (for example "does UAT hold what dev holds?", "which of dev, UAT and legacy has each key?"). Rules for agents:
-
-1. **One rule, one question, one id scheme.** Prefix every id with its environment: `dev-trades`, `uat-trades`, `dev-fresh`, `uat-fresh`. A comparison is named after the question (`trades-dev-vs-uat`). Never reuse an id across environments.
-2. **Same SQL, different `db`.** Copy the statement text exactly and change only `db=` (and a schema name only where the schemas really differ). Two queries with identical SQL on the *same* datasource are run once and shared; on different datasources they run separately and in parallel (one active query per datasource), so do not worry about the number of environments.
-3. **One rule for dev and UAT: `--target-env`.** Write `db="target"` for the side that moves and run `--target-env postgres-uat` or `--target-env postgres-dev`. The fixed side keeps its datasource name. The console prints which datasource `target` means; quote it in your report. Do not copy a rule per environment.
-4. **List the datasources first** (`--datasources`, never open `config/datasources.properties`). Use only names that exist. Production names need `--allow-prod`, and only when the user said so; propose the command, do not add the flag yourself.
-5. **Check what is not the same on purpose.** Ids generated per environment (`uuid`, serial ids, `tenant_id`, `run_id`, `created_*`, `updated_*`) differ. Compare by the **business key**, mark these columns `ignore="true"`, and declare an environment specific parameter (`tenantDev`, `tenantUat`) instead of assuming one value fits both. Never take a surrogate id from one environment and use it in another unless `uses=` carried it from a query that read it there.
-6. **Prove the environments are comparable before you compare.** Add one small freshness query per environment (row count, `max(updated_timestamp)`, the latest `run_id` or valuation date) and `<expect>` on it. A comparison of two different load dates only measures the dates. Pin the scope with parameters (date, business unit, run id); a moving scope makes every run differ.
-7. **Two environments: `<compare>`. Three or more: `<presence>`** over the keys (`sources="dev-trades, uat-trades, legacy-trades"`), then a `<compare>` for the pair you care about. Do not build a compare for every pair.
-8. **Drill-down across environments works** (`uses="m=trades-dev-vs-uat:only-source"` can feed a query on another datasource), complete key list, batched (section 6.6). Use it to ask "does the missing key exist in the backup of UAT, and what is it there?".
-9. **Cost and order.** `--check` for every environment first (an unreachable database is reported once and its queries skipped), then `--export none`, then `sample`, then `full` only for key lists you will read. Timings and planner estimates differ between environments (data size, statistics, indexes); do not read a slow UAT query as a rule defect.
-10. **An environment that failed proves nothing.** If one datasource was unreachable, a query timed out or the result is PARTIAL (exit 2), say so and do not report equality or "no difference". Rerun after the cause is fixed.
-11. **Writes are one environment at a time.** `--restore`, `--load` and `--change` act on one `db`. Never put two environments in one write rule. Preview on dev, then apply on dev, verify, then repeat on UAT with the same ticket. Copying rows from one environment to another is `--load` with `source.db` set to the origin and `db` set to the target (section 6.9b). Every apply is written to the changelog of its own database; read it with `--changelog --db NAME`. Production is the user's decision, always `--allow-prod`, always previewed.
-12. **Zip and report per environment.** Name the zip with the environments (`trades-dev-vs-uat.zip`) and, in your answer, give for each environment: the datasource name, rows, the verdict, what was not verified. Use the freshness numbers to say whether the environments were at the same point in time.
-
-```xml
-<rules name="trades-dev-vs-uat">
-  <parameters>
-    <param name="cob" type="date" value="2026-10-01"/>
-    <param name="bu" type="string" value="CFS"/>
-  </parameters>
-
-  <sql id="dev-fresh" db="postgres-dev" export="full"><![CDATA[
-    SELECT count(*) AS n, max(updated_timestamp) AS last_update FROM opera.trades WHERE settle_date = :cob AND business_unit = :bu
-  ]]></sql>
-  <sql id="uat-fresh" db="postgres-uat" export="full"><![CDATA[
-    SELECT count(*) AS n, max(updated_timestamp) AS last_update FROM opera.trades WHERE settle_date = :cob AND business_unit = :bu
-  ]]></sql>
-
-  <sql id="dev-trades" db="postgres-dev"><![CDATA[
-    SELECT trade_id, client_code, amount, status, updated_by, updated_timestamp FROM opera.trades WHERE settle_date = :cob AND business_unit = :bu
-  ]]></sql>
-  <sql id="uat-trades" db="postgres-uat"><![CDATA[
-    SELECT trade_id, client_code, amount, status, updated_by, updated_timestamp FROM opera.trades WHERE settle_date = :cob AND business_unit = :bu
-  ]]></sql>
-
-  <compare id="trades-dev-vs-uat" source="dev-trades" target="uat-trades">
-    <key columns="trade_id"/>
-    <column name="amount" absTol="0.005"/>
-    <column name="updated_by" ignore="true"/>
-    <column name="updated_timestamp" ignore="true"/>
-  </compare>
-
-  <expect ref="dev-fresh" rows="1"/>
-  <expect ref="uat-fresh" rows="1"/>
-  <expect ref="dev-fresh" column="n" min="1" reason="dev must hold the day"/>
-  <expect ref="uat-fresh" column="n" min="1" reason="UAT must hold the day"/>
-  <expect ref="trades-dev-vs-uat" different="0" only-source="0" only-target="0" reason="UAT should match dev for the day"/>
-  <compress id="bundle" file="trades-dev-vs-uat.zip"><include ref="trades-dev-vs-uat"/><include ref="dev-fresh"/><include ref="uat-fresh"/></compress>
-</rules>
-```
 
 ---
 
