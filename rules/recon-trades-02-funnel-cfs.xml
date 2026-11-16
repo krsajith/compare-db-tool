@@ -1,0 +1,96 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rules name="recon-trades-02-funnel-cfs">
+  <!--
+    Question from the tester: the total number of trades in the recon report does not match legacy. Prove where.
+
+    Method: legacy and new are compared trade by trade, stage by stage, on the SAME trade key.
+    The key is the bare trade_id. Legacy cache rows and new SETTLE snapshot rows carry the suffix '-CFS' (legacy:
+    create_recon_refresh_view_cache_table; new: recon_postprocess_settle), so the recon stage strips it on both sides.
+    Without stripping a direct join with the deal ticket finds nothing, which is a naming effect, not missing deals.
+
+    Output:
+      counts   side by side metrics (rows, distinct trades raw, distinct trades without suffix, ids with suffix)
+      trades   the funnel: s1 deal ticket, s2 active-lots row on the date, s3 recon cache or snapshot row on the date.
+               The first stage with only-source or only-target keys is where the totals start to differ,
+               diverging-keys.csv lists the trades, the profile says what they have in common.
+    Run rule recon-trades-01-discovery-cfs first and give valueDate a date that both sides hold.
+    Parameters: tenant, valueDate. Heavy tables: filters start with the tenant and the business unit.
+  -->
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+    <param name="valueDate" type="date" value="2026-10-01"/>
+  </parameters>
+
+  <sql id="l-counts" db="mysql-oprdb02" timeout="600"><![CDATA[
+    SELECT 'rows' AS metric, count(*) AS value FROM dbsystemuat.helper_settle_p_and_g_view_cache_table_cfs WHERE value_date = :valueDate
+    UNION ALL
+    SELECT 'distinct_trades_raw', count(DISTINCT trade_id) FROM dbsystemuat.helper_settle_p_and_g_view_cache_table_cfs WHERE value_date = :valueDate
+    UNION ALL
+    SELECT 'distinct_trades_without_suffix',
+           count(DISTINCT CASE WHEN trade_id LIKE '%-CFS' THEN LEFT(trade_id, CHAR_LENGTH(trade_id) - 4) ELSE trade_id END)
+    FROM dbsystemuat.helper_settle_p_and_g_view_cache_table_cfs WHERE value_date = :valueDate
+    UNION ALL
+    SELECT 'rows_with_suffix', count(*) FROM dbsystemuat.helper_settle_p_and_g_view_cache_table_cfs WHERE value_date = :valueDate AND trade_id LIKE '%-CFS'
+  ]]></sql>
+  <sql id="n-counts" db="target" timeout="600"><![CDATA[
+    SELECT 'rows' AS metric, count(*) AS value FROM opera.helper_settle_p_and_g_view_cache_table
+    WHERE tenant_id = :tenant AND business_unit = 'CFS' AND settlement_date = :valueDate
+    UNION ALL
+    SELECT 'distinct_trades_raw', count(DISTINCT trade_id) FROM opera.helper_settle_p_and_g_view_cache_table
+    WHERE tenant_id = :tenant AND business_unit = 'CFS' AND settlement_date = :valueDate
+    UNION ALL
+    SELECT 'distinct_trades_without_suffix',
+           count(DISTINCT CASE WHEN trade_id::text LIKE '%-CFS' THEN left(trade_id::text, length(trade_id::text) - 4) ELSE trade_id::text END)
+    FROM opera.helper_settle_p_and_g_view_cache_table
+    WHERE tenant_id = :tenant AND business_unit = 'CFS' AND settlement_date = :valueDate
+    UNION ALL
+    SELECT 'rows_with_suffix', count(*) FROM opera.helper_settle_p_and_g_view_cache_table
+    WHERE tenant_id = :tenant AND business_unit = 'CFS' AND settlement_date = :valueDate AND trade_id::text LIKE '%-CFS'
+  ]]></sql>
+  <compare id="counts" source="l-counts" target="n-counts" export="full">
+    <key columns="metric"/>
+  </compare>
+
+  <sql id="l1" db="mysql-oprdb02" timeout="600" fetchSize="5000"><![CDATA[
+    SELECT DISTINCT trade_id, contract_number, counterparty_parent FROM dbsystemuat.cloned_deal_ticket_table_cfs
+  ]]></sql>
+  <sql id="n1" db="target" timeout="600" fetchSize="5000"><![CDATA[
+    SELECT DISTINCT trade_id::text AS trade_id, contract_number, counterparty_parent
+    FROM opera.cloned_deal_ticket_table WHERE tenant_id = :tenant AND business_unit = 'CFS'
+  ]]></sql>
+  <sql id="l2" db="mysql-oprdb02" timeout="600" fetchSize="5000"><![CDATA[
+    SELECT DISTINCT d.trade_id, d.contract_number, d.counterparty_parent
+    FROM dbsystemuat.cloned_deal_ticket_table_cfs d
+    JOIN dbsystemuat.deal_active_lots_table_cfs a ON a.trade_id = d.trade_id
+    WHERE a.value_date = :valueDate
+  ]]></sql>
+  <sql id="n2" db="target" timeout="600" fetchSize="5000"><![CDATA[
+    SELECT DISTINCT d.trade_id::text AS trade_id, d.contract_number, d.counterparty_parent
+    FROM opera.cloned_deal_ticket_table d
+    JOIN opera.deal_active_lots_table a ON a.tenant_id = d.tenant_id AND a.business_unit = d.business_unit AND a.trade_id = d.trade_id
+    WHERE d.tenant_id = :tenant AND d.business_unit = 'CFS' AND a.value_date = :valueDate
+  ]]></sql>
+  <sql id="l3" db="mysql-oprdb02" timeout="600" fetchSize="5000"><![CDATA[
+    SELECT DISTINCT CASE WHEN c.trade_id LIKE '%-CFS' THEN LEFT(c.trade_id, CHAR_LENGTH(c.trade_id) - 4) ELSE c.trade_id END AS trade_id,
+           c.contract_number, c.counterparty_parent
+    FROM dbsystemuat.helper_settle_p_and_g_view_cache_table_cfs c
+    WHERE c.value_date = :valueDate
+  ]]></sql>
+  <sql id="n3" db="target" timeout="600" fetchSize="5000"><![CDATA[
+    SELECT DISTINCT CASE WHEN c.trade_id::text LIKE '%-CFS' THEN left(c.trade_id::text, length(c.trade_id::text) - 4) ELSE c.trade_id::text END AS trade_id,
+           c.contract_number, c.counterparty_parent
+    FROM opera.helper_settle_p_and_g_view_cache_table c
+    WHERE c.tenant_id = :tenant AND c.business_unit = 'CFS' AND c.settlement_date = :valueDate
+  ]]></sql>
+
+  <funnel id="trades" key="trade_id">
+    <stage id="s1-deal-ticket" source="l1" target="n1" reason="all cloned deal tickets of CFS"/>
+    <stage id="s2-active-lots-row" source="l2" target="n2" reason="deal has an active-lots row on the value date"/>
+    <stage id="s3-recon-rows" source="l3" target="n3" reason="deal is in the recon settle cache (legacy) or snapshot (new) of the date, BU suffix removed"/>
+  </funnel>
+
+  <expect ref="counts" different="0" only-source="0" only-target="0" reason="rows, trades with and without suffix and suffix rows are equal on both sides"/>
+  <expect ref="trades" first-divergence="none" reason="legacy and new keep the same trades at every stage"/>
+
+  <compress id="bundle" file="recon-trades-02-funnel-cfs.zip"><include ref="counts"/><include ref="trades"/></compress>
+</rules>

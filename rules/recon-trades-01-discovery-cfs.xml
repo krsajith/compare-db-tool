@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rules name="recon-trades-01-discovery-cfs">
+  <!--
+    Step 1 of the recon trade count proof. Read only, small results. It answers three things before the funnel is run:
+      1. Which dates exist in the legacy cache table and in the new snapshot, so the funnel uses a date both sides have.
+      2. Which legacy view fills the legacy cache table (cache_information_table), i.e. the population legacy really uses.
+      3. How many rows and trades each side holds per date.
+    Legacy: dbsystemuat.helper_settle_p_and_g_view_cache_table_cfs, refreshed by create_recon_refresh_view_cache_table
+    (generic path: truncate, insert from the original view, then trade_id = concat(trade_id,'-','CFS')).
+    New: opera.helper_settle_p_and_g_view_cache_table (view on the published recon_settle_snapshot run), db target.
+    Run with the target-env flag to choose dev or UAT.
+  -->
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+  </parameters>
+
+  <sql id="legacy-source-view" db="mysql-oprdb02" timeout="60" export="full"><![CDATA[
+    SELECT table_name, original_table_name, updated_timestamp, updated_by
+    FROM dbsystemuat.cache_information_table
+    WHERE table_name = 'helper_settle_p_and_g_view_cache_table_cfs'
+  ]]></sql>
+
+  <sql id="legacy-dates" db="mysql-oprdb02" timeout="300" export="full"><![CDATA[
+    SELECT value_date, count(*) AS row_count, count(DISTINCT trade_id) AS trades
+    FROM dbsystemuat.helper_settle_p_and_g_view_cache_table_cfs
+    GROUP BY value_date
+    ORDER BY value_date DESC
+    LIMIT 20
+  ]]></sql>
+
+  <sql id="new-dates" db="target" timeout="300" export="full"><![CDATA[
+    SELECT settlement_date, count(*) AS row_count, count(DISTINCT trade_id) AS trades, max(published_at) AS published_at
+    FROM opera.helper_settle_p_and_g_view_cache_table
+    WHERE tenant_id = :tenant AND business_unit = 'CFS'
+    GROUP BY settlement_date
+    ORDER BY settlement_date DESC
+    LIMIT 20
+  ]]></sql>
+
+  <expect ref="legacy-source-view" rows="1" reason="legacy must have one cache_information row naming the source view of the CFS settle cache"/>
+  <expect ref="legacy-dates" rows=">=1" reason="the legacy CFS settle cache must hold at least one value date"/>
+  <expect ref="new-dates" rows=">=1" reason="the new snapshot must hold at least one settlement date for CFS"/>
+
+  <compress id="bundle" file="recon-trades-01-discovery-cfs.zip">
+    <include ref="legacy-source-view"/><include ref="legacy-dates"/><include ref="new-dates"/>
+  </compress>
+</rules>
