@@ -65,18 +65,19 @@
 
   <sql id="v4-rows" db="target" timeout="900" export="none"><![CDATA[
     SELECT v.trade_id, v.asset_class, v.invenio_product_code, v.product_name, v.exchange_name,
-           v.lot_mult1, v.curr_mult1, v.mult_factor, v.nc_factor, v.fx_nc_factor, v.mtm_nc, v.mtm_usd
+           v.lot_mult1::numeric AS lot_mult1, v.curr_mult1::numeric AS curr_mult1, v.mult_factor::numeric AS mult_factor,
+           v.nc_factor::numeric AS nc_factor, v.fx_nc_factor::numeric AS fx_nc_factor, v.mtm_nc::numeric AS mtm_nc, v.mtm_usd::numeric AS mtm_usd
     FROM opera.helper_settle_pricing_subportfoliovalues_view v
     WHERE v.tenant_id = :tenant AND v.business_unit = :bu AND v.settlement_date = :settlementDate AND v.subportfolio = :subportfolio
   ]]></sql>
 
   <sql id="reference-rows" db="target" timeout="900" export="none"><![CDATA[
     SELECT h.trade_id, sp.asset_class, sp.invenio_product_code, sp.product_name, sp.exchange_name,
-           sp.lot_mult1::double precision AS lot_mult1, sp.curr_mult1::double precision AS curr_mult1,
-           sp.mult_factor::double precision AS mult_factor, sp.nc_factor::double precision AS nc_factor,
-           fx.fx_nc_factor::double precision AS fx_nc_factor,
-           (((h.settle_price * h.active_lots) - (h.current_premium * h.active_lots)) * sp.mult_factor)::double precision AS mtm_nc,
-           (((((h.settle_price * h.active_lots) - (h.current_premium * h.active_lots)) * sp.mult_factor) * sp.nc_factor) * fx.fx_nc_factor)::double precision AS mtm_usd
+           sp.lot_mult1::numeric AS lot_mult1, sp.curr_mult1::numeric AS curr_mult1,
+           sp.mult_factor::numeric AS mult_factor, sp.nc_factor::numeric AS nc_factor,
+           fx.fx_nc_factor::numeric AS fx_nc_factor,
+           (((h.settle_price * h.active_lots) - (h.current_premium * h.active_lots)) * sp.mult_factor)::numeric AS mtm_nc,
+           (((((h.settle_price * h.active_lots) - (h.current_premium * h.active_lots)) * sp.mult_factor) * sp.nc_factor) * fx.fx_nc_factor)::numeric AS mtm_usd
     FROM opera.helper_settle_p_and_g_view_cache_table h
     LEFT JOIN opera.helper_settle_pricing_and_traders_pricing_view sp
            ON sp.tenant_id = h.tenant_id AND sp.business_unit = h.business_unit AND sp.security_id = h.security_id
