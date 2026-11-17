@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Verify of recon-refresh-cfs-uat.json and quick CFS check, read only, fast. Can be run on its own.
+     snapshots     the latest published CFS snapshot of each view type: rows, source_trade_id filled, suffix rule, stored factors
+     consumer      helper_settle_pricing_subportfoliovalues_view for one small subportfolio (100 to 2000 rows, RMS-DF-LIF-OIR first):
+                   mtm_usd is never NULL when mtm_nc, nc_factor and fx_nc_factor are present, and equals their product within 0.01.
+     Trades in securities that have no nc_factor keep a NULL mtm_usd; that is the same as before the change. -->
+<rules name="recon-refresh-cfs-verify-uat">
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+  </parameters>
+  <sql id="snapshots" db="postgres-uat" timeout="600" export="full"><![CDATA[
+    WITH ptr AS (
+      SELECT p.tenant_id, p.business_unit, p.view_type, p.settlement_date, p.published_run_id FROM opera.recon_snapshot_pointer p
+      WHERE p.tenant_id = :tenant AND p.business_unit = 'CFS'
+        AND p.settlement_date = (SELECT max(p2.settlement_date) FROM opera.recon_snapshot_pointer p2
+                                  WHERE p2.tenant_id = p.tenant_id AND p2.business_unit = p.business_unit AND p2.view_type = p.view_type)
+    )
+    SELECT p.view_type, p.settlement_date, count(s.uuid) AS row_count, count(s.source_trade_id) AS has_source_trade_id,
+           count(*) FILTER (WHERE s.trade_id = s.source_trade_id || '-CFS') AS suffix_ok, count(s.nc_factor) AS has_nc_factor
+    FROM ptr p JOIN opera.recon_settle_snapshot s ON s.tenant_id = p.tenant_id AND s.business_unit = p.business_unit AND s.settlement_date = p.settlement_date AND s.run_id = p.published_run_id
+    WHERE p.view_type = 'SETTLE_PRICING' GROUP BY p.view_type, p.settlement_date
+    UNION ALL
+    SELECT p.view_type, p.settlement_date, count(s.uuid), count(s.source_trade_id), count(*) FILTER (WHERE s.trade_id = s.source_trade_id || '-CFS'), NULL::bigint
+    FROM ptr p JOIN opera.recon_actual_snapshot s ON s.tenant_id = p.tenant_id AND s.business_unit = p.business_unit AND s.settlement_date = p.settlement_date AND s.run_id = p.published_run_id
+    WHERE p.view_type = 'SETTLE_ACTUAL_PRICING' GROUP BY p.view_type, p.settlement_date
+    UNION ALL
+    SELECT p.view_type, p.settlement_date, count(s.uuid), count(s.source_trade_id), count(*) FILTER (WHERE s.trade_id = s.source_trade_id || '-CFS'), NULL::bigint
+    FROM ptr p JOIN opera.recon_traders_snapshot s ON s.tenant_id = p.tenant_id AND s.business_unit = p.business_unit AND s.settlement_date = p.settlement_date AND s.run_id = p.published_run_id
+    WHERE p.view_type = 'TRADERS_PRICING' GROUP BY p.view_type, p.settlement_date
+    ORDER BY 1
+  ]]></sql>
+  <sql id="consumer" db="postgres-uat" timeout="900" export="full"><![CDATA[
+    WITH d AS (
+      SELECT max(settlement_date) AS settlement_date FROM opera.recon_snapshot_pointer
+      WHERE tenant_id = :tenant AND business_unit = 'CFS' AND view_type = 'SETTLE_PRICING'
+    ), pick AS (
+      SELECT h.subportfolio FROM opera.helper_settle_p_and_g_view_cache_table h, d
+      WHERE h.tenant_id = :tenant AND h.business_unit = 'CFS' AND h.settlement_date = d.settlement_date
+      GROUP BY h.subportfolio HAVING count(*) BETWEEN 100 AND 2000
+      ORDER BY (h.subportfolio = 'RMS-DF-LIF-OIR') DESC, h.subportfolio LIMIT 1
+    )
+    SELECT (SELECT subportfolio FROM pick) AS subportfolio, count(*) AS view_rows,
+           count(*) FILTER (WHERE v.source_trade_id IS NULL) AS source_trade_id_null,
+           count(*) FILTER (WHERE v.mtm_usd IS NULL) AS mtm_usd_null,
+           count(*) FILTER (WHERE v.mtm_usd IS NULL AND v.mtm_nc IS NOT NULL AND v.nc_factor IS NOT NULL AND v.fx_nc_factor IS NOT NULL) AS mtm_usd_null_with_factors,
+           count(*) FILTER (WHERE v.mtm_usd IS NOT NULL AND v.mtm_nc IS NOT NULL AND v.nc_factor IS NOT NULL AND v.fx_nc_factor IS NOT NULL
+                              AND abs(v.mtm_usd - v.mtm_nc * v.nc_factor * v.fx_nc_factor) > 0.01 + 0.000000001 * abs(v.mtm_usd)) AS mtm_usd_not_equal_product
+    FROM opera.helper_settle_pricing_subportfoliovalues_view v, d
+    WHERE v.tenant_id = :tenant AND v.business_unit = 'CFS' AND v.settlement_date = d.settlement_date AND v.subportfolio = (SELECT subportfolio FROM pick)
+  ]]></sql>
+  <expect ref="snapshots" rows=">=1" reason="CFS has a published snapshot"/>
+  <expect expr="#size(#rows('snapshots').?[has_source_trade_id != row_count]) == 0" reason="every row of the latest published CFS snapshots has source_trade_id"/>
+  <expect expr="#size(#rows('snapshots').?[suffix_ok != row_count]) == 0" reason="trade_id is exactly source_trade_id plus the CFS suffix"/>
+  <expect expr="#size(#rows('snapshots').?[view_type == 'SETTLE_PRICING' and has_nc_factor == 0]) == 0" reason="the settle snapshot has stored nc_factor values"/>
+  <expect ref="consumer" column="view_rows" min="1" reason="the consumer view returns rows for the subportfolio"/>
+  <expect ref="consumer" column="source_trade_id_null" max="0" reason="the consumer view exposes source_trade_id (view v4 is applied)"/>
+  <expect ref="consumer" column="mtm_usd_null_with_factors" max="0" reason="mtm_usd is never NULL when mtm_nc, nc_factor and fx_nc_factor are present"/>
+  <expect ref="consumer" column="mtm_usd_not_equal_product" max="0" reason="mtm_usd equals mtm_nc times nc_factor times fx_nc_factor"/>
+  <compress id="bundle" file="recon-refresh-cfs-verify-uat.zip"><include ref="snapshots"/><include ref="consumer"/></compress>
+</rules>

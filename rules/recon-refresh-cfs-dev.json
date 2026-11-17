@@ -1,0 +1,89 @@
+{
+  "name": "recon-refresh-cfs-dev",
+  "db": "postgres-dev",
+  "backupSchema": "parity_work",
+  "ticket": "recon-snapshot-source-trade-id",
+  "description": "Rebuilds the latest published CFS recon snapshots (settle, actual, traders) with the v4 builders so source_trade_id and the stored factors are filled. Same run, same settlement date, pointer untouched; a snapshot whose rows already have source_trade_id is skipped, so a second run does nothing. Takes the same advisory lock as the app refresh. No backup table: the rows are derived data and the builder deletes and rebuilds them by run id. Risky by the tool's definition (a DO block), so --apply asks for the typed phrase. Settle takes about 10 to 15 minutes for CFS; delete the actual and traders steps to skip them. Run with --session statement_timeout=0 --session synchronous_commit=off --session work_mem=256MB --session maintenance_work_mem=1GB. Then it runs the verify rule.",
+  "steps": [
+    {
+      "id": "refresh-cfs-settle",
+      "action": "sql",
+      "sql": "DO $$\nDECLARE r record; v_rows bigint; v_count bigint; v_t timestamptz;\nBEGIN\n  PERFORM set_config('search_path', 'opera, public', true);\n  FOR r IN\n    SELECT p.business_unit, p.settlement_date, p.published_run_id, rr.resolved_settlement_date\n    FROM opera.recon_snapshot_pointer p\n    JOIN opera.recon_refresh_run rr ON rr.uuid = p.published_run_id\n    WHERE p.tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND p.business_unit = 'CFS' AND p.view_type = 'SETTLE_PRICING'\n      AND p.settlement_date = (SELECT max(p2.settlement_date) FROM opera.recon_snapshot_pointer p2\n                               WHERE p2.tenant_id = p.tenant_id AND p2.business_unit = p.business_unit AND p2.view_type = p.view_type)\n  LOOP\n    IF NOT EXISTS (SELECT 1 FROM opera.recon_settle_snapshot s WHERE s.run_id = r.published_run_id AND s.source_trade_id IS NULL) THEN\n      RAISE NOTICE 'CFS SETTLE_PRICING % already has source_trade_id on every row: skipped', r.settlement_date;\n      CONTINUE;\n    END IF;\n    IF NOT pg_try_advisory_xact_lock(hashtextextended('227cd5f5-4498-4dba-bda9-05b8edc41113' || '|CFS|SETTLE_PRICING|' || r.resolved_settlement_date::text, 0)) THEN\n      RAISE EXCEPTION 'the app is refreshing CFS SETTLE_PRICING for %: try again later', r.settlement_date;\n    END IF;\n    v_t := clock_timestamp();\n    v_rows := opera.recon_materialize_settle(r.published_run_id);\n    PERFORM opera.recon_postprocess_settle(r.published_run_id);\n    SELECT count(*) INTO v_count FROM opera.recon_settle_snapshot\n     WHERE run_id = r.published_run_id AND tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND business_unit = 'CFS' AND settlement_date = r.resolved_settlement_date;\n    IF v_rows IS DISTINCT FROM v_count THEN\n      RAISE EXCEPTION 'validation failed for CFS SETTLE_PRICING: materialised %, persisted %', v_rows, v_count;\n    END IF;\n    UPDATE opera.recon_refresh_run SET row_count = v_rows, updated_timestamp = now() WHERE uuid = r.published_run_id;\n    RAISE NOTICE 'CFS SETTLE_PRICING %: % rows in % s', r.settlement_date, v_rows, round(extract(epoch FROM clock_timestamp() - v_t)::numeric, 1);\n  END LOOP;\nEND $$",
+      "preconditions": [
+        {
+          "sql": "SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'opera' AND p.proname IN ('recon_materialize_settle','recon_materialize_actual','recon_materialize_traders') AND position('source_trade_id' IN p.prosrc) > 0",
+          "expect": "3",
+          "reason": "the three v4 builders are deployed"
+        },
+        {
+          "sql": "SELECT count(*) FROM information_schema.columns WHERE table_schema = 'opera' AND table_name = 'helper_settle_p_and_g_view_cache_table' AND column_name IN ('nc_factor','fx_nc_factor','invenio_product_code','product_name','exchange_name','source_trade_id')",
+          "expect": "6",
+          "reason": "the published settle view exposes the new columns"
+        },
+        {
+          "sql": "SELECT count(*) FROM opera.recon_snapshot_pointer WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND business_unit = 'CFS' AND view_type = 'SETTLE_PRICING'",
+          "expect": ">=1",
+          "reason": "CFS has a published SETTLE_PRICING snapshot to rebuild"
+        }
+      ],
+      "expect": {
+        "affected": "0"
+      }
+    },
+    {
+      "id": "refresh-cfs-actual",
+      "action": "sql",
+      "sql": "DO $$\nDECLARE r record; v_rows bigint; v_count bigint; v_t timestamptz;\nBEGIN\n  PERFORM set_config('search_path', 'opera, public', true);\n  FOR r IN\n    SELECT p.business_unit, p.settlement_date, p.published_run_id, rr.resolved_settlement_date\n    FROM opera.recon_snapshot_pointer p\n    JOIN opera.recon_refresh_run rr ON rr.uuid = p.published_run_id\n    WHERE p.tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND p.business_unit = 'CFS' AND p.view_type = 'SETTLE_ACTUAL_PRICING'\n      AND p.settlement_date = (SELECT max(p2.settlement_date) FROM opera.recon_snapshot_pointer p2\n                               WHERE p2.tenant_id = p.tenant_id AND p2.business_unit = p.business_unit AND p2.view_type = p.view_type)\n  LOOP\n    IF NOT EXISTS (SELECT 1 FROM opera.recon_actual_snapshot s WHERE s.run_id = r.published_run_id AND s.source_trade_id IS NULL) THEN\n      RAISE NOTICE 'CFS SETTLE_ACTUAL_PRICING % already has source_trade_id on every row: skipped', r.settlement_date;\n      CONTINUE;\n    END IF;\n    IF NOT pg_try_advisory_xact_lock(hashtextextended('227cd5f5-4498-4dba-bda9-05b8edc41113' || '|CFS|SETTLE_ACTUAL_PRICING|' || r.resolved_settlement_date::text, 0)) THEN\n      RAISE EXCEPTION 'the app is refreshing CFS SETTLE_ACTUAL_PRICING for %: try again later', r.settlement_date;\n    END IF;\n    v_t := clock_timestamp();\n    v_rows := opera.recon_materialize_actual(r.published_run_id);\n    PERFORM opera.recon_postprocess_actual(r.published_run_id);\n    SELECT count(*) INTO v_count FROM opera.recon_actual_snapshot\n     WHERE run_id = r.published_run_id AND tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND business_unit = 'CFS' AND settlement_date = r.resolved_settlement_date;\n    IF v_rows IS DISTINCT FROM v_count THEN\n      RAISE EXCEPTION 'validation failed for CFS SETTLE_ACTUAL_PRICING: materialised %, persisted %', v_rows, v_count;\n    END IF;\n    UPDATE opera.recon_refresh_run SET row_count = v_rows, updated_timestamp = now() WHERE uuid = r.published_run_id;\n    RAISE NOTICE 'CFS SETTLE_ACTUAL_PRICING %: % rows in % s', r.settlement_date, v_rows, round(extract(epoch FROM clock_timestamp() - v_t)::numeric, 1);\n  END LOOP;\nEND $$",
+      "preconditions": [
+        {
+          "sql": "SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'opera' AND p.proname IN ('recon_materialize_settle','recon_materialize_actual','recon_materialize_traders') AND position('source_trade_id' IN p.prosrc) > 0",
+          "expect": "3",
+          "reason": "the three v4 builders are deployed"
+        },
+        {
+          "sql": "SELECT count(*) FROM information_schema.columns WHERE table_schema = 'opera' AND table_name = 'helper_settle_p_and_g_view_cache_table' AND column_name IN ('nc_factor','fx_nc_factor','invenio_product_code','product_name','exchange_name','source_trade_id')",
+          "expect": "6",
+          "reason": "the published settle view exposes the new columns"
+        },
+        {
+          "sql": "SELECT count(*) FROM opera.recon_snapshot_pointer WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND business_unit = 'CFS' AND view_type = 'SETTLE_ACTUAL_PRICING'",
+          "expect": ">=1",
+          "reason": "CFS has a published SETTLE_ACTUAL_PRICING snapshot to rebuild"
+        }
+      ],
+      "expect": {
+        "affected": "0"
+      }
+    },
+    {
+      "id": "refresh-cfs-traders",
+      "action": "sql",
+      "sql": "DO $$\nDECLARE r record; v_rows bigint; v_count bigint; v_t timestamptz;\nBEGIN\n  PERFORM set_config('search_path', 'opera, public', true);\n  FOR r IN\n    SELECT p.business_unit, p.settlement_date, p.published_run_id, rr.resolved_settlement_date\n    FROM opera.recon_snapshot_pointer p\n    JOIN opera.recon_refresh_run rr ON rr.uuid = p.published_run_id\n    WHERE p.tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND p.business_unit = 'CFS' AND p.view_type = 'TRADERS_PRICING'\n      AND p.settlement_date = (SELECT max(p2.settlement_date) FROM opera.recon_snapshot_pointer p2\n                               WHERE p2.tenant_id = p.tenant_id AND p2.business_unit = p.business_unit AND p2.view_type = p.view_type)\n  LOOP\n    IF NOT EXISTS (SELECT 1 FROM opera.recon_traders_snapshot s WHERE s.run_id = r.published_run_id AND s.source_trade_id IS NULL) THEN\n      RAISE NOTICE 'CFS TRADERS_PRICING % already has source_trade_id on every row: skipped', r.settlement_date;\n      CONTINUE;\n    END IF;\n    IF NOT pg_try_advisory_xact_lock(hashtextextended('227cd5f5-4498-4dba-bda9-05b8edc41113' || '|CFS|TRADERS_PRICING|' || r.resolved_settlement_date::text, 0)) THEN\n      RAISE EXCEPTION 'the app is refreshing CFS TRADERS_PRICING for %: try again later', r.settlement_date;\n    END IF;\n    v_t := clock_timestamp();\n    v_rows := opera.recon_materialize_traders(r.published_run_id);\n    PERFORM opera.recon_postprocess_traders(r.published_run_id);\n    SELECT count(*) INTO v_count FROM opera.recon_traders_snapshot\n     WHERE run_id = r.published_run_id AND tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND business_unit = 'CFS' AND settlement_date = r.resolved_settlement_date;\n    IF v_rows IS DISTINCT FROM v_count THEN\n      RAISE EXCEPTION 'validation failed for CFS TRADERS_PRICING: materialised %, persisted %', v_rows, v_count;\n    END IF;\n    UPDATE opera.recon_refresh_run SET row_count = v_rows, updated_timestamp = now() WHERE uuid = r.published_run_id;\n    RAISE NOTICE 'CFS TRADERS_PRICING %: % rows in % s', r.settlement_date, v_rows, round(extract(epoch FROM clock_timestamp() - v_t)::numeric, 1);\n  END LOOP;\nEND $$",
+      "preconditions": [
+        {
+          "sql": "SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'opera' AND p.proname IN ('recon_materialize_settle','recon_materialize_actual','recon_materialize_traders') AND position('source_trade_id' IN p.prosrc) > 0",
+          "expect": "3",
+          "reason": "the three v4 builders are deployed"
+        },
+        {
+          "sql": "SELECT count(*) FROM information_schema.columns WHERE table_schema = 'opera' AND table_name = 'helper_settle_p_and_g_view_cache_table' AND column_name IN ('nc_factor','fx_nc_factor','invenio_product_code','product_name','exchange_name','source_trade_id')",
+          "expect": "6",
+          "reason": "the published settle view exposes the new columns"
+        },
+        {
+          "sql": "SELECT count(*) FROM opera.recon_snapshot_pointer WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND business_unit = 'CFS' AND view_type = 'TRADERS_PRICING'",
+          "expect": ">=1",
+          "reason": "CFS has a published TRADERS_PRICING snapshot to rebuild"
+        }
+      ],
+      "expect": {
+        "affected": "0"
+      }
+    }
+  ],
+  "verify": [
+    {
+      "rule": "recon-refresh-cfs-verify-dev.xml"
+    }
+  ]
+}
