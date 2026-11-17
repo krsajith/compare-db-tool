@@ -19,19 +19,18 @@
     The stage 6 numbers must equal stage 7. If they do, the count is fully explained by the rules and nothing is lost.
 
     Value date: taken from the refresh run behind the published snapshot, so it is the date the snapshot was really built with.
-    Parameters: tenant, bu, settlementDate (the snapshot date, 2026-10-01 on dev). Run with the target-env flag.
+    Parameters: tenant, bu. The settlement date is the latest published settle snapshot of the BU on the environment, found in SQL, so the same rule runs on dev and UAT. Run with the target-env flag.
   -->
   <parameters>
     <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
     <param name="bu" type="string" value="CFS"/>
-    <param name="settlementDate" type="date" value="2026-10-01"/>
   </parameters>
 
   <sql id="run-info" db="target" timeout="60" export="full"><![CDATA[
     SELECT p.business_unit, p.settlement_date, r.resolved_value_date, r.status, r.row_count, r.requested_at, p.published_at
     FROM opera.recon_snapshot_pointer p
     JOIN opera.recon_refresh_run r ON r.uuid = p.published_run_id
-    WHERE p.tenant_id = :tenant AND p.business_unit = :bu AND p.view_type = 'SETTLE_PRICING' AND p.settlement_date = :settlementDate
+    WHERE p.tenant_id = :tenant AND p.business_unit = :bu AND p.view_type = 'SETTLE_PRICING' AND p.settlement_date = (SELECT max(p0.settlement_date) FROM opera.recon_snapshot_pointer p0 WHERE p0.tenant_id = :tenant AND p0.business_unit = :bu AND p0.view_type = 'SETTLE_PRICING')
   ]]></sql>
 
   <sql id="stage-counts" db="target" timeout="900" export="full"><![CDATA[
@@ -40,7 +39,7 @@
       FROM opera.recon_snapshot_pointer p
       JOIN opera.recon_refresh_run r ON r.uuid = p.published_run_id
       WHERE p.tenant_id = :tenant AND p.business_unit = :bu AND p.view_type = 'SETTLE_PRICING'
-        AND p.settlement_date = :settlementDate
+        AND p.settlement_date = (SELECT max(p0.settlement_date) FROM opera.recon_snapshot_pointer p0 WHERE p0.tenant_id = :tenant AND p0.business_unit = :bu AND p0.view_type = 'SETTLE_PRICING')
     ),
     base AS (
       SELECT c.trade_id::text AS trade_id, c.security_id, c.transaction_date, c.netting_status, c.netting_date,
@@ -80,7 +79,7 @@
                            THEN left(x.trade_id::text, length(x.trade_id::text) - length(CAST(:bu AS text)) - 1)
                            ELSE x.trade_id::text END AS trade_id
       FROM opera.helper_settle_p_and_g_view_cache_table x
-      WHERE x.tenant_id = :tenant AND x.business_unit = :bu AND x.settlement_date = :settlementDate
+      WHERE x.tenant_id = :tenant AND x.business_unit = :bu AND x.settlement_date = (SELECT max(p0.settlement_date) FROM opera.recon_snapshot_pointer p0 WHERE p0.tenant_id = :tenant AND p0.business_unit = :bu AND p0.view_type = 'SETTLE_PRICING')
     ),
     t AS (
       SELECT b.trade_id, b.trade_kind, b.netting_status,
@@ -124,7 +123,7 @@
       FROM opera.recon_snapshot_pointer p
       JOIN opera.recon_refresh_run r ON r.uuid = p.published_run_id
       WHERE p.tenant_id = :tenant AND p.business_unit = :bu AND p.view_type = 'SETTLE_PRICING'
-        AND p.settlement_date = :settlementDate
+        AND p.settlement_date = (SELECT max(p0.settlement_date) FROM opera.recon_snapshot_pointer p0 WHERE p0.tenant_id = :tenant AND p0.business_unit = :bu AND p0.view_type = 'SETTLE_PRICING')
     ),
     base AS (
       SELECT c.trade_id::text AS trade_id, c.security_id, c.transaction_date, c.netting_status, c.netting_date,
@@ -164,7 +163,7 @@
                            THEN left(x.trade_id::text, length(x.trade_id::text) - length(CAST(:bu AS text)) - 1)
                            ELSE x.trade_id::text END AS trade_id
       FROM opera.helper_settle_p_and_g_view_cache_table x
-      WHERE x.tenant_id = :tenant AND x.business_unit = :bu AND x.settlement_date = :settlementDate
+      WHERE x.tenant_id = :tenant AND x.business_unit = :bu AND x.settlement_date = (SELECT max(p0.settlement_date) FROM opera.recon_snapshot_pointer p0 WHERE p0.tenant_id = :tenant AND p0.business_unit = :bu AND p0.view_type = 'SETTLE_PRICING')
     ),
     t AS (
       SELECT b.trade_id, b.trade_kind, b.netting_status,
@@ -216,7 +215,7 @@
       FROM opera.recon_snapshot_pointer p
       JOIN opera.recon_refresh_run r ON r.uuid = p.published_run_id
       WHERE p.tenant_id = :tenant AND p.business_unit = :bu AND p.view_type = 'SETTLE_PRICING'
-        AND p.settlement_date = :settlementDate
+        AND p.settlement_date = (SELECT max(p0.settlement_date) FROM opera.recon_snapshot_pointer p0 WHERE p0.tenant_id = :tenant AND p0.business_unit = :bu AND p0.view_type = 'SETTLE_PRICING')
     ),
     base AS (
       SELECT c.trade_id::text AS trade_id, c.security_id, c.transaction_date, c.netting_status, c.netting_date,
@@ -236,7 +235,7 @@
       FROM opera.recon_snapshot_pointer p
       JOIN opera.recon_refresh_run r ON r.uuid = p.published_run_id
       WHERE p.tenant_id = :tenant AND p.business_unit = :bu AND p.view_type = 'SETTLE_PRICING'
-        AND p.settlement_date = :settlementDate
+        AND p.settlement_date = (SELECT max(p0.settlement_date) FROM opera.recon_snapshot_pointer p0 WHERE p0.tenant_id = :tenant AND p0.business_unit = :bu AND p0.view_type = 'SETTLE_PRICING')
     ),
     base AS (
       SELECT c.trade_id::text AS trade_id, c.security_id, c.transaction_date, c.netting_status, c.netting_date,
@@ -262,7 +261,7 @@
       FROM opera.recon_snapshot_pointer p
       JOIN opera.recon_refresh_run r ON r.uuid = p.published_run_id
       WHERE p.tenant_id = :tenant AND p.business_unit = :bu AND p.view_type = 'SETTLE_PRICING'
-        AND p.settlement_date = :settlementDate
+        AND p.settlement_date = (SELECT max(p0.settlement_date) FROM opera.recon_snapshot_pointer p0 WHERE p0.tenant_id = :tenant AND p0.business_unit = :bu AND p0.view_type = 'SETTLE_PRICING')
     ),
     base AS (
       SELECT c.trade_id::text AS trade_id, c.security_id, c.transaction_date, c.netting_status, c.netting_date,
@@ -289,7 +288,7 @@
       FROM opera.recon_snapshot_pointer p
       JOIN opera.recon_refresh_run r ON r.uuid = p.published_run_id
       WHERE p.tenant_id = :tenant AND p.business_unit = :bu AND p.view_type = 'SETTLE_PRICING'
-        AND p.settlement_date = :settlementDate
+        AND p.settlement_date = (SELECT max(p0.settlement_date) FROM opera.recon_snapshot_pointer p0 WHERE p0.tenant_id = :tenant AND p0.business_unit = :bu AND p0.view_type = 'SETTLE_PRICING')
     ),
     base AS (
       SELECT c.trade_id::text AS trade_id, c.security_id, c.transaction_date, c.netting_status, c.netting_date,
@@ -324,7 +323,7 @@
       FROM opera.recon_snapshot_pointer p
       JOIN opera.recon_refresh_run r ON r.uuid = p.published_run_id
       WHERE p.tenant_id = :tenant AND p.business_unit = :bu AND p.view_type = 'SETTLE_PRICING'
-        AND p.settlement_date = :settlementDate
+        AND p.settlement_date = (SELECT max(p0.settlement_date) FROM opera.recon_snapshot_pointer p0 WHERE p0.tenant_id = :tenant AND p0.business_unit = :bu AND p0.view_type = 'SETTLE_PRICING')
     ),
     base AS (
       SELECT c.trade_id::text AS trade_id, c.security_id, c.transaction_date, c.netting_status, c.netting_date,
@@ -387,7 +386,7 @@
            CASE WHEN x.trade_id::text LIKE 'NET-%' THEN 'NET-' WHEN x.trade_id::text LIKE 'DUP-%' THEN 'DUP-' ELSE 'normal' END AS trade_kind,
            x.netting_status, x.portfolio
     FROM opera.helper_settle_p_and_g_view_cache_table x
-    WHERE x.tenant_id = :tenant AND x.business_unit = :bu AND x.settlement_date = :settlementDate
+    WHERE x.tenant_id = :tenant AND x.business_unit = :bu AND x.settlement_date = (SELECT max(p0.settlement_date) FROM opera.recon_snapshot_pointer p0 WHERE p0.tenant_id = :tenant AND p0.business_unit = :bu AND p0.view_type = 'SETTLE_PRICING')
   ]]></sql>
 
   <funnel id="trades" key="trade_id" mode="chain">

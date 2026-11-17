@@ -18,12 +18,11 @@
     This rule measures each of those joins on the published settle snapshot: how many snapshot trades the join finds as written
     (matched_as_the_views_join) and how many it would find if the suffix were removed (matched_after_suffix_removed).
     When the second number is larger the consumer view silently loses its joined columns for those trades.
-    Read only. Parameters: tenant, bu, settlementDate. Run with the target-env flag.
+    Read only. Parameters: tenant, bu. The settlement date is the latest published settle snapshot of the BU, found in SQL. Run with the target-env flag.
   -->
   <parameters>
     <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
     <param name="bu" type="string" value="CFS"/>
-    <param name="settlementDate" type="date" value="2026-10-01"/>
   </parameters>
 
   <sql id="join-match" db="target" timeout="900" export="full"><![CDATA[
@@ -33,7 +32,7 @@
                   THEN left(x.trade_id::text, length(x.trade_id::text) - length(CAST(:bu AS text)) - 1)
                   ELSE x.trade_id::text END AS stripped_id
       FROM opera.helper_settle_p_and_g_view_cache_table x
-      WHERE x.tenant_id = :tenant AND x.business_unit = :bu AND x.settlement_date = :settlementDate
+      WHERE x.tenant_id = :tenant AND x.business_unit = :bu AND x.settlement_date = (SELECT max(p0.settlement_date) FROM opera.recon_snapshot_pointer p0 WHERE p0.tenant_id = :tenant AND p0.business_unit = :bu AND p0.view_type = 'SETTLE_PRICING')
     ),
     c0 AS (
       SELECT DISTINCT x.trade_id::text AS trade_id FROM opera.fx_nc_factor_view x

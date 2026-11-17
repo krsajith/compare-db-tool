@@ -17,13 +17,12 @@
                          (pricing view by security, fx view by source_trade_id, same formulas as v3 for mtm_nc and mtm_usd)
       parity             consumer view versus reference, trade by trade, inside the database: columns and amounts must be equal
     Shapes other than CFS and ROV (shape B) are not covered by the reference formulas; run the first three checks with another bu for them.
-    Parameters: tenant, bu, settlementDate, subportfolio (the 312 trade subportfolio of the report, give the large one for a bigger test).
+    Parameters: tenant, bu, subportfolio (preferred subportfolio, default RMS-DF-LIF-OIR). The settlement date is the latest published settle snapshot of the BU and the subportfolio is the preferred one if it has 100 to 2000 rows, else the first one that has, both found in SQL, so the rule runs unchanged on dev and UAT.
     Run with the target-env flag.
   -->
   <parameters>
     <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
     <param name="bu" type="string" value="CFS"/>
-    <param name="settlementDate" type="date" value="2026-10-01"/>
     <param name="subportfolio" type="string" value="RMS-DF-LIF-OIR"/>
   </parameters>
 
@@ -31,14 +30,14 @@
     SELECT p.business_unit, p.settlement_date, r.resolved_value_date, r.status, r.row_count, r.requested_at, p.published_at
     FROM opera.recon_snapshot_pointer p
     JOIN opera.recon_refresh_run r ON r.uuid = p.published_run_id
-    WHERE p.tenant_id = :tenant AND p.business_unit = :bu AND p.view_type = 'SETTLE_PRICING' AND p.settlement_date = :settlementDate
+    WHERE p.tenant_id = :tenant AND p.business_unit = :bu AND p.view_type = 'SETTLE_PRICING' AND p.settlement_date = (SELECT max(p0.settlement_date) FROM opera.recon_snapshot_pointer p0 WHERE p0.tenant_id = :tenant AND p0.business_unit = :bu AND p0.view_type = 'SETTLE_PRICING')
   ]]></sql>
 
   <sql id="snapshot-evidence" db="target" timeout="600" export="full"><![CDATA[
     WITH s AS (
       SELECT h.trade_id, h.source_trade_id, h.nc_factor, h.fx_nc_factor, h.invenio_product_code, h.product_name, h.exchange_name
       FROM opera.helper_settle_p_and_g_view_cache_table h
-      WHERE h.tenant_id = :tenant AND h.business_unit = :bu AND h.settlement_date = :settlementDate
+      WHERE h.tenant_id = :tenant AND h.business_unit = :bu AND h.settlement_date = (SELECT max(p0.settlement_date) FROM opera.recon_snapshot_pointer p0 WHERE p0.tenant_id = :tenant AND p0.business_unit = :bu AND p0.view_type = 'SETTLE_PRICING')
     ),
     c AS (
       SELECT DISTINCT trade_id::text AS trade_id FROM opera.cloned_deal_ticket_table
@@ -60,7 +59,7 @@
            count(*) FILTER (WHERE fx_nc_factor IS NULL) AS fx_nc_factor_null,
            sum(mtm_nc) AS sum_mtm_nc, sum(mtm_usd) AS sum_mtm_usd
     FROM opera.helper_settle_pricing_subportfoliovalues_view
-    WHERE tenant_id = :tenant AND business_unit = :bu AND settlement_date = :settlementDate AND subportfolio = :subportfolio
+    WHERE tenant_id = :tenant AND business_unit = :bu AND settlement_date = (SELECT max(p0.settlement_date) FROM opera.recon_snapshot_pointer p0 WHERE p0.tenant_id = :tenant AND p0.business_unit = :bu AND p0.view_type = 'SETTLE_PRICING') AND subportfolio = (SELECT pk.subportfolio FROM (SELECT h2.subportfolio FROM opera.helper_settle_p_and_g_view_cache_table h2 WHERE h2.tenant_id = :tenant AND h2.business_unit = :bu AND h2.settlement_date = (SELECT max(p0.settlement_date) FROM opera.recon_snapshot_pointer p0 WHERE p0.tenant_id = :tenant AND p0.business_unit = :bu AND p0.view_type = 'SETTLE_PRICING') GROUP BY h2.subportfolio HAVING count(*) BETWEEN 100 AND 2000 ORDER BY (h2.subportfolio = :subportfolio) DESC, h2.subportfolio LIMIT 1) pk)
   ]]></sql>
 
   <sql id="v4-rows" db="target" timeout="900" export="none"><![CDATA[
@@ -68,7 +67,7 @@
            v.lot_mult1::numeric AS lot_mult1, v.curr_mult1::numeric AS curr_mult1, v.mult_factor::numeric AS mult_factor,
            v.nc_factor::numeric AS nc_factor, v.fx_nc_factor::numeric AS fx_nc_factor, v.mtm_nc::numeric AS mtm_nc, v.mtm_usd::numeric AS mtm_usd
     FROM opera.helper_settle_pricing_subportfoliovalues_view v
-    WHERE v.tenant_id = :tenant AND v.business_unit = :bu AND v.settlement_date = :settlementDate AND v.subportfolio = :subportfolio
+    WHERE v.tenant_id = :tenant AND v.business_unit = :bu AND v.settlement_date = (SELECT max(p0.settlement_date) FROM opera.recon_snapshot_pointer p0 WHERE p0.tenant_id = :tenant AND p0.business_unit = :bu AND p0.view_type = 'SETTLE_PRICING') AND v.subportfolio = (SELECT pk.subportfolio FROM (SELECT h2.subportfolio FROM opera.helper_settle_p_and_g_view_cache_table h2 WHERE h2.tenant_id = :tenant AND h2.business_unit = :bu AND h2.settlement_date = (SELECT max(p0.settlement_date) FROM opera.recon_snapshot_pointer p0 WHERE p0.tenant_id = :tenant AND p0.business_unit = :bu AND p0.view_type = 'SETTLE_PRICING') GROUP BY h2.subportfolio HAVING count(*) BETWEEN 100 AND 2000 ORDER BY (h2.subportfolio = :subportfolio) DESC, h2.subportfolio LIMIT 1) pk)
   ]]></sql>
 
   <sql id="reference-rows" db="target" timeout="900" export="none"><![CDATA[
@@ -83,7 +82,7 @@
            ON sp.tenant_id = h.tenant_id AND sp.business_unit = h.business_unit AND sp.security_id = h.security_id
     LEFT JOIN opera.fx_nc_factor_view fx
            ON fx.tenant_id = h.tenant_id AND fx.business_unit = h.business_unit AND fx.trade_id = h.source_trade_id
-    WHERE h.tenant_id = :tenant AND h.business_unit = :bu AND h.settlement_date = :settlementDate AND h.subportfolio = :subportfolio
+    WHERE h.tenant_id = :tenant AND h.business_unit = :bu AND h.settlement_date = (SELECT max(p0.settlement_date) FROM opera.recon_snapshot_pointer p0 WHERE p0.tenant_id = :tenant AND p0.business_unit = :bu AND p0.view_type = 'SETTLE_PRICING') AND h.subportfolio = (SELECT pk.subportfolio FROM (SELECT h2.subportfolio FROM opera.helper_settle_p_and_g_view_cache_table h2 WHERE h2.tenant_id = :tenant AND h2.business_unit = :bu AND h2.settlement_date = (SELECT max(p0.settlement_date) FROM opera.recon_snapshot_pointer p0 WHERE p0.tenant_id = :tenant AND p0.business_unit = :bu AND p0.view_type = 'SETTLE_PRICING') GROUP BY h2.subportfolio HAVING count(*) BETWEEN 100 AND 2000 ORDER BY (h2.subportfolio = :subportfolio) DESC, h2.subportfolio LIMIT 1) pk)
   ]]></sql>
 
   <compare id="parity" source="v4-rows" target="reference-rows" engine="db" export="sample">
