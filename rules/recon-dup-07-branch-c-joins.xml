@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rules name="recon-dup-07-branch-c-joins">
+  <!--
+    Question: branch C of helper_settle_pricing_subportfoliovalues_view (orm osg rmc) does not finish in 180 seconds for 36 snapshot rows
+    (recon-dup-06). Its plan builds two right hand views whole: helper_settle_pricing_and_traders_pricing_view (about 300k rows from
+    cloned_security_info_table) and fx_nc_factor_view (about 189k rows from cloned_deal_ticket_table). Which one carries the time?
+
+    Each probe is the branch C snapshot rows left joined to ONE object, count(*), tenant only, timed with EXPLAIN ANALYZE and a hard
+    timeout. A probe that completes gives the real time of every plan node; one that hits the timeout is the culprit.
+      join-a    actual snapshot (published)                   expected cheap: two index scans
+      join-sp   helper_settle_pricing_and_traders_pricing_view on security_id
+      join-fx   fx_nc_factor_view on source_trade_id
+    Read only, rolled back. Parameter: tenant. Run with the target-env flag and the export flag set to none.
+  -->
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+  </parameters>
+
+  <explain id="join-a" db="target" timeout="150"><![CDATA[
+    SELECT count(*)
+    FROM opera.helper_settle_p_and_g_view_cache_table h
+    LEFT JOIN opera.helper_actual_settle_p_and_g_view_cache_table a
+           ON a.tenant_id = h.tenant_id AND a.business_unit = h.business_unit AND a.trade_id = h.trade_id
+    WHERE h.tenant_id = :tenant AND h.business_unit IN ('orm', 'osg', 'rmc', 'ORM', 'OSG', 'RMC')
+  ]]></explain>
+
+  <explain id="join-sp" db="target" timeout="150"><![CDATA[
+    SELECT count(*)
+    FROM opera.helper_settle_p_and_g_view_cache_table h
+    LEFT JOIN opera.helper_settle_pricing_and_traders_pricing_view sp
+           ON sp.tenant_id = h.tenant_id AND sp.business_unit = h.business_unit AND sp.security_id = h.security_id
+    WHERE h.tenant_id = :tenant AND h.business_unit IN ('orm', 'osg', 'rmc', 'ORM', 'OSG', 'RMC')
+  ]]></explain>
+
+  <explain id="join-fx" db="target" timeout="150"><![CDATA[
+    SELECT count(*)
+    FROM opera.helper_settle_p_and_g_view_cache_table h
+    LEFT JOIN opera.fx_nc_factor_view fx
+           ON fx.tenant_id = h.tenant_id AND fx.business_unit = h.business_unit AND fx.trade_id = h.source_trade_id
+    WHERE h.tenant_id = :tenant AND h.business_unit IN ('orm', 'osg', 'rmc', 'ORM', 'OSG', 'RMC')
+  ]]></explain>
+
+  <expect ref="join-a" max-ms="5000" reason="the actual snapshot join is two index lookups"/>
+  <expect ref="join-sp" max-ms="20000" reason="the pricing and traders view join for 36 rows should take seconds"/>
+  <expect ref="join-fx" max-ms="20000" reason="the fx_nc_factor_view join for 36 rows should take seconds"/>
+
+  <compress id="bundle" file="recon-dup-07-branch-c-joins.zip">
+    <include ref="join-a"/><include ref="join-sp"/><include ref="join-fx"/>
+  </compress>
+</rules>
