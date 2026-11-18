@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rules name="recon-dup-03-view-explain">
+  <!--
+    Question: where does helper_settle_pricing_subportfoliovalues_view spend its time for one business unit and one settlement date?
+
+    Runs EXPLAIN (ANALYZE, BUFFERS) of the view read the way a report reads it: tenant, business unit and one settlement date
+    (the latest published one, found in SQL). It lists the slowest plan nodes, sequential scans and row estimates that are far off.
+      view-plan      the view, count(*) for one BU and date
+      published-dates  how many settlement dates are published per view type for the BU. The view shows EVERY published date, so a
+                     report that does not filter on settlement_date reads all of them. Many dates multiply the work.
+    The plan is built for the values bound here, so read it together with recon-dup-02 (fan out) and recon-dup-01 (duplicates).
+    Read only. Parameters: tenant, bu. Run with the target-env flag. Use a modest BU first.
+  -->
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+    <param name="bu" type="string" value="CFS"/>
+  </parameters>
+
+  <sql id="published-dates" db="target" timeout="120" export="full"><![CDATA[
+    SELECT p.view_type, count(*) AS published_dates, min(p.settlement_date) AS first_date, max(p.settlement_date) AS last_date
+    FROM opera.recon_snapshot_pointer p
+    WHERE p.tenant_id = :tenant AND p.business_unit = :bu
+    GROUP BY p.view_type
+    ORDER BY p.view_type
+  ]]></sql>
+
+  <explain id="view-plan" db="target" timeout="900"><![CDATA[
+    SELECT count(*) FROM opera.helper_settle_pricing_subportfoliovalues_view v
+    WHERE v.tenant_id = :tenant AND v.business_unit = :bu
+      AND v.settlement_date = (SELECT max(p0.settlement_date) FROM opera.recon_snapshot_pointer p0
+                                WHERE p0.tenant_id = :tenant AND p0.business_unit = :bu AND p0.view_type = 'SETTLE_PRICING')
+  ]]></explain>
+
+  <expect ref="published-dates" rows="&gt;=1" reason="the BU has published pointers"/>
+  <expect ref="view-plan" max-ms="30000" reason="one BU and one date should read in well under 30 seconds"/>
+  <expect ref="view-plan" no-seq-scan="recon_settle_snapshot, recon_actual_snapshot, recon_snapshot_pointer, security_settlement_value_table" reason="the snapshot, pointer and price tables must be read through their indexes"/>
+  <expect ref="view-plan" max-estimate-error="100" reason="the planner estimates must be close, otherwise it picks nested loops"/>
+
+  <compress id="bundle" file="recon-dup-03-view-explain.zip">
+    <include ref="published-dates"/><include ref="view-plan"/>
+  </compress>
+</rules>

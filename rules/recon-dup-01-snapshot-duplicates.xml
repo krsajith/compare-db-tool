@@ -1,0 +1,160 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rules name="recon-dup-01-snapshot-duplicates">
+  <!--
+    Question: does recon_settle_snapshot or recon_actual_snapshot hold duplicate rows, and did a recent changeset or refresh insert them?
+
+    Why it matters: helper_settle_pricing_subportfoliovalues_view reads the published run of every BU through
+    recon_snapshot_pointer. Shape C (orm osg rmc) left joins the actual snapshot on trade_id, so a duplicate trade in the actual
+    snapshot multiplies the view rows. A duplicate in the settle snapshot shows directly as a duplicate output row.
+
+    One run, all BUs, read only, tenant first in every filter so the tenant leading indexes are used. Run with the target-env flag.
+      settle-published   per BU, latest published SETTLE_PRICING run: rows, distinct trade_id, distinct wide key
+                         (trade, security, subportfolio, portfolio, value date, parent, derivative type, instrument class),
+                         extra rows, and rows beyond the row_count the run recorded
+      actual-published   the same for the latest published SETTLE_ACTUAL_PRICING run
+      runs               recent refresh runs of both types: rows really in the snapshot against the row_count the run recorded,
+                         and whether the run is the published one. Rows beyond row_count, or a second run for the same BU and date
+                         with rows, point to an insert that came after the refresh finished (a changeset, a manual run, a second refresh)
+      dup-settle-sample, dup-actual-sample
+                         only when the first two queries found duplicates: the 30 worst duplicated keys with the number of distinct
+                         created timestamps and users. One timestamp = the builder produced the duplicates in one pass (join fan out
+                         inside recon_materialize_*). Several timestamps = the same rows were inserted more than once.
+    Parameters: tenant, since (date, default 10 days back).
+  -->
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+    <param name="since" type="date" expr="#minusDays(#today(), 10)"/>
+  </parameters>
+
+  <sql id="settle-published" db="target" timeout="900" export="full"><![CDATA[
+    WITH lp AS (
+      SELECT p.business_unit, p.settlement_date, p.published_run_id, p.published_at
+      FROM opera.recon_snapshot_pointer p
+      WHERE p.tenant_id = :tenant AND p.view_type = 'SETTLE_PRICING'
+        AND p.settlement_date = (SELECT max(p2.settlement_date) FROM opera.recon_snapshot_pointer p2
+                                  WHERE p2.tenant_id = p.tenant_id AND p2.business_unit = p.business_unit AND p2.view_type = p.view_type)
+    )
+    SELECT lp.business_unit, lp.settlement_date, lp.published_at, r.status AS run_status, r.row_count AS run_row_count,
+           x.rows_in_run, x.distinct_trade_id, x.distinct_wide_key,
+           x.rows_in_run - x.distinct_wide_key AS extra_rows_wide_key,
+           x.rows_in_run - x.distinct_trade_id AS extra_rows_trade_id,
+           x.rows_in_run - COALESCE(r.row_count, 0) AS rows_beyond_run_count
+    FROM lp
+    LEFT JOIN opera.recon_refresh_run r ON r.uuid = lp.published_run_id
+    CROSS JOIN LATERAL (
+      SELECT count(*) AS rows_in_run,
+             count(DISTINCT s.trade_id) AS distinct_trade_id,
+             count(DISTINCT md5(concat_ws('|', s.trade_id, s.security_id, s.subportfolio, s.portfolio, s.value_date, s.parent_trade_id, s.derivative_type, s.instrument_class))) AS distinct_wide_key
+      FROM opera.recon_settle_snapshot s
+      WHERE s.tenant_id = :tenant AND s.business_unit = lp.business_unit AND s.settlement_date = lp.settlement_date AND s.run_id = lp.published_run_id
+    ) x
+    ORDER BY extra_rows_wide_key DESC, lp.business_unit
+  ]]></sql>
+
+  <sql id="actual-published" db="target" timeout="900" export="full"><![CDATA[
+    WITH lp AS (
+      SELECT p.business_unit, p.settlement_date, p.published_run_id, p.published_at
+      FROM opera.recon_snapshot_pointer p
+      WHERE p.tenant_id = :tenant AND p.view_type = 'SETTLE_ACTUAL_PRICING'
+        AND p.settlement_date = (SELECT max(p2.settlement_date) FROM opera.recon_snapshot_pointer p2
+                                  WHERE p2.tenant_id = p.tenant_id AND p2.business_unit = p.business_unit AND p2.view_type = p.view_type)
+    )
+    SELECT lp.business_unit, lp.settlement_date, lp.published_at, r.status AS run_status, r.row_count AS run_row_count,
+           x.rows_in_run, x.distinct_trade_id, x.distinct_wide_key,
+           x.rows_in_run - x.distinct_wide_key AS extra_rows_wide_key,
+           x.rows_in_run - x.distinct_trade_id AS extra_rows_trade_id,
+           x.rows_in_run - COALESCE(r.row_count, 0) AS rows_beyond_run_count
+    FROM lp
+    LEFT JOIN opera.recon_refresh_run r ON r.uuid = lp.published_run_id
+    CROSS JOIN LATERAL (
+      SELECT count(*) AS rows_in_run,
+             count(DISTINCT s.trade_id) AS distinct_trade_id,
+             count(DISTINCT md5(concat_ws('|', s.trade_id, s.security_id, s.subportfolio, s.portfolio, s.value_date, s.parent_trade_id, s.derivative_type, s.instrument_class))) AS distinct_wide_key
+      FROM opera.recon_actual_snapshot s
+      WHERE s.tenant_id = :tenant AND s.business_unit = lp.business_unit AND s.settlement_date = lp.settlement_date AND s.run_id = lp.published_run_id
+    ) x
+    ORDER BY extra_rows_wide_key DESC, lp.business_unit
+  ]]></sql>
+
+  <sql id="runs" db="target" timeout="900" export="full"><![CDATA[
+    SELECT r.business_unit, r.view_type, r.resolved_settlement_date, r.uuid AS run_id, r.status, r.row_count AS run_row_count,
+           CASE r.view_type
+             WHEN 'SETTLE_PRICING' THEN
+               (SELECT count(*) FROM opera.recon_settle_snapshot s
+                 WHERE s.tenant_id = r.tenant_id AND s.business_unit = r.business_unit
+                   AND s.settlement_date = r.resolved_settlement_date AND s.run_id = r.uuid)
+             WHEN 'SETTLE_ACTUAL_PRICING' THEN
+               (SELECT count(*) FROM opera.recon_actual_snapshot s
+                 WHERE s.tenant_id = r.tenant_id AND s.business_unit = r.business_unit
+                   AND s.settlement_date = r.resolved_settlement_date AND s.run_id = r.uuid)
+           END AS rows_counted,
+           (p.published_run_id IS NOT NULL) AS is_published,
+           r.requested_by, r.requested_at, r.started_at, r.completed_at
+    FROM opera.recon_refresh_run r
+    LEFT JOIN opera.recon_snapshot_pointer p
+           ON p.tenant_id = r.tenant_id AND p.business_unit = r.business_unit AND p.view_type = r.view_type
+          AND p.settlement_date = r.resolved_settlement_date AND p.published_run_id = r.uuid
+    WHERE r.tenant_id = :tenant AND r.requested_at >= :since
+      AND r.view_type IN ('SETTLE_PRICING', 'SETTLE_ACTUAL_PRICING') AND r.status <> 'MANUAL_TEST'
+    ORDER BY r.requested_at DESC
+    LIMIT 300
+  ]]></sql>
+
+  <sql id="dup-settle-sample" db="target" timeout="900" export="full" after="settle-published, actual-published"
+       when="#size(#rows('settle-published').?[extra_rows_wide_key &gt; 0 or extra_rows_trade_id &gt; 0]) &gt; 0"><![CDATA[
+    WITH lp AS (
+      SELECT p.business_unit, p.settlement_date, p.published_run_id
+      FROM opera.recon_snapshot_pointer p
+      WHERE p.tenant_id = :tenant AND p.view_type = 'SETTLE_PRICING'
+        AND p.settlement_date = (SELECT max(p2.settlement_date) FROM opera.recon_snapshot_pointer p2
+                                  WHERE p2.tenant_id = p.tenant_id AND p2.business_unit = p.business_unit AND p2.view_type = p.view_type)
+    )
+    SELECT s.business_unit, s.trade_id, s.security_id, s.subportfolio, s.value_date,
+           count(*) AS n_rows, count(DISTINCT s.uuid) AS n_uuid,
+           count(DISTINCT s.created_timestamp) AS n_created_timestamps,
+           min(s.created_timestamp) AS first_created, max(s.created_timestamp) AS last_created,
+           string_agg(DISTINCT s.created_by, ',') AS created_by_users, string_agg(DISTINCT s.updated_by, ',') AS updated_by_users,
+           string_agg(DISTINCT s.source_trade_id, ',') AS source_trade_ids
+    FROM lp
+    JOIN opera.recon_settle_snapshot s
+      ON s.tenant_id = :tenant AND s.business_unit = lp.business_unit AND s.settlement_date = lp.settlement_date AND s.run_id = lp.published_run_id
+    GROUP BY s.business_unit, s.trade_id, s.security_id, s.subportfolio, s.value_date
+    HAVING count(*) > 1
+    ORDER BY count(*) DESC, s.business_unit, s.trade_id
+    LIMIT 30
+  ]]></sql>
+
+  <sql id="dup-actual-sample" db="target" timeout="900" export="full" after="settle-published, actual-published"
+       when="#size(#rows('actual-published').?[extra_rows_wide_key &gt; 0 or extra_rows_trade_id &gt; 0]) &gt; 0"><![CDATA[
+    WITH lp AS (
+      SELECT p.business_unit, p.settlement_date, p.published_run_id
+      FROM opera.recon_snapshot_pointer p
+      WHERE p.tenant_id = :tenant AND p.view_type = 'SETTLE_ACTUAL_PRICING'
+        AND p.settlement_date = (SELECT max(p2.settlement_date) FROM opera.recon_snapshot_pointer p2
+                                  WHERE p2.tenant_id = p.tenant_id AND p2.business_unit = p.business_unit AND p2.view_type = p.view_type)
+    )
+    SELECT s.business_unit, s.trade_id, s.security_id, s.subportfolio, s.value_date,
+           count(*) AS n_rows, count(DISTINCT s.uuid) AS n_uuid,
+           count(DISTINCT s.created_timestamp) AS n_created_timestamps,
+           min(s.created_timestamp) AS first_created, max(s.created_timestamp) AS last_created,
+           string_agg(DISTINCT s.created_by, ',') AS created_by_users, string_agg(DISTINCT s.updated_by, ',') AS updated_by_users
+    FROM lp
+    JOIN opera.recon_actual_snapshot s
+      ON s.tenant_id = :tenant AND s.business_unit = lp.business_unit AND s.settlement_date = lp.settlement_date AND s.run_id = lp.published_run_id
+    GROUP BY s.business_unit, s.trade_id, s.security_id, s.subportfolio, s.value_date
+    HAVING count(*) > 1
+    ORDER BY count(*) DESC, s.business_unit, s.trade_id
+    LIMIT 30
+  ]]></sql>
+
+  <expect ref="settle-published" column="extra_rows_wide_key" max="0" each="true" reason="no BU has duplicate rows in its published SETTLE_PRICING run"/>
+  <expect ref="actual-published" column="extra_rows_wide_key" max="0" each="true" reason="no BU has duplicate rows in its published SETTLE_ACTUAL_PRICING run"/>
+  <expect ref="settle-published" column="rows_beyond_run_count" max="0" each="true" reason="the published settle run holds no more rows than the row_count it recorded"/>
+  <expect ref="actual-published" column="rows_beyond_run_count" max="0" each="true" reason="the published actual run holds no more rows than the row_count it recorded"/>
+  <expect expr="#size(#rows('runs').?[status == 'COMPLETED' and rows_counted != run_row_count]) == 0" reason="every completed run holds exactly the row_count it recorded"/>
+  <expect expr="#size(#rows('runs').?[is_published == false and rows_counted &gt; 0]) == 0" reason="no refresh run that is not the published one still holds snapshot rows"/>
+
+  <compress id="bundle" file="recon-dup-01-snapshot-duplicates.zip">
+    <include ref="settle-published"/><include ref="actual-published"/><include ref="runs"/><include ref="dup-settle-sample"/><include ref="dup-actual-sample"/>
+  </compress>
+</rules>

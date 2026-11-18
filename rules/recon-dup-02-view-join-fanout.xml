@@ -1,0 +1,165 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rules name="recon-dup-02-view-join-fanout">
+  <!--
+    Question: which left join of helper_settle_pricing_subportfoliovalues_view multiplies the rows of the published settle snapshot?
+
+    The view (v4) starts from helper_settle_p_and_g_view_cache_table (the published run) and only left joins, so output rows
+    should equal snapshot rows. Each join is measured on its own for ONE business unit and its latest published settlement date:
+      base      rows and distinct trade_id of the published settle snapshot
+      j-fp      helper_calculate_future_price_view on tenant, bu, security_id = p1_name, value_date      (every shape)
+      j-ssv     security_settlement_value_table on tenant, bu, security_id, value_date                   (every shape)
+      j-actual  helper_actual_settle_p_and_g_view_cache_table on trade_id                                (orm osg rmc only)
+      j-sp      helper_settle_pricing_and_traders_pricing_view on security_id                            (orm osg rmc only)
+      j-fx      fx_nc_factor_view on source_trade_id                                                     (orm osg rmc only)
+      j-ty      helper_calculate_trade_price_yield_view on source_trade_id                               (rba rbc only)
+    Every join query returns: snapshot_rows, joined_rows (what the view would return after this join), max_matches (the most
+    right hand rows matching one snapshot row), rows_with_multi_match. extra_rows = joined_rows minus snapshot_rows.
+    A join with max_matches above 1 is the fan out. The conditional queries run only for the BUs that use them (when on the bu parameter).
+    Read only. Parameters: tenant, bu. Run once per BU with the target-env flag and a bu parameter, for example CFS and RMC.
+  -->
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+    <param name="bu" type="string" value="CFS"/>
+  </parameters>
+
+  <sql id="base" db="target" timeout="600" export="full"><![CDATA[
+    SELECT CAST(:bu AS text) AS business_unit, max(h.settlement_date) AS settlement_date, count(*) AS snapshot_rows,
+           count(DISTINCT h.trade_id) AS distinct_trade_id, count(DISTINCT h.uuid) AS distinct_uuid
+    FROM opera.helper_settle_p_and_g_view_cache_table h
+    WHERE h.tenant_id = :tenant AND h.business_unit = :bu
+      AND h.settlement_date = (SELECT max(p0.settlement_date) FROM opera.recon_snapshot_pointer p0
+                                WHERE p0.tenant_id = :tenant AND p0.business_unit = :bu AND p0.view_type = 'SETTLE_PRICING')
+  ]]></sql>
+
+  <sql id="j-fp" db="target" timeout="900" export="full" after="base"><![CDATA[
+    WITH hb AS (
+      SELECT h.uuid, h.tenant_id, h.business_unit, h.p1_name, h.value_date
+      FROM opera.helper_settle_p_and_g_view_cache_table h
+      WHERE h.tenant_id = :tenant AND h.business_unit = :bu
+        AND h.settlement_date = (SELECT max(p0.settlement_date) FROM opera.recon_snapshot_pointer p0
+                                  WHERE p0.tenant_id = :tenant AND p0.business_unit = :bu AND p0.view_type = 'SETTLE_PRICING')
+    ), m AS (
+      SELECT hb.uuid, count(fp.security_id) AS c
+      FROM hb
+      LEFT JOIN opera.helper_calculate_future_price_view fp
+             ON fp.tenant_id = hb.tenant_id AND fp.business_unit = hb.business_unit AND fp.security_id = hb.p1_name AND fp.value_date = hb.value_date
+      GROUP BY hb.uuid
+    )
+    SELECT 'future price view' AS join_name, count(*) AS snapshot_rows, sum(GREATEST(c, 1)) AS joined_rows,
+           sum(GREATEST(c, 1)) - count(*) AS extra_rows, max(c) AS max_matches, count(*) FILTER (WHERE c > 1) AS rows_with_multi_match
+    FROM m
+  ]]></sql>
+
+  <sql id="j-ssv" db="target" timeout="900" export="full" after="base"><![CDATA[
+    WITH hb AS (
+      SELECT h.uuid, h.tenant_id, h.business_unit, h.security_id, h.value_date
+      FROM opera.helper_settle_p_and_g_view_cache_table h
+      WHERE h.tenant_id = :tenant AND h.business_unit = :bu
+        AND h.settlement_date = (SELECT max(p0.settlement_date) FROM opera.recon_snapshot_pointer p0
+                                  WHERE p0.tenant_id = :tenant AND p0.business_unit = :bu AND p0.view_type = 'SETTLE_PRICING')
+    ), m AS (
+      SELECT hb.uuid, count(ssv.security_id) AS c
+      FROM hb
+      LEFT JOIN opera.security_settlement_value_table ssv
+             ON ssv.tenant_id = hb.tenant_id AND ssv.business_unit = hb.business_unit AND ssv.security_id = hb.security_id AND ssv.value_date = hb.value_date
+      GROUP BY hb.uuid
+    )
+    SELECT 'security_settlement_value_table' AS join_name, count(*) AS snapshot_rows, sum(GREATEST(c, 1)) AS joined_rows,
+           sum(GREATEST(c, 1)) - count(*) AS extra_rows, max(c) AS max_matches, count(*) FILTER (WHERE c > 1) AS rows_with_multi_match
+    FROM m
+  ]]></sql>
+
+  <sql id="j-actual" db="target" timeout="900" export="full" after="base"
+       when="#upper(#bu) == 'ORM' or #upper(#bu) == 'OSG' or #upper(#bu) == 'RMC'"><![CDATA[
+    WITH hb AS (
+      SELECT h.uuid, h.tenant_id, h.business_unit, h.trade_id
+      FROM opera.helper_settle_p_and_g_view_cache_table h
+      WHERE h.tenant_id = :tenant AND h.business_unit = :bu
+        AND h.settlement_date = (SELECT max(p0.settlement_date) FROM opera.recon_snapshot_pointer p0
+                                  WHERE p0.tenant_id = :tenant AND p0.business_unit = :bu AND p0.view_type = 'SETTLE_PRICING')
+    ), m AS (
+      SELECT hb.uuid, count(a.trade_id) AS c
+      FROM hb
+      LEFT JOIN opera.helper_actual_settle_p_and_g_view_cache_table a
+             ON a.tenant_id = hb.tenant_id AND a.business_unit = hb.business_unit AND a.trade_id = hb.trade_id
+      GROUP BY hb.uuid
+    )
+    SELECT 'actual snapshot (published)' AS join_name, count(*) AS snapshot_rows, sum(GREATEST(c, 1)) AS joined_rows,
+           sum(GREATEST(c, 1)) - count(*) AS extra_rows, max(c) AS max_matches, count(*) FILTER (WHERE c > 1) AS rows_with_multi_match
+    FROM m
+  ]]></sql>
+
+  <sql id="j-sp" db="target" timeout="900" export="full" after="base"
+       when="#upper(#bu) == 'ORM' or #upper(#bu) == 'OSG' or #upper(#bu) == 'RMC'"><![CDATA[
+    WITH hb AS (
+      SELECT h.uuid, h.tenant_id, h.business_unit, h.security_id
+      FROM opera.helper_settle_p_and_g_view_cache_table h
+      WHERE h.tenant_id = :tenant AND h.business_unit = :bu
+        AND h.settlement_date = (SELECT max(p0.settlement_date) FROM opera.recon_snapshot_pointer p0
+                                  WHERE p0.tenant_id = :tenant AND p0.business_unit = :bu AND p0.view_type = 'SETTLE_PRICING')
+    ), m AS (
+      SELECT hb.uuid, count(sp.security_id) AS c
+      FROM hb
+      LEFT JOIN opera.helper_settle_pricing_and_traders_pricing_view sp
+             ON sp.tenant_id = hb.tenant_id AND sp.business_unit = hb.business_unit AND sp.security_id = hb.security_id
+      GROUP BY hb.uuid
+    )
+    SELECT 'pricing and traders view' AS join_name, count(*) AS snapshot_rows, sum(GREATEST(c, 1)) AS joined_rows,
+           sum(GREATEST(c, 1)) - count(*) AS extra_rows, max(c) AS max_matches, count(*) FILTER (WHERE c > 1) AS rows_with_multi_match
+    FROM m
+  ]]></sql>
+
+  <sql id="j-fx" db="target" timeout="900" export="full" after="base"
+       when="#upper(#bu) == 'ORM' or #upper(#bu) == 'OSG' or #upper(#bu) == 'RMC'"><![CDATA[
+    WITH hb AS (
+      SELECT h.uuid, h.tenant_id, h.business_unit, h.source_trade_id
+      FROM opera.helper_settle_p_and_g_view_cache_table h
+      WHERE h.tenant_id = :tenant AND h.business_unit = :bu
+        AND h.settlement_date = (SELECT max(p0.settlement_date) FROM opera.recon_snapshot_pointer p0
+                                  WHERE p0.tenant_id = :tenant AND p0.business_unit = :bu AND p0.view_type = 'SETTLE_PRICING')
+    ), m AS (
+      SELECT hb.uuid, count(fx.trade_id) AS c
+      FROM hb
+      LEFT JOIN opera.fx_nc_factor_view fx
+             ON fx.tenant_id = hb.tenant_id AND fx.business_unit = hb.business_unit AND fx.trade_id = hb.source_trade_id
+      GROUP BY hb.uuid
+    )
+    SELECT 'fx_nc_factor_view' AS join_name, count(*) AS snapshot_rows, sum(GREATEST(c, 1)) AS joined_rows,
+           sum(GREATEST(c, 1)) - count(*) AS extra_rows, max(c) AS max_matches, count(*) FILTER (WHERE c > 1) AS rows_with_multi_match
+    FROM m
+  ]]></sql>
+
+  <sql id="j-ty" db="target" timeout="900" export="full" after="base"
+       when="#upper(#bu) == 'RBA' or #upper(#bu) == 'RBC'"><![CDATA[
+    WITH hb AS (
+      SELECT h.uuid, h.tenant_id, h.business_unit, h.source_trade_id
+      FROM opera.helper_settle_p_and_g_view_cache_table h
+      WHERE h.tenant_id = :tenant AND h.business_unit = :bu
+        AND h.settlement_date = (SELECT max(p0.settlement_date) FROM opera.recon_snapshot_pointer p0
+                                  WHERE p0.tenant_id = :tenant AND p0.business_unit = :bu AND p0.view_type = 'SETTLE_PRICING')
+    ), m AS (
+      SELECT hb.uuid, count(ty.trade_id) AS c
+      FROM hb
+      LEFT JOIN opera.helper_calculate_trade_price_yield_view ty
+             ON ty.tenant_id = hb.tenant_id AND ty.business_unit = hb.business_unit AND ty.trade_id = hb.source_trade_id
+      GROUP BY hb.uuid
+    )
+    SELECT 'trade price yield view' AS join_name, count(*) AS snapshot_rows, sum(GREATEST(c, 1)) AS joined_rows,
+           sum(GREATEST(c, 1)) - count(*) AS extra_rows, max(c) AS max_matches, count(*) FILTER (WHERE c > 1) AS rows_with_multi_match
+    FROM m
+  ]]></sql>
+
+  <expect ref="base" rows="1"/>
+  <expect ref="base" column="snapshot_rows" min="1" reason="the BU has a published settle snapshot"/>
+  <expect expr="#q('base').first.distinct_uuid == #q('base').first.snapshot_rows" reason="every published snapshot row has its own uuid"/>
+  <expect ref="j-fp" column="max_matches" max="1" reason="future price view: at most one row per security and value date"/>
+  <expect ref="j-ssv" column="max_matches" max="1" reason="security_settlement_value_table: at most one row per security and value date"/>
+  <expect ref="j-actual" column="max_matches" max="1" reason="published actual snapshot: at most one row per trade"/>
+  <expect ref="j-sp" column="max_matches" max="1" reason="pricing and traders view: at most one row per security"/>
+  <expect ref="j-fx" column="max_matches" max="1" reason="fx_nc_factor_view: at most one row per trade"/>
+  <expect ref="j-ty" column="max_matches" max="1" reason="trade price yield view: at most one row per trade"/>
+
+  <compress id="bundle" file="recon-dup-02-view-join-fanout.zip">
+    <include ref="base"/><include ref="j-fp"/><include ref="j-ssv"/><include ref="j-actual"/><include ref="j-sp"/><include ref="j-fx"/><include ref="j-ty"/>
+  </compress>
+</rules>
