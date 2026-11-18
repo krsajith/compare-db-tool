@@ -5,7 +5,7 @@
     that no pointer publishes?
 
     Scans the whole tables for the tenant: every BU, settlement date and run, published or not. Read only, tenant first.
-      summary       two rows (settle, actual), small enough to be printed in SUMMARY.md without any export:
+      table-summary two rows (settle, actual), small enough to be printed in SUMMARY.md without any export:
                     total rows, runs, BU and date pairs, runs with duplicate rows, extra rows by wide key (trade, security,
                     subportfolio, portfolio, value date, parent, derivative type, instrument class) and by trade_id,
                     runs no pointer publishes and the rows they hold
@@ -19,7 +19,7 @@
     <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
   </parameters>
 
-  <sql id="summary" db="target" timeout="900"><![CDATA[
+  <sql id="table-summary" db="target" timeout="900"><![CDATA[
     WITH g AS (
       SELECT 'settle' AS table_name, s.business_unit, s.settlement_date, s.run_id, count(*) AS n,
              count(DISTINCT s.trade_id) AS dt,
@@ -53,8 +53,8 @@
     ORDER BY table_name
   ]]></sql>
 
-  <sql id="dup-runs" db="target" timeout="900" export="full" after="summary"
-       when="#size(#rows('summary').?[runs_with_dups &gt; 0]) &gt; 0"><![CDATA[
+  <sql id="dup-runs" db="target" timeout="900" export="full" after="table-summary"
+       when="#size(#rows('table-summary').?[runs_with_dups &gt; 0]) &gt; 0"><![CDATA[
     SELECT * FROM (
       SELECT 'settle' AS table_name, s.business_unit, s.settlement_date, s.run_id, count(*) AS n,
              count(*) - count(DISTINCT md5(concat_ws('|', s.trade_id, s.security_id, s.subportfolio, s.portfolio, s.value_date, s.parent_trade_id, s.derivative_type, s.instrument_class))) AS extra_rows,
@@ -75,8 +75,8 @@
     LIMIT 50
   ]]></sql>
 
-  <sql id="dup-keys" db="target" timeout="900" export="full" after="summary"
-       when="#size(#rows('summary').?[runs_with_dups &gt; 0]) &gt; 0"><![CDATA[
+  <sql id="dup-keys" db="target" timeout="900" export="full" after="table-summary"
+       when="#size(#rows('table-summary').?[runs_with_dups &gt; 0]) &gt; 0"><![CDATA[
     SELECT * FROM (
       SELECT 'settle' AS table_name, s.business_unit, s.settlement_date, s.run_id, s.trade_id, s.security_id, s.subportfolio, s.value_date,
              count(*) AS n_rows, count(DISTINCT s.created_timestamp) AS n_created_timestamps,
@@ -97,8 +97,8 @@
     LIMIT 30
   ]]></sql>
 
-  <sql id="stale-runs" db="target" timeout="900" export="full" after="summary"
-       when="#size(#rows('summary').?[unpublished_runs &gt; 0]) &gt; 0"><![CDATA[
+  <sql id="stale-runs" db="target" timeout="900" export="full" after="table-summary"
+       when="#size(#rows('table-summary').?[unpublished_runs &gt; 0]) &gt; 0"><![CDATA[
     SELECT g.table_name, g.business_unit, g.settlement_date, g.run_id, g.n AS rows_held, r.status, r.row_count AS run_row_count,
            r.requested_by, r.requested_at
     FROM (
@@ -117,11 +117,11 @@
     LIMIT 50
   ]]></sql>
 
-  <expect ref="summary" rows="2" reason="one row for each snapshot table"/>
-  <expect ref="summary" column="runs_with_dups" max="0" each="true" reason="no run holds duplicate rows"/>
-  <expect ref="summary" column="unpublished_runs" max="0" each="true" reason="every run that still holds rows is published"/>
+  <expect ref="table-summary" rows="2" reason="one row for each snapshot table"/>
+  <expect ref="table-summary" column="runs_with_dups" max="0" each="true" reason="no run holds duplicate rows"/>
+  <expect ref="table-summary" column="unpublished_runs" max="0" each="true" reason="every run that still holds rows is published"/>
 
   <compress id="bundle" file="recon-dup-05-whole-table-duplicates.zip">
-    <include ref="summary"/><include ref="dup-runs"/><include ref="dup-keys"/><include ref="stale-runs"/>
+    <include ref="table-summary"/><include ref="dup-runs"/><include ref="dup-keys"/><include ref="stale-runs"/>
   </compress>
 </rules>
