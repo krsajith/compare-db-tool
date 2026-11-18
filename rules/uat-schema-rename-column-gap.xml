@@ -1,0 +1,64 @@
+<rules name="uat-schema-rename-column-gap">
+  <!-- UAT: after the 17 Nov migration the old schema was renamed to opera_171126 and a new opera schema was built.
+       Question: why does recon_settle_snapshot.invenio_product_code exist only in opera_171126, and what else is missing in opera?
+       1. changelog-tables: where the Liquibase tracking tables live.
+       2. snapshot-cols: the 8 columns added by add-snapshot-pricing-and-source-trade-id-columns-v1, in both schemas.
+       3. missing-tables: tables of the old schema that do not exist in the new one.
+       4. missing-columns: columns of the old schema that do not exist in the new one, for tables that exist in both.
+       5. extra-columns: columns only in the new schema (so we know the diff is one way).
+       Read only. Run against postgres-uat. -->
+
+  <sql id="changelog-tables" db="postgres-uat" export="full"><![CDATA[
+    SELECT table_schema, table_name
+    FROM information_schema.tables
+    WHERE table_name IN ('databasechangelog', 'databasechangeloglock')
+    ORDER BY table_schema, table_name
+  ]]></sql>
+
+  <sql id="snapshot-cols" db="postgres-uat" export="full"><![CDATA[
+    SELECT table_schema, table_name, column_name, data_type, ordinal_position
+    FROM information_schema.columns
+    WHERE table_schema IN ('opera', 'opera_171126')
+      AND (   (table_name = 'recon_settle_snapshot'
+               AND column_name IN ('nc_factor','fx_nc_factor','invenio_product_code','product_name','exchange_name','source_trade_id'))
+           OR (table_name IN ('recon_actual_snapshot','recon_traders_snapshot') AND column_name = 'source_trade_id'))
+    ORDER BY table_name, column_name, table_schema
+  ]]></sql>
+
+  <sql id="missing-tables" db="postgres-uat" export="full"><![CDATA[
+    SELECT o.table_name, o.table_type
+    FROM information_schema.tables o
+    LEFT JOIN information_schema.tables n ON n.table_schema = 'opera' AND n.table_name = o.table_name
+    WHERE o.table_schema = 'opera_171126' AND n.table_name IS NULL
+    ORDER BY o.table_name
+  ]]></sql>
+
+  <sql id="missing-columns" db="postgres-uat" export="full"><![CDATA[
+    SELECT o.table_name, o.column_name, o.data_type, o.character_maximum_length AS char_len, o.is_nullable, o.column_default
+    FROM information_schema.columns o
+    JOIN information_schema.tables t ON t.table_schema = 'opera' AND t.table_name = o.table_name AND t.table_type = 'BASE TABLE'
+    LEFT JOIN information_schema.columns n
+           ON n.table_schema = 'opera' AND n.table_name = o.table_name AND n.column_name = o.column_name
+    WHERE o.table_schema = 'opera_171126' AND n.column_name IS NULL
+    ORDER BY o.table_name, o.ordinal_position
+  ]]></sql>
+
+  <sql id="extra-columns" db="postgres-uat" export="full"><![CDATA[
+    SELECT n.table_name, n.column_name, n.data_type
+    FROM information_schema.columns n
+    JOIN information_schema.tables t ON t.table_schema = 'opera_171126' AND t.table_name = n.table_name
+    LEFT JOIN information_schema.columns o
+           ON o.table_schema = 'opera_171126' AND o.table_name = n.table_name AND o.column_name = n.column_name
+    WHERE n.table_schema = 'opera' AND o.column_name IS NULL
+    ORDER BY n.table_name, n.ordinal_position
+  ]]></sql>
+
+  <expect ref="changelog-tables" rows="&gt;=1" reason="Liquibase tracking table must exist somewhere"/>
+  <expect ref="snapshot-cols" rows="&gt;=1" reason="the old schema must show the column"/>
+  <expect ref="missing-tables" rows="&gt;=0" reason="informational: tables the new schema lacks"/>
+  <expect ref="missing-columns" rows="0" reason="the new schema should contain every column of the old one"/>
+  <expect ref="extra-columns" rows="&gt;=0" reason="informational"/>
+  <compress id="bundle" file="uat-schema-rename-column-gap.zip">
+    <include ref="changelog-tables"/><include ref="snapshot-cols"/><include ref="missing-tables"/><include ref="missing-columns"/><include ref="extra-columns"/>
+  </compress>
+</rules>
