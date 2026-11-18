@@ -1,0 +1,124 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rules name="recon-dup-05-whole-table-duplicates">
+  <!--
+    Question: are there duplicate rows anywhere in recon_settle_snapshot or recon_actual_snapshot for the tenant?
+
+    The first duplicate rule (recon-dup-01) only looked at the latest published run of each BU. This rule scans the whole tables for the
+    tenant: every BU, every settlement date, every run, published or not. Read only, tenant first in every filter.
+
+      settle-groups, actual-groups
+          one row per business unit, settlement date and run: rows, distinct trade_id, distinct wide key (trade, security,
+          subportfolio, portfolio, value date, parent, derivative type, instrument class), extra rows, whether a pointer publishes the
+          run, and the run status and row_count. Only groups with extra rows or with more than one run per BU and date are the problem;
+          the expectations count them, and the full list is in the CSV.
+      settle-multi-run, actual-multi-run
+          business units and dates that hold rows of more than one run. The view reads the published run only, so the other runs
+          are dead weight: they do not duplicate the view, but they hold the same trades again and slow the scans.
+      dup-settle-sample, dup-actual-sample
+          the 30 worst duplicated keys across the whole table, with run, date, distinct created timestamps and users. One timestamp:
+          the builder made the duplicates in one pass. Several: the same rows were inserted more than once.
+    Parameter: tenant. Run with the target-env flag. Allowed up to 15 minutes per query.
+  -->
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+  </parameters>
+
+  <sql id="settle-groups" db="target" timeout="900" export="full"><![CDATA[
+    SELECT g.business_unit, g.settlement_date, g.run_id, g.rows_in_run, g.distinct_trade_id, g.distinct_wide_key,
+           g.rows_in_run - g.distinct_wide_key AS extra_rows_wide_key, g.rows_in_run - g.distinct_trade_id AS extra_rows_trade_id,
+           (p.published_run_id IS NOT NULL) AS is_published, r.status AS run_status, r.row_count AS run_row_count,
+           g.first_created, g.last_created
+    FROM (
+      SELECT s.business_unit, s.settlement_date, s.run_id, count(*) AS rows_in_run, count(DISTINCT s.trade_id) AS distinct_trade_id,
+             count(DISTINCT md5(concat_ws('|', s.trade_id, s.security_id, s.subportfolio, s.portfolio, s.value_date, s.parent_trade_id, s.derivative_type, s.instrument_class))) AS distinct_wide_key,
+             min(s.created_timestamp) AS first_created, max(s.created_timestamp) AS last_created
+      FROM opera.recon_settle_snapshot s
+      WHERE s.tenant_id = :tenant
+      GROUP BY s.business_unit, s.settlement_date, s.run_id
+    ) g
+    LEFT JOIN opera.recon_snapshot_pointer p
+           ON p.tenant_id = :tenant AND p.business_unit = g.business_unit AND p.view_type = 'SETTLE_PRICING'
+          AND p.settlement_date = g.settlement_date AND p.published_run_id = g.run_id
+    LEFT JOIN opera.recon_refresh_run r ON r.uuid = g.run_id
+    ORDER BY extra_rows_wide_key DESC, g.rows_in_run DESC
+  ]]></sql>
+
+  <sql id="actual-groups" db="target" timeout="900" export="full"><![CDATA[
+    SELECT g.business_unit, g.settlement_date, g.run_id, g.rows_in_run, g.distinct_trade_id, g.distinct_wide_key,
+           g.rows_in_run - g.distinct_wide_key AS extra_rows_wide_key, g.rows_in_run - g.distinct_trade_id AS extra_rows_trade_id,
+           (p.published_run_id IS NOT NULL) AS is_published, r.status AS run_status, r.row_count AS run_row_count,
+           g.first_created, g.last_created
+    FROM (
+      SELECT s.business_unit, s.settlement_date, s.run_id, count(*) AS rows_in_run, count(DISTINCT s.trade_id) AS distinct_trade_id,
+             count(DISTINCT md5(concat_ws('|', s.trade_id, s.security_id, s.subportfolio, s.portfolio, s.value_date, s.parent_trade_id, s.derivative_type, s.instrument_class))) AS distinct_wide_key,
+             min(s.created_timestamp) AS first_created, max(s.created_timestamp) AS last_created
+      FROM opera.recon_actual_snapshot s
+      WHERE s.tenant_id = :tenant
+      GROUP BY s.business_unit, s.settlement_date, s.run_id
+    ) g
+    LEFT JOIN opera.recon_snapshot_pointer p
+           ON p.tenant_id = :tenant AND p.business_unit = g.business_unit AND p.view_type = 'SETTLE_ACTUAL_PRICING'
+          AND p.settlement_date = g.settlement_date AND p.published_run_id = g.run_id
+    LEFT JOIN opera.recon_refresh_run r ON r.uuid = g.run_id
+    ORDER BY extra_rows_wide_key DESC, g.rows_in_run DESC
+  ]]></sql>
+
+  <sql id="settle-multi-run" db="target" timeout="900" export="full" after="settle-groups"><![CDATA[
+    SELECT s.business_unit, s.settlement_date, count(DISTINCT s.run_id) AS runs_with_rows, count(*) AS total_rows
+    FROM opera.recon_settle_snapshot s
+    WHERE s.tenant_id = :tenant
+    GROUP BY s.business_unit, s.settlement_date
+    HAVING count(DISTINCT s.run_id) > 1
+    ORDER BY count(*) DESC
+    LIMIT 200
+  ]]></sql>
+
+  <sql id="actual-multi-run" db="target" timeout="900" export="full" after="actual-groups"><![CDATA[
+    SELECT s.business_unit, s.settlement_date, count(DISTINCT s.run_id) AS runs_with_rows, count(*) AS total_rows
+    FROM opera.recon_actual_snapshot s
+    WHERE s.tenant_id = :tenant
+    GROUP BY s.business_unit, s.settlement_date
+    HAVING count(DISTINCT s.run_id) > 1
+    ORDER BY count(*) DESC
+    LIMIT 200
+  ]]></sql>
+
+  <sql id="dup-settle-sample" db="target" timeout="900" export="full" after="settle-groups"
+       when="#size(#rows('settle-groups').?[extra_rows_wide_key &gt; 0 or extra_rows_trade_id &gt; 0]) &gt; 0"><![CDATA[
+    SELECT s.business_unit, s.settlement_date, s.run_id, s.trade_id, s.security_id, s.subportfolio, s.value_date,
+           count(*) AS n_rows, count(DISTINCT s.created_timestamp) AS n_created_timestamps,
+           min(s.created_timestamp) AS first_created, max(s.created_timestamp) AS last_created,
+           string_agg(DISTINCT s.created_by, ',') AS created_by_users, string_agg(DISTINCT s.source_trade_id, ',') AS source_trade_ids
+    FROM opera.recon_settle_snapshot s
+    WHERE s.tenant_id = :tenant
+    GROUP BY s.business_unit, s.settlement_date, s.run_id, s.trade_id, s.security_id, s.subportfolio, s.value_date
+    HAVING count(*) > 1
+    ORDER BY count(*) DESC, s.business_unit, s.trade_id
+    LIMIT 30
+  ]]></sql>
+
+  <sql id="dup-actual-sample" db="target" timeout="900" export="full" after="actual-groups"
+       when="#size(#rows('actual-groups').?[extra_rows_wide_key &gt; 0 or extra_rows_trade_id &gt; 0]) &gt; 0"><![CDATA[
+    SELECT s.business_unit, s.settlement_date, s.run_id, s.trade_id, s.security_id, s.subportfolio, s.value_date,
+           count(*) AS n_rows, count(DISTINCT s.created_timestamp) AS n_created_timestamps,
+           min(s.created_timestamp) AS first_created, max(s.created_timestamp) AS last_created,
+           string_agg(DISTINCT s.created_by, ',') AS created_by_users
+    FROM opera.recon_actual_snapshot s
+    WHERE s.tenant_id = :tenant
+    GROUP BY s.business_unit, s.settlement_date, s.run_id, s.trade_id, s.security_id, s.subportfolio, s.value_date
+    HAVING count(*) > 1
+    ORDER BY count(*) DESC, s.business_unit, s.trade_id
+    LIMIT 30
+  ]]></sql>
+
+  <expect ref="settle-groups" rows="&gt;=1" reason="the tenant has settle snapshot rows"/>
+  <expect ref="actual-groups" rows="&gt;=1" reason="the tenant has actual snapshot rows"/>
+  <expect expr="#size(#rows('settle-groups').?[extra_rows_wide_key &gt; 0]) == 0" reason="no run holds duplicate rows in recon_settle_snapshot"/>
+  <expect expr="#size(#rows('actual-groups').?[extra_rows_wide_key &gt; 0]) == 0" reason="no run holds duplicate rows in recon_actual_snapshot"/>
+  <expect expr="#size(#rows('settle-groups').?[is_published == false]) == 0" reason="every settle run that holds rows is published"/>
+  <expect expr="#size(#rows('actual-groups').?[is_published == false]) == 0" reason="every actual run that holds rows is published"/>
+
+  <compress id="bundle" file="recon-dup-05-whole-table-duplicates.zip">
+    <include ref="settle-groups"/><include ref="actual-groups"/><include ref="settle-multi-run"/><include ref="actual-multi-run"/><include ref="dup-settle-sample"/><include ref="dup-actual-sample"/>
+  </compress>
+</rules>
