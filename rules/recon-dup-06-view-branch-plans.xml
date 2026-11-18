@@ -1,0 +1,105 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rules name="recon-dup-06-view-branch-plans">
+  <!--
+    Question: select count(*) from helper_settle_pricing_subportfoliovalues_view where tenant_id = X does not finish in 10 minutes,
+    while one BU and one date takes half a second. Which branch and which join carries the time?
+
+    Model: the view is a UNION ALL of six branches. Each starts from the published settle snapshot (about 18k rows on UAT) and left joins
+    heavy views. With only tenant_id in the WHERE every branch runs, the join keys cannot be pushed into views built from UNIONs, and
+    the planner estimates are far off, so the heavy views can be computed whole, or once per outer row. The output is small, so the
+    time is work that does not scale with the output.
+
+    Steps, cheapest first, nothing runs longer than its timeout:
+      plan-whole   plan only (no execution) of the slow statement: the structure, join types and estimates, in seconds
+      plan-c       plan only of branch C (orm osg rmc: actual snapshot, pricing and traders view, fx_nc_factor_view, fp, ssv)
+      plan-f       plan only of branch F (rba rbc: fp, ssv, trade price yield view, which calls the yield functions)
+      run-abde     timed run of the four plain branches together (bkr ebo gpc stg tsy grn cfs rov cto og2 ogp usg: fp and ssv only)
+      run-c        timed run of branch C
+      run-f        timed run of branch F
+    A timed run that hits its timeout (180 s) is the culprit; its plan-only step shows why. Each statement is count(*) over the same
+    joins as the view branch, tenant only, like the slow statement. Read only, rolled back. Parameter: tenant. Run with the target-env flag.
+  -->
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+  </parameters>
+
+  <explain id="plan-whole" db="target" analyze="false" timeout="120"><![CDATA[
+    SELECT count(*) FROM opera.helper_settle_pricing_subportfoliovalues_view v WHERE v.tenant_id = :tenant
+  ]]></explain>
+
+  <explain id="plan-c" db="target" analyze="false" timeout="120"><![CDATA[
+    SELECT count(*)
+    FROM opera.helper_settle_p_and_g_view_cache_table h
+    LEFT JOIN opera.helper_actual_settle_p_and_g_view_cache_table a
+           ON a.tenant_id = h.tenant_id AND a.business_unit = h.business_unit AND a.trade_id = h.trade_id
+    LEFT JOIN opera.helper_settle_pricing_and_traders_pricing_view sp
+           ON sp.tenant_id = h.tenant_id AND sp.business_unit = h.business_unit AND sp.security_id = h.security_id
+    LEFT JOIN opera.fx_nc_factor_view fx
+           ON fx.tenant_id = h.tenant_id AND fx.business_unit = h.business_unit AND fx.trade_id = h.source_trade_id
+    LEFT JOIN opera.helper_calculate_future_price_view fp
+           ON fp.tenant_id = h.tenant_id AND fp.business_unit = h.business_unit AND fp.security_id = h.p1_name AND fp.value_date = h.value_date
+    LEFT JOIN opera.security_settlement_value_table ssv
+           ON ssv.tenant_id = h.tenant_id AND ssv.business_unit = h.business_unit AND ssv.security_id = h.security_id AND ssv.value_date = h.value_date
+    WHERE h.tenant_id = :tenant AND h.business_unit IN ('orm', 'osg', 'rmc', 'ORM', 'OSG', 'RMC')
+  ]]></explain>
+
+  <explain id="plan-f" db="target" analyze="false" timeout="120"><![CDATA[
+    SELECT count(*)
+    FROM opera.helper_settle_p_and_g_view_cache_table h
+    LEFT JOIN opera.helper_calculate_future_price_view fp
+           ON fp.tenant_id = h.tenant_id AND fp.business_unit = h.business_unit AND fp.security_id = h.p1_name AND fp.value_date = h.value_date
+    LEFT JOIN opera.security_settlement_value_table ssv
+           ON ssv.tenant_id = h.tenant_id AND ssv.business_unit = h.business_unit AND ssv.security_id = h.security_id AND ssv.value_date = h.value_date
+    LEFT JOIN opera.helper_calculate_trade_price_yield_view ty
+           ON ty.tenant_id = h.tenant_id AND ty.business_unit = h.business_unit AND ty.trade_id = h.source_trade_id
+    WHERE h.tenant_id = :tenant AND h.business_unit IN ('rba', 'rbc', 'RBA', 'RBC')
+  ]]></explain>
+
+  <explain id="run-abde" db="target" timeout="180"><![CDATA[
+    SELECT count(*)
+    FROM opera.helper_settle_p_and_g_view_cache_table h
+    LEFT JOIN opera.helper_calculate_future_price_view fp
+           ON fp.tenant_id = h.tenant_id AND fp.business_unit = h.business_unit AND fp.security_id = h.p1_name AND fp.value_date = h.value_date
+    LEFT JOIN opera.security_settlement_value_table ssv
+           ON ssv.tenant_id = h.tenant_id AND ssv.business_unit = h.business_unit AND ssv.security_id = h.security_id AND ssv.value_date = h.value_date
+    WHERE h.tenant_id = :tenant
+      AND h.business_unit IN ('bkr', 'ebo', 'gpc', 'stg', 'tsy', 'grn', 'cfs', 'rov', 'cto', 'og2', 'ogp', 'usg',
+                              'BKR', 'EBO', 'GPC', 'STG', 'TSY', 'GRN', 'CFS', 'ROV', 'CTO', 'OG2', 'OGP', 'USG')
+  ]]></explain>
+
+  <explain id="run-c" db="target" timeout="180"><![CDATA[
+    SELECT count(*)
+    FROM opera.helper_settle_p_and_g_view_cache_table h
+    LEFT JOIN opera.helper_actual_settle_p_and_g_view_cache_table a
+           ON a.tenant_id = h.tenant_id AND a.business_unit = h.business_unit AND a.trade_id = h.trade_id
+    LEFT JOIN opera.helper_settle_pricing_and_traders_pricing_view sp
+           ON sp.tenant_id = h.tenant_id AND sp.business_unit = h.business_unit AND sp.security_id = h.security_id
+    LEFT JOIN opera.fx_nc_factor_view fx
+           ON fx.tenant_id = h.tenant_id AND fx.business_unit = h.business_unit AND fx.trade_id = h.source_trade_id
+    LEFT JOIN opera.helper_calculate_future_price_view fp
+           ON fp.tenant_id = h.tenant_id AND fp.business_unit = h.business_unit AND fp.security_id = h.p1_name AND fp.value_date = h.value_date
+    LEFT JOIN opera.security_settlement_value_table ssv
+           ON ssv.tenant_id = h.tenant_id AND ssv.business_unit = h.business_unit AND ssv.security_id = h.security_id AND ssv.value_date = h.value_date
+    WHERE h.tenant_id = :tenant AND h.business_unit IN ('orm', 'osg', 'rmc', 'ORM', 'OSG', 'RMC')
+  ]]></explain>
+
+  <explain id="run-f" db="target" timeout="180"><![CDATA[
+    SELECT count(*)
+    FROM opera.helper_settle_p_and_g_view_cache_table h
+    LEFT JOIN opera.helper_calculate_future_price_view fp
+           ON fp.tenant_id = h.tenant_id AND fp.business_unit = h.business_unit AND fp.security_id = h.p1_name AND fp.value_date = h.value_date
+    LEFT JOIN opera.security_settlement_value_table ssv
+           ON ssv.tenant_id = h.tenant_id AND ssv.business_unit = h.business_unit AND ssv.security_id = h.security_id AND ssv.value_date = h.value_date
+    LEFT JOIN opera.helper_calculate_trade_price_yield_view ty
+           ON ty.tenant_id = h.tenant_id AND ty.business_unit = h.business_unit AND ty.trade_id = h.source_trade_id
+    WHERE h.tenant_id = :tenant AND h.business_unit IN ('rba', 'rbc', 'RBA', 'RBC')
+  ]]></explain>
+
+  <expect ref="run-abde" max-ms="20000" reason="the plain branches (fp and ssv) should count in seconds"/>
+  <expect ref="run-c" max-ms="20000" reason="branch C should count in seconds"/>
+  <expect ref="run-f" max-ms="20000" reason="branch F should count in seconds"/>
+
+  <compress id="bundle" file="recon-dup-06-view-branch-plans.zip">
+    <include ref="plan-whole"/><include ref="plan-c"/><include ref="plan-f"/><include ref="run-abde"/><include ref="run-c"/><include ref="run-f"/>
+  </compress>
+</rules>
