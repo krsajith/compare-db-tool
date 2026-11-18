@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rules name="recon-dup-04-view-tenant-only-explain">
+  <!--
+    Question: select count(*) from helper_settle_pricing_subportfoliovalues_view where tenant_id = X runs for more than two minutes.
+    Why, and does the cause sit in the snapshot tables (volume, duplicates, unpublished runs) or in the joins of the view?
+
+    The earlier rule recon-dup-03 filtered on one BU and one settlement date, which is not the shape of that query. This rule uses the
+    real shape: tenant only, so the view reads every BU and every published date.
+
+      table-rows       rows per table and BU for the tenant, with the number of runs and settlement dates held: snapshot rows that no
+                       pointer publishes are dead weight and show up here (settle and actual)
+      published-rows   rows the view really starts from: rows of runs that a pointer publishes, per view type and BU, and how many
+                       published dates each BU has
+      count-cache-view count(*) of helper_settle_p_and_g_view_cache_table for the tenant (the base of every shape, no joins)
+      count-view       the exact slow statement, count(*) of the view for the tenant, with EXPLAIN (ANALYZE, BUFFERS): the real plan,
+                       the slowest nodes, sequential scans and the worst row estimates. Allowed up to 15 minutes.
+    Comparing count-cache-view with count-view in the plan shows how many rows the joins add. Read only. Parameter: tenant.
+    Run with the target-env flag. The statement is rolled back, nothing is written.
+  -->
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+  </parameters>
+
+  <sql id="table-rows" db="target" timeout="900" export="full"><![CDATA[
+    SELECT 'recon_settle_snapshot' AS table_name, s.business_unit, count(*) AS row_count, count(DISTINCT s.run_id) AS runs,
+           count(DISTINCT s.settlement_date) AS settlement_dates, min(s.settlement_date) AS first_date, max(s.settlement_date) AS last_date
+    FROM opera.recon_settle_snapshot s
+    WHERE s.tenant_id = :tenant
+    GROUP BY s.business_unit
+    UNION ALL
+    SELECT 'recon_actual_snapshot', a.business_unit, count(*), count(DISTINCT a.run_id), count(DISTINCT a.settlement_date),
+           min(a.settlement_date), max(a.settlement_date)
+    FROM opera.recon_actual_snapshot a
+    WHERE a.tenant_id = :tenant
+    GROUP BY a.business_unit
+    ORDER BY 1, 2
+  ]]></sql>
+
+  <sql id="published-rows" db="target" timeout="900" export="full"><![CDATA[
+    SELECT p.view_type, p.business_unit, count(*) AS published_dates, sum(x.n) AS published_rows, max(x.n) AS biggest_date_rows
+    FROM opera.recon_snapshot_pointer p
+    CROSS JOIN LATERAL (
+      SELECT CASE p.view_type
+               WHEN 'SETTLE_PRICING' THEN
+                 (SELECT count(*) FROM opera.recon_settle_snapshot s
+                   WHERE s.tenant_id = p.tenant_id AND s.business_unit = p.business_unit AND s.settlement_date = p.settlement_date AND s.run_id = p.published_run_id)
+               WHEN 'SETTLE_ACTUAL_PRICING' THEN
+                 (SELECT count(*) FROM opera.recon_actual_snapshot s
+                   WHERE s.tenant_id = p.tenant_id AND s.business_unit = p.business_unit AND s.settlement_date = p.settlement_date AND s.run_id = p.published_run_id)
+               ELSE 0
+             END AS n
+    ) x
+    WHERE p.tenant_id = :tenant AND p.view_type IN ('SETTLE_PRICING', 'SETTLE_ACTUAL_PRICING')
+    GROUP BY p.view_type, p.business_unit
+    ORDER BY p.view_type, p.business_unit
+  ]]></sql>
+
+  <sql id="count-cache-view" db="target" timeout="900" export="full"><![CDATA[
+    SELECT count(*) AS cache_view_rows, count(DISTINCT h.business_unit) AS business_units, count(DISTINCT h.settlement_date) AS settlement_dates
+    FROM opera.helper_settle_p_and_g_view_cache_table h
+    WHERE h.tenant_id = :tenant
+  ]]></sql>
+
+  <explain id="count-view" db="target" timeout="900"><![CDATA[
+    SELECT count(*) FROM opera.helper_settle_pricing_subportfoliovalues_view v
+    WHERE v.tenant_id = :tenant
+  ]]></explain>
+
+  <expect ref="table-rows" rows="&gt;=1" reason="the tenant has snapshot rows"/>
+  <expect ref="count-view" max-ms="30000" reason="a count of the view for the tenant should not take more than 30 seconds"/>
+  <expect ref="count-view" no-seq-scan="recon_settle_snapshot, recon_actual_snapshot, recon_snapshot_pointer, security_settlement_value_table" reason="the snapshot, pointer and price tables should be read through their indexes"/>
+  <expect ref="count-view" max-estimate-error="100" reason="the planner estimates must be close, otherwise it picks nested loops"/>
+
+  <compress id="bundle" file="recon-dup-04-view-tenant-only-explain.zip">
+    <include ref="table-rows"/><include ref="published-rows"/><include ref="count-cache-view"/><include ref="count-view"/>
+  </compress>
+</rules>
