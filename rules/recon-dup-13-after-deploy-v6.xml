@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rules name="recon-dup-13-after-deploy-v6">
+  <!--
+    Run AFTER the shape C stored factors deploy (columns, published view, builder v5, backfill, view v6).
+      speed      the statement that started this: count of helper_settle_pricing_subportfoliovalues_view for the tenant (was 10+ min)
+      filled     published shape C rows per BU and builder_version (4 = backfilled, 5 = refreshed by builder v5, NULL = not filled)
+      cmp-fx     stored view_fx_nc_factor / view_actual_fx_nc_factor against fx_nc_factor_view, per row (about 4 min: the old view)
+    Read only. Parameter: tenant.
+  -->
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+  </parameters>
+
+  <sql id="speed" db="target" timeout="60"><![CDATA[
+    SELECT count(*) AS view_rows FROM opera.helper_settle_pricing_subportfoliovalues_view WHERE tenant_id = :tenant
+  ]]></sql>
+
+  <sql id="filled" db="target" timeout="60" export="full"><![CDATA[
+    SELECT h.business_unit, h.builder_version, count(*) AS rows, count(DISTINCT h.settlement_date) AS days,
+           count(*) FILTER (WHERE h.view_fx_nc_factor IS NULL) AS view_fx_null
+    FROM opera.helper_settle_p_and_g_view_cache_table h
+    WHERE h.tenant_id = :tenant AND h.business_unit IN ('orm', 'osg', 'rmc', 'ORM', 'OSG', 'RMC')
+    GROUP BY h.business_unit, h.builder_version ORDER BY 1, 2
+  ]]></sql>
+
+  <sql id="stored-fx" db="target" timeout="60" after="speed"><![CDATA[
+    SELECT h.uuid::text AS row_id, h.business_unit, h.view_fx_nc_factor AS fx_nc_factor, h.view_actual_fx_nc_factor AS actual_fx_nc_factor
+    FROM opera.helper_settle_p_and_g_view_cache_table h
+    WHERE h.tenant_id = :tenant AND h.business_unit IN ('orm', 'osg', 'rmc', 'ORM', 'OSG', 'RMC')
+  ]]></sql>
+
+  <sql id="old-fx" db="target" timeout="600" after="stored-fx"><![CDATA[
+    SELECT h.uuid::text AS row_id, h.business_unit, fx.fx_nc_factor, fx.actual_fx_nc_factor
+    FROM opera.helper_settle_p_and_g_view_cache_table h
+    LEFT JOIN opera.fx_nc_factor_view fx ON fx.tenant_id = h.tenant_id AND fx.business_unit = h.business_unit AND fx.trade_id = h.source_trade_id
+    WHERE h.tenant_id = :tenant AND h.business_unit IN ('orm', 'osg', 'rmc', 'ORM', 'OSG', 'RMC')
+  ]]></sql>
+
+  <compare id="cmp-fx" source="old-fx" target="stored-fx">
+    <key columns="row_id"/>
+    <breakdown columns="business_unit" top="5"/>
+  </compare>
+
+  <expect ref="speed" rows="1" reason="the tenant count of the view returns (it ran 10+ min before v6)"/>
+  <expect ref="filled" rows=">=1" reason="published shape C rows exist"/>
+  <expect expr="#size(#rows('filled').?[builder_version == null]) == 0" reason="every published shape C row is filled (backfill or builder v5)"/>
+  <expect ref="cmp-fx" different="0" only-source="0" only-target="0" duplicates="0" reason="the stored fx factors equal fx_nc_factor_view, row for row"/>
+  <compress id="bundle" file="recon-dup-13-after-deploy-v6.zip"><include ref="filled"/><include ref="cmp-fx"/></compress>
+</rules>
