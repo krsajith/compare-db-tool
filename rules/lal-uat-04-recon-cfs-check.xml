@@ -25,12 +25,13 @@
   ]]></sql>
   <expect ref="filled" column="filled_trades" min="1" reason="the fill added CFS trades (1,177,828 expected)"/>
 
-  <sql id="snapshots" db="postgres-uat" export="full" timeout="1200"><![CDATA[
-    WITH filled AS (
-      SELECT l.trade_id FROM opera.latest_active_lot l
-      WHERE l.tenant_id = :tenant AND l.business_unit = 'CFS'
-        AND NOT EXISTS (SELECT 1 FROM parity_work.change_lal_uat_02_fill_fill_all_bus_20261119160510 b
-                        WHERE b.tenant_id = l.tenant_id AND b.business_unit = l.business_unit AND b.trade_id = l.trade_id)
+  <!-- v2 (19 Nov 17:20): the first version joined the rebuilt snapshot (about 1.2 M rows, not yet analyzed) to the whole 1.2 M-row cache and hit the
+       20 min timeout. Now each snapshot is reduced to its distinct trades once and compared only with the small set of trades that were in the
+       cache before the fill (the backup, 18,146 CFS trades): a trade that was not there before = added by the fill. -->
+  <sql id="snapshots" db="postgres-uat" export="full" timeout="600"><![CDATA[
+    WITH old_cache AS (
+      SELECT DISTINCT b.trade_id FROM parity_work.change_lal_uat_02_fill_fill_all_bus_20261119160510 b
+      WHERE b.tenant_id = :tenant AND b.business_unit = 'CFS'
     ), ptr AS (
       SELECT p.view_type, p.settlement_date, p.published_run_id FROM opera.recon_snapshot_pointer p
       WHERE p.tenant_id = :tenant AND p.business_unit = 'CFS'
@@ -48,16 +49,19 @@
       SELECT 'TRADERS_PRICING', s.run_id, coalesce(s.source_trade_id, regexp_replace(s.trade_id, '-CFS$', ''))
       FROM opera.recon_traders_snapshot s JOIN ptr p ON p.view_type = 'TRADERS_PRICING' AND s.run_id = p.published_run_id
       WHERE s.tenant_id = :tenant AND s.business_unit = 'CFS'
+    ), per_view AS (
+      SELECT x.view_type, x.trade, count(*) AS n FROM snap x GROUP BY x.view_type, x.trade
     )
-    SELECT p.view_type, p.settlement_date, rr.resolved_value_date, rr.completed_at::text AS run_completed, rr.updated_timestamp::text AS run_updated,
-           count(x.trade) AS snapshot_rows, count(DISTINCT x.trade) AS snapshot_trades,
-           count(DISTINCT x.trade) FILTER (WHERE f.trade_id IS NOT NULL) AS from_filled,
-           CASE WHEN count(DISTINCT x.trade) FILTER (WHERE f.trade_id IS NOT NULL) > 0 THEN 1 ELSE 0 END AS built_after_fill
+    SELECT p.view_type, p.settlement_date, rr.resolved_value_date, rr.row_count AS run_row_count, rr.updated_timestamp::text AS run_updated,
+           coalesce(sum(v.n), 0) AS snapshot_rows, count(v.trade) AS snapshot_trades,
+           count(v.trade) FILTER (WHERE o.trade_id IS NULL) AS from_filled,
+           count(v.trade) FILTER (WHERE o.trade_id IS NOT NULL) AS from_old_cache,
+           CASE WHEN count(v.trade) FILTER (WHERE o.trade_id IS NULL) > 0 THEN 1 ELSE 0 END AS built_after_fill
     FROM ptr p
     JOIN opera.recon_refresh_run rr ON rr.uuid = p.published_run_id
-    LEFT JOIN snap x ON x.view_type = p.view_type AND x.run_id = p.published_run_id
-    LEFT JOIN filled f ON f.trade_id = x.trade
-    GROUP BY p.view_type, p.settlement_date, rr.resolved_value_date, rr.completed_at, rr.updated_timestamp
+    LEFT JOIN per_view v ON v.view_type = p.view_type
+    LEFT JOIN old_cache o ON o.trade_id = v.trade
+    GROUP BY p.view_type, p.settlement_date, rr.resolved_value_date, rr.row_count, rr.updated_timestamp
     ORDER BY p.view_type
   ]]></sql>
   <expect ref="snapshots" rows=">=1" reason="CFS has at least one published recon snapshot"/>
