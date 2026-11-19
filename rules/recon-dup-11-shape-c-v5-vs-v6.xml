@@ -1,0 +1,272 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rules name="recon-dup-11-shape-c-v5-vs-v6">
+  <!--
+    Question: does view v6 shape C (sp and fx evaluated per row, LATERAL) return exactly what v5 shape C returns (sp and fx joined as whole
+    views), and how fast is it? Only the sp and fx joins changed in v6; every other column of shape C is the same text, so comparing the ten
+    values shape C takes from sp and fx, per snapshot row, plus the row multiplicity (duplicate row_id), covers the whole change.
+
+      new     the v6 join block, generated from analysis/settle-subportfolio-view-branch-c-2026-11-19/shape_c_joins_v6.sql (the changeset text)
+      old-fx  v5: fx_nc_factor_view joined as a whole view (about 4 min on dev, rule 08)
+      old-sp  v5: the joins of helper_settle_pricing_and_traders_pricing_view, verbatim, with its three UNION views (curr_mult_view,
+              cloned_curr_mult_view, murex_nc_factor_view) computed once as MATERIALIZED CTEs for the tenant. Same rows as the view
+              (materializing does not change a result), but it finishes; the view itself did not return in 15 min (rule 08).
+      plan-new  plan only of the new query (seconds), to read that every lookup is an index lookup on the row's keys.
+    Exact equality, no tolerance: the expressions are the same, so the doubles are the same. Read only. Parameter: tenant.
+  -->
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+  </parameters>
+
+  <sql id="new" db="target" timeout="120"><![CDATA[
+    SELECT h.uuid::text AS row_id, h.business_unit, h.security_id, h.source_trade_id,
+           sp.asset_class, sp.invenio_product_code, sp.product_name, sp.exchange_name,
+           sp.lot_mult1, sp.curr_mult1, sp.mult_factor, sp.nc_factor,
+           fx.fx_nc_factor, fx.actual_fx_nc_factor
+    FROM opera.helper_settle_p_and_g_view_cache_table h
+    LEFT JOIN LATERAL (
+        SELECT pm1.asset_class, pm1.invenio_product_code, pm1.product_name, pm1.exchange_name,
+               pm1.lot_mult AS lot_mult1, cm1.curr_mult AS curr_mult1, pm1.murex_mult AS mult_factor, mx.murex_nc_factor AS nc_factor
+        FROM opera.cloned_security_info_table s
+        JOIN opera.valuation_date_table v ON v.tenant_id = s.tenant_id AND v.business_unit = s.business_unit
+        LEFT JOIN opera.cloned_underlying_list_table u1 ON u1.tenant_id = s.tenant_id AND u1.underlying_id = s.underlying1_id
+        LEFT JOIN opera.cloned_underlying_list_table u2 ON u2.tenant_id = s.tenant_id AND u2.underlying_id = s.underlying2_id
+        LEFT JOIN LATERAL (SELECT c.curr_mult FROM opera.curr_mult_view c
+                           WHERE c.tenant_id = s.tenant_id AND c.business_unit = s.business_unit
+                             AND c.invenio_product_code = s.product_code AND c.value_date = v.value_date OFFSET 0) cm1 ON true
+        LEFT JOIN opera.product_master_table pm1 ON pm1.tenant_id = s.tenant_id AND pm1.invenio_product_code = s.product_code
+        LEFT JOIN LATERAL (SELECT 1 AS one FROM opera.cloned_curr_mult_view c
+                           WHERE c.tenant_id = s.tenant_id AND c.business_unit = s.business_unit
+                             AND c.invenio_product_code = u2.invenio_product_code AND c.value_date = v.value_date OFFSET 0) cm2 ON true
+        LEFT JOIN opera.cloned_product_master_table pm2 ON pm2.tenant_id = s.tenant_id AND pm2.invenio_product_code = u2.invenio_product_code
+        LEFT JOIN LATERAL (SELECT m.murex_nc_factor FROM opera.murex_nc_factor_view m
+                           WHERE m.tenant_id = s.tenant_id AND m.business_unit = s.business_unit
+                             AND m.invenio_product_code = s.product_code AND m.value_date = v.value_date OFFSET 0) mx ON true
+        WHERE s.tenant_id = h.tenant_id AND s.business_unit = h.business_unit AND s.security_id = h.security_id
+          AND s.business_unit IN ('orm', 'osg', 'rmc', 'ORM', 'OSG', 'RMC')
+        OFFSET 0
+    ) sp ON true
+    LEFT JOIN LATERAL (
+        SELECT DISTINCT
+            CASE
+                WHEN LOWER(b.derivative_type) IN ('fx_vanilla_call', 'fx_vanilla_put') THEN 1
+                WHEN LOWER(b.curr_mult_type) = 'multiplication' AND b.is_fixing_done = 0 THEN 1
+                WHEN LOWER(b.curr_mult_type) = 'multiplication' AND b.is_fixing_done = 1
+                    THEN ((b.constant_nc_factor * b.fixing_rate) / (b.constant_curr_mult * b.settle_by_curr_mult))
+                WHEN LOWER(b.curr_mult_type) = 'division' AND b.is_fixing_done = 0
+                    THEN CASE
+                        WHEN LOWER(b.business_unit) IN ('orm', 'osg')
+                             AND ( LOWER(LEFT(b.derivative_type, 3)) = 'cs_'
+                                OR LOWER(LEFT(b.product_code, 5)) IN ('cm ko', 'cm ac', 'cm ae', 'cm vv') ) THEN 1
+                        WHEN LOWER(b.business_unit) IN ('rmc')
+                             AND ( LOWER(LEFT(b.derivative_type, 3)) = 'cs_'
+                                OR LOWER(LEFT(b.product_code, 5)) IN ('cm ko', 'cm ac', 'cm ae', 'cm vv', 'im rt', 'cm sh', 'cm ak', 'cm bp')
+                                OR LOWER(LEFT(b.product_code, 6)) IN ('cm pal', 'cm zrr', 'cm bdr') ) THEN 1
+                        ELSE (b.constant_nc_factor / b.settle_by_underlying) END
+                WHEN LOWER(b.curr_mult_type) = 'division' AND b.is_fixing_done = 1
+                    THEN (b.constant_nc_factor / b.fixing_rate)
+            END AS fx_nc_factor,
+            CASE WHEN LOWER(b.business_unit) IN ('rba', 'rbc', 'rmc') THEN
+                CASE
+                    WHEN LOWER(b.derivative_type) IN ('fx_vanilla_call', 'fx_vanilla_put') THEN 1
+                    WHEN LOWER(b.curr_mult_type) = 'multiplication' AND b.is_fixing_done = 0 THEN 1
+                    WHEN LOWER(b.curr_mult_type) = 'multiplication' AND b.is_fixing_done = 1
+                        THEN ((b.constant_nc_factor * b.fixing_rate) / (b.constant_curr_mult * b.actual_by_curr_mult))
+                    WHEN LOWER(b.curr_mult_type) = 'division' AND b.is_fixing_done = 0
+                        THEN CASE
+                            WHEN LOWER(b.business_unit) IN ('rmc')
+                                 AND ( LOWER(LEFT(b.derivative_type, 3)) = 'cs_'
+                                    OR LOWER(LEFT(b.product_code, 5)) IN ('cm ko', 'cm ac', 'cm ae', 'cm vv', 'im rt', 'cm sh', 'cm ak', 'cm bp')
+                                    OR LOWER(LEFT(b.product_code, 6)) IN ('cm pal', 'cm zrr', 'cm bdr') ) THEN 1
+                            ELSE (b.constant_nc_factor / b.actual_by_underlying) END
+                    WHEN LOWER(b.curr_mult_type) = 'division' AND b.is_fixing_done = 1
+                        THEN (b.constant_nc_factor / b.fixing_rate)
+                END
+            END AS actual_fx_nc_factor
+        FROM (
+            SELECT DISTINCT d.tenant_id, d.business_unit, d.trade_id, d.is_fixing_done, si.derivative_type, si.product_code,
+                   pm.curr_mult_type, pm.constant_nc_factor, pm.constant_curr_mult, ft.fixing_rate,
+                   usv_cm.settle_value AS settle_by_curr_mult, usv_u1.settle_value AS settle_by_underlying,
+                   uav_cm.settle_value AS actual_by_curr_mult, uav_u1.settle_value AS actual_by_underlying
+            FROM opera.deal_ticket_table_with_fy_premium_view d
+            JOIN opera.valuation_date_table v ON v.tenant_id = d.tenant_id AND v.business_unit = d.business_unit
+            LEFT JOIN opera.security_info_table si
+                   ON si.tenant_id = d.tenant_id AND si.business_unit = d.business_unit AND si.security_id = d.security_id
+            LEFT JOIN LATERAL (SELECT x.invenio_product_code FROM opera.helper_invenio_product_code x
+                               WHERE x.tenant_id = si.tenant_id AND x.business_unit = si.business_unit AND x.security_id = si.security_id
+                               OFFSET 0) hipc ON true
+            LEFT JOIN opera.product_master_table pm ON pm.tenant_id = si.tenant_id AND pm.invenio_product_code = hipc.invenio_product_code
+            LEFT JOIN opera.fixing_table ft ON ft.tenant_id = d.tenant_id AND ft.business_unit = d.business_unit AND ft.trade_id = d.trade_id
+            LEFT JOIN opera.underlying_settle_value_table usv_cm
+                   ON usv_cm.tenant_id = pm.tenant_id AND usv_cm.underlying_id = pm.curr_mult_factor AND usv_cm.value_date = v.value_date
+            LEFT JOIN opera.underlying_settle_value_table usv_u1
+                   ON usv_u1.tenant_id = si.tenant_id AND usv_u1.underlying_id = si.underlying1_id AND usv_u1.value_date = v.value_date
+            LEFT JOIN opera.underlying_actual_value_table uav_cm
+                   ON uav_cm.tenant_id = pm.tenant_id AND uav_cm.underlying_id = pm.curr_mult_factor AND uav_cm.value_date = v.value_date
+            LEFT JOIN opera.underlying_actual_value_table uav_u1
+                   ON uav_u1.tenant_id = si.tenant_id AND uav_u1.underlying_id = si.underlying1_id AND uav_u1.value_date = v.value_date
+            WHERE d.tenant_id = h.tenant_id AND d.business_unit = h.business_unit AND d.trade_id = h.source_trade_id
+              AND LOWER(d.business_unit) IN ('cfs', 'rov', 'cto', 'orm', 'osg', 'rmc')
+        ) b
+        WHERE LOWER(b.derivative_type) IN ('fx_vanilla_call', 'fx_vanilla_put')
+           OR ( LOWER(b.derivative_type) NOT IN ('fx_vanilla_call', 'fx_vanilla_put')
+                AND LOWER(b.curr_mult_type) IN ('multiplication', 'division')
+                AND b.is_fixing_done IN (0, 1) )
+    ) fx ON true
+    WHERE h.tenant_id = :tenant AND h.business_unit IN ('orm', 'osg', 'rmc', 'ORM', 'OSG', 'RMC')
+  ]]></sql>
+
+  <explain id="plan-new" db="target" analyze="false" timeout="60"><![CDATA[
+    SELECT count(*), sum(sp.nc_factor), sum(fx.fx_nc_factor)
+    FROM opera.helper_settle_p_and_g_view_cache_table h
+    LEFT JOIN LATERAL (
+        SELECT pm1.asset_class, pm1.invenio_product_code, pm1.product_name, pm1.exchange_name,
+               pm1.lot_mult AS lot_mult1, cm1.curr_mult AS curr_mult1, pm1.murex_mult AS mult_factor, mx.murex_nc_factor AS nc_factor
+        FROM opera.cloned_security_info_table s
+        JOIN opera.valuation_date_table v ON v.tenant_id = s.tenant_id AND v.business_unit = s.business_unit
+        LEFT JOIN opera.cloned_underlying_list_table u1 ON u1.tenant_id = s.tenant_id AND u1.underlying_id = s.underlying1_id
+        LEFT JOIN opera.cloned_underlying_list_table u2 ON u2.tenant_id = s.tenant_id AND u2.underlying_id = s.underlying2_id
+        LEFT JOIN LATERAL (SELECT c.curr_mult FROM opera.curr_mult_view c
+                           WHERE c.tenant_id = s.tenant_id AND c.business_unit = s.business_unit
+                             AND c.invenio_product_code = s.product_code AND c.value_date = v.value_date OFFSET 0) cm1 ON true
+        LEFT JOIN opera.product_master_table pm1 ON pm1.tenant_id = s.tenant_id AND pm1.invenio_product_code = s.product_code
+        LEFT JOIN LATERAL (SELECT 1 AS one FROM opera.cloned_curr_mult_view c
+                           WHERE c.tenant_id = s.tenant_id AND c.business_unit = s.business_unit
+                             AND c.invenio_product_code = u2.invenio_product_code AND c.value_date = v.value_date OFFSET 0) cm2 ON true
+        LEFT JOIN opera.cloned_product_master_table pm2 ON pm2.tenant_id = s.tenant_id AND pm2.invenio_product_code = u2.invenio_product_code
+        LEFT JOIN LATERAL (SELECT m.murex_nc_factor FROM opera.murex_nc_factor_view m
+                           WHERE m.tenant_id = s.tenant_id AND m.business_unit = s.business_unit
+                             AND m.invenio_product_code = s.product_code AND m.value_date = v.value_date OFFSET 0) mx ON true
+        WHERE s.tenant_id = h.tenant_id AND s.business_unit = h.business_unit AND s.security_id = h.security_id
+          AND s.business_unit IN ('orm', 'osg', 'rmc', 'ORM', 'OSG', 'RMC')
+        OFFSET 0
+    ) sp ON true
+    LEFT JOIN LATERAL (
+        SELECT DISTINCT
+            CASE
+                WHEN LOWER(b.derivative_type) IN ('fx_vanilla_call', 'fx_vanilla_put') THEN 1
+                WHEN LOWER(b.curr_mult_type) = 'multiplication' AND b.is_fixing_done = 0 THEN 1
+                WHEN LOWER(b.curr_mult_type) = 'multiplication' AND b.is_fixing_done = 1
+                    THEN ((b.constant_nc_factor * b.fixing_rate) / (b.constant_curr_mult * b.settle_by_curr_mult))
+                WHEN LOWER(b.curr_mult_type) = 'division' AND b.is_fixing_done = 0
+                    THEN CASE
+                        WHEN LOWER(b.business_unit) IN ('orm', 'osg')
+                             AND ( LOWER(LEFT(b.derivative_type, 3)) = 'cs_'
+                                OR LOWER(LEFT(b.product_code, 5)) IN ('cm ko', 'cm ac', 'cm ae', 'cm vv') ) THEN 1
+                        WHEN LOWER(b.business_unit) IN ('rmc')
+                             AND ( LOWER(LEFT(b.derivative_type, 3)) = 'cs_'
+                                OR LOWER(LEFT(b.product_code, 5)) IN ('cm ko', 'cm ac', 'cm ae', 'cm vv', 'im rt', 'cm sh', 'cm ak', 'cm bp')
+                                OR LOWER(LEFT(b.product_code, 6)) IN ('cm pal', 'cm zrr', 'cm bdr') ) THEN 1
+                        ELSE (b.constant_nc_factor / b.settle_by_underlying) END
+                WHEN LOWER(b.curr_mult_type) = 'division' AND b.is_fixing_done = 1
+                    THEN (b.constant_nc_factor / b.fixing_rate)
+            END AS fx_nc_factor,
+            CASE WHEN LOWER(b.business_unit) IN ('rba', 'rbc', 'rmc') THEN
+                CASE
+                    WHEN LOWER(b.derivative_type) IN ('fx_vanilla_call', 'fx_vanilla_put') THEN 1
+                    WHEN LOWER(b.curr_mult_type) = 'multiplication' AND b.is_fixing_done = 0 THEN 1
+                    WHEN LOWER(b.curr_mult_type) = 'multiplication' AND b.is_fixing_done = 1
+                        THEN ((b.constant_nc_factor * b.fixing_rate) / (b.constant_curr_mult * b.actual_by_curr_mult))
+                    WHEN LOWER(b.curr_mult_type) = 'division' AND b.is_fixing_done = 0
+                        THEN CASE
+                            WHEN LOWER(b.business_unit) IN ('rmc')
+                                 AND ( LOWER(LEFT(b.derivative_type, 3)) = 'cs_'
+                                    OR LOWER(LEFT(b.product_code, 5)) IN ('cm ko', 'cm ac', 'cm ae', 'cm vv', 'im rt', 'cm sh', 'cm ak', 'cm bp')
+                                    OR LOWER(LEFT(b.product_code, 6)) IN ('cm pal', 'cm zrr', 'cm bdr') ) THEN 1
+                            ELSE (b.constant_nc_factor / b.actual_by_underlying) END
+                    WHEN LOWER(b.curr_mult_type) = 'division' AND b.is_fixing_done = 1
+                        THEN (b.constant_nc_factor / b.fixing_rate)
+                END
+            END AS actual_fx_nc_factor
+        FROM (
+            SELECT DISTINCT d.tenant_id, d.business_unit, d.trade_id, d.is_fixing_done, si.derivative_type, si.product_code,
+                   pm.curr_mult_type, pm.constant_nc_factor, pm.constant_curr_mult, ft.fixing_rate,
+                   usv_cm.settle_value AS settle_by_curr_mult, usv_u1.settle_value AS settle_by_underlying,
+                   uav_cm.settle_value AS actual_by_curr_mult, uav_u1.settle_value AS actual_by_underlying
+            FROM opera.deal_ticket_table_with_fy_premium_view d
+            JOIN opera.valuation_date_table v ON v.tenant_id = d.tenant_id AND v.business_unit = d.business_unit
+            LEFT JOIN opera.security_info_table si
+                   ON si.tenant_id = d.tenant_id AND si.business_unit = d.business_unit AND si.security_id = d.security_id
+            LEFT JOIN LATERAL (SELECT x.invenio_product_code FROM opera.helper_invenio_product_code x
+                               WHERE x.tenant_id = si.tenant_id AND x.business_unit = si.business_unit AND x.security_id = si.security_id
+                               OFFSET 0) hipc ON true
+            LEFT JOIN opera.product_master_table pm ON pm.tenant_id = si.tenant_id AND pm.invenio_product_code = hipc.invenio_product_code
+            LEFT JOIN opera.fixing_table ft ON ft.tenant_id = d.tenant_id AND ft.business_unit = d.business_unit AND ft.trade_id = d.trade_id
+            LEFT JOIN opera.underlying_settle_value_table usv_cm
+                   ON usv_cm.tenant_id = pm.tenant_id AND usv_cm.underlying_id = pm.curr_mult_factor AND usv_cm.value_date = v.value_date
+            LEFT JOIN opera.underlying_settle_value_table usv_u1
+                   ON usv_u1.tenant_id = si.tenant_id AND usv_u1.underlying_id = si.underlying1_id AND usv_u1.value_date = v.value_date
+            LEFT JOIN opera.underlying_actual_value_table uav_cm
+                   ON uav_cm.tenant_id = pm.tenant_id AND uav_cm.underlying_id = pm.curr_mult_factor AND uav_cm.value_date = v.value_date
+            LEFT JOIN opera.underlying_actual_value_table uav_u1
+                   ON uav_u1.tenant_id = si.tenant_id AND uav_u1.underlying_id = si.underlying1_id AND uav_u1.value_date = v.value_date
+            WHERE d.tenant_id = h.tenant_id AND d.business_unit = h.business_unit AND d.trade_id = h.source_trade_id
+              AND LOWER(d.business_unit) IN ('cfs', 'rov', 'cto', 'orm', 'osg', 'rmc')
+        ) b
+        WHERE LOWER(b.derivative_type) IN ('fx_vanilla_call', 'fx_vanilla_put')
+           OR ( LOWER(b.derivative_type) NOT IN ('fx_vanilla_call', 'fx_vanilla_put')
+                AND LOWER(b.curr_mult_type) IN ('multiplication', 'division')
+                AND b.is_fixing_done IN (0, 1) )
+    ) fx ON true
+    WHERE h.tenant_id = :tenant AND h.business_unit IN ('orm', 'osg', 'rmc', 'ORM', 'OSG', 'RMC')
+  ]]></explain>
+
+  <sql id="old-sp" db="target" timeout="300" after="new"><![CDATA[
+    WITH cmv AS MATERIALIZED (SELECT * FROM opera.curr_mult_view WHERE tenant_id = :tenant),
+         ccmv AS MATERIALIZED (SELECT * FROM opera.cloned_curr_mult_view WHERE tenant_id = :tenant),
+         mxv AS MATERIALIZED (SELECT * FROM opera.murex_nc_factor_view WHERE tenant_id = :tenant),
+    sp AS (
+      SELECT s.tenant_id, s.business_unit, s.security_id, pm1.asset_class, pm1.invenio_product_code, pm1.product_name, pm1.exchange_name,
+             pm1.lot_mult AS lot_mult1, cm1.curr_mult AS curr_mult1, pm1.murex_mult AS mult_factor, mx.murex_nc_factor AS nc_factor
+      FROM opera.cloned_security_info_table s
+      JOIN opera.valuation_date_table v ON v.tenant_id = s.tenant_id AND v.business_unit = s.business_unit
+      LEFT JOIN opera.cloned_underlying_list_table u1 ON u1.tenant_id = s.tenant_id AND u1.underlying_id = s.underlying1_id
+      LEFT JOIN opera.cloned_underlying_list_table u2 ON u2.tenant_id = s.tenant_id AND u2.underlying_id = s.underlying2_id
+      LEFT JOIN cmv cm1 ON cm1.tenant_id = s.tenant_id AND cm1.business_unit = s.business_unit
+             AND cm1.invenio_product_code = s.product_code AND cm1.value_date = v.value_date
+      LEFT JOIN opera.product_master_table pm1 ON pm1.tenant_id = s.tenant_id AND pm1.invenio_product_code = s.product_code
+      LEFT JOIN ccmv cm2 ON cm2.tenant_id = s.tenant_id AND cm2.business_unit = s.business_unit
+             AND cm2.invenio_product_code = u2.invenio_product_code AND cm2.value_date = v.value_date
+      LEFT JOIN opera.cloned_product_master_table pm2 ON pm2.tenant_id = s.tenant_id AND pm2.invenio_product_code = u2.invenio_product_code
+      LEFT JOIN mxv mx ON mx.tenant_id = s.tenant_id AND mx.business_unit = s.business_unit
+             AND mx.invenio_product_code = s.product_code AND mx.value_date = v.value_date
+      WHERE s.tenant_id = :tenant AND s.business_unit IN ('orm', 'osg', 'rmc', 'ORM', 'OSG', 'RMC')
+    )
+    SELECT h.uuid::text AS row_id, h.business_unit, h.security_id, h.source_trade_id,
+           sp.asset_class, sp.invenio_product_code, sp.product_name, sp.exchange_name,
+           sp.lot_mult1, sp.curr_mult1, sp.mult_factor, sp.nc_factor
+    FROM opera.helper_settle_p_and_g_view_cache_table h
+    LEFT JOIN sp ON sp.tenant_id = h.tenant_id AND sp.business_unit = h.business_unit AND sp.security_id = h.security_id
+    WHERE h.tenant_id = :tenant AND h.business_unit IN ('orm', 'osg', 'rmc', 'ORM', 'OSG', 'RMC')
+  ]]></sql>
+
+  <sql id="old-fx" db="target" timeout="600" after="old-sp"><![CDATA[
+    SELECT h.uuid::text AS row_id, h.business_unit, h.security_id, h.source_trade_id, fx.fx_nc_factor, fx.actual_fx_nc_factor
+    FROM opera.helper_settle_p_and_g_view_cache_table h
+    LEFT JOIN opera.fx_nc_factor_view fx ON fx.tenant_id = h.tenant_id AND fx.business_unit = h.business_unit AND fx.trade_id = h.source_trade_id
+    WHERE h.tenant_id = :tenant AND h.business_unit IN ('orm', 'osg', 'rmc', 'ORM', 'OSG', 'RMC')
+  ]]></sql>
+
+  <compare id="cmp-sp" source="old-sp" target="new">
+    <key columns="row_id"/>
+    <column name="fx_nc_factor" ignore="true"/>
+    <column name="actual_fx_nc_factor" ignore="true"/>
+    <breakdown columns="business_unit" top="5"/>
+  </compare>
+  <compare id="cmp-fx" source="old-fx" target="new">
+    <key columns="row_id"/>
+    <column name="asset_class" ignore="true"/>
+    <column name="invenio_product_code" ignore="true"/>
+    <column name="product_name" ignore="true"/>
+    <column name="exchange_name" ignore="true"/>
+    <column name="lot_mult1" ignore="true"/>
+    <column name="curr_mult1" ignore="true"/>
+    <column name="mult_factor" ignore="true"/>
+    <column name="nc_factor" ignore="true"/>
+    <breakdown columns="business_unit" top="5"/>
+  </compare>
+
+  <expect ref="new" rows=">=1" reason="shape C rows exist for the tenant"/>
+  <expect ref="cmp-sp" different="0" only-source="0" only-target="0" duplicates="0" reason="v6 sp lookups return exactly what the sp joins of v5 return, row for row"/>
+  <expect ref="cmp-fx" different="0" only-source="0" only-target="0" duplicates="0" reason="v6 fx lookup returns exactly what fx_nc_factor_view returns, row for row"/>
+  <compress id="bundle" file="recon-dup-11-shape-c-v5-vs-v6.zip"><include ref="cmp-sp"/><include ref="cmp-fx"/><include ref="plan-new"/></compress>
+</rules>
