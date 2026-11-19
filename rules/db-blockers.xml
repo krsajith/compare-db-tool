@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Read-only (19 Nov 2026): who is running, who is waiting, and who blocks whom, right now.
+     Run: compare.ps1 with rules rules\db-blockers.xml and target-env postgres-uat (or postgres-dev). Takes about a second; run it while a job looks stuck.
+     sessions   every non-idle session in this database: state, wait event, age of its transaction and query, the pids blocking it
+     blocked    one row per (waiting session, blocking session) pair with both queries; no rows = nothing is blocked (PASS)
+     advisory   advisory locks held or awaited (recon refresh, latest_active_lot scope locks)
+     settings   the timeouts that apply to this connection and the per-role / per-database overrides
+     Query text of other users shows as insufficient privilege unless the account has pg_read_all_stats. -->
+<rules name="db-blockers">
+  <sql id="sessions" db="target" export="full" timeout="60"><![CDATA[
+    SELECT a.pid, a.usename, a.application_name, host(a.client_addr) AS client, a.state, a.wait_event_type, a.wait_event,
+           date_trunc('second', now() - a.xact_start)::text AS xact_age, date_trunc('second', now() - a.query_start)::text AS query_age,
+           pg_blocking_pids(a.pid)::text AS blocked_by, left(regexp_replace(a.query, '\s+', ' ', 'g'), 400) AS query
+    FROM pg_stat_activity a
+    WHERE a.datname = current_database() AND a.pid <> pg_backend_pid() AND a.backend_type = 'client backend' AND a.state <> 'idle'
+    ORDER BY a.xact_start NULLS LAST
+  ]]></sql>
+
+  <sql id="blocked" db="target" export="full" timeout="60"><![CDATA[
+    SELECT w.pid AS waiting_pid, w.usename AS waiting_user, w.application_name AS waiting_app, w.wait_event_type, w.wait_event,
+           date_trunc('second', now() - w.query_start)::text AS waiting_for,
+           b.pid AS blocking_pid, b.usename AS blocking_user, b.application_name AS blocking_app, b.state AS blocking_state,
+           date_trunc('second', now() - b.xact_start)::text AS blocking_xact_age,
+           left(regexp_replace(w.query, '\s+', ' ', 'g'), 300) AS waiting_query,
+           left(regexp_replace(b.query, '\s+', ' ', 'g'), 300) AS blocking_query
+    FROM pg_stat_activity w
+    CROSS JOIN LATERAL unnest(pg_blocking_pids(w.pid)) AS bp(pid)
+    JOIN pg_stat_activity b ON b.pid = bp.pid
+    WHERE w.datname = current_database()
+    ORDER BY w.query_start
+  ]]></sql>
+  <expect ref="blocked" rows="0" reason="no session is waiting on another one"/>
+
+  <sql id="advisory" db="target" export="full" timeout="60"><![CDATA[
+    SELECT l.pid, l.mode, l.granted, l.classid, l.objid, a.application_name, a.state,
+           date_trunc('second', now() - a.xact_start)::text AS xact_age, left(regexp_replace(a.query, '\s+', ' ', 'g'), 200) AS query
+    FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid
+    WHERE l.locktype = 'advisory' AND l.database = (SELECT oid FROM pg_database WHERE datname = current_database())
+    ORDER BY l.granted, a.xact_start
+  ]]></sql>
+
+  <sql id="settings" db="target" export="full" timeout="60"><![CDATA[
+    SELECT 'this connection' AS scope, name, setting, unit FROM pg_settings
+    WHERE name IN ('lock_timeout', 'statement_timeout', 'idle_in_transaction_session_timeout', 'idle_session_timeout', 'deadlock_timeout', 'log_lock_waits', 'log_min_duration_statement')
+    UNION ALL
+    SELECT coalesce('role ' || r.rolname, 'all roles') || coalesce(' in ' || d.datname, ''), cfg, NULL, NULL
+    FROM pg_db_role_setting s
+    LEFT JOIN pg_roles r ON r.oid = s.setrole
+    LEFT JOIN pg_database d ON d.oid = s.setdatabase
+    CROSS JOIN LATERAL unnest(s.setconfig) AS cfg
+    WHERE d.datname IS NULL OR d.datname = current_database()
+    ORDER BY 1, 2
+  ]]></sql>
+
+  <compress id="bundle" file="db-blockers.zip"><include ref="sessions"/><include ref="blocked"/><include ref="advisory"/><include ref="settings"/></compress>
+</rules>
