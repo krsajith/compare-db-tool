@@ -37,13 +37,16 @@
     SELECT count(*) AS scopes_repaired, sum(missing) AS rows_missing_before, sum(extra) AS rows_extra_before, sum(different) AS rows_different_before, max(run_at)::text AS run_at
     FROM opera.latest_active_lot_reconcile_log WHERE caller = 'lal-uat-02-fill'
   ]]></sql>
+  <expect ref="fill_log" column="scopes_repaired" min="1" reason="lal-uat-02-fill was applied (one log row per repaired BU)"/>
 
   <sql id="stats" db="target" export="full"><![CDATA[
-    SELECT n_live_tup, last_analyze::text, last_autoanalyze::text,
-           CASE WHEN greatest(coalesce(last_analyze, 'epoch'), coalesce(last_autoanalyze, 'epoch')) > now() - interval '1 day' THEN 1 ELSE 0 END AS analyzed_today
-    FROM pg_stat_user_tables WHERE schemaname = 'opera' AND relname = 'latest_active_lot'
+    SELECT s.n_live_tup, s.last_analyze::text, s.last_autoanalyze::text, f.fill_at::text AS fill_at,
+           CASE WHEN f.fill_at IS NOT NULL AND greatest(coalesce(s.last_analyze, 'epoch'), coalesce(s.last_autoanalyze, 'epoch')) >= f.fill_at THEN 1 ELSE 0 END AS analyzed_after_fill
+    FROM pg_stat_user_tables s
+    CROSS JOIN (SELECT max(run_at) AS fill_at FROM opera.latest_active_lot_reconcile_log WHERE caller = 'lal-uat-02-fill') f
+    WHERE s.schemaname = 'opera' AND s.relname = 'latest_active_lot'
   ]]></sql>
-  <expect ref="stats" column="analyzed_today" equals="1" reason="statistics refreshed after the fill"/>
+  <expect ref="stats" column="analyzed_after_fill" equals="1" reason="statistics refreshed by the fill (ANALYZE runs after the repair)"/>
 
   <sql id="thin_view" db="target" export="full"><![CDATA[
     SELECT (SELECT count(*) FROM opera.databasechangelog WHERE id = 'redefine-deal_ticket_active_lots_view-v2-latest-active-lot') AS changeset_recorded,
