@@ -44,16 +44,18 @@ public final class Cli {
                               step "expect" counts are checked, "verify" rules run after --apply; --param overrides a rule parameter
         --change FILE         Run UPDATE / DELETE / free SQL steps from a JSON rule (preview by default): backup, expected counts, preconditions,
                               typed confirmation on --apply, every committed step written to the changelog table of the database
+        --liquibase FILE      Full changelog path; detect src/main/resources; preview SQL by default, --apply executes migrations
+        --status              With --liquibase: list pending changesets without applying migrations
         --confirm TEXT        With --change --apply: the confirmation phrase, for scripted runs (must equal the phrase the tool or the rule asks for)
         --yes                 With --change --apply: skip the typed APPLY of a normal change (never for a risky change or a production database)
         --rerun               With --change --apply: apply a rule again although the same content was already applied in this database
         --changelog           Show the changelog of a database (newest first, with backup tables); needs --db
         --db NAME             With --changelog: the datasource to read
-        --schema NAME         With --changelog: the schema that holds the changelog (default parity_work, the rule's backupSchema)
+        --schema NAME         With --changelog: history schema (default parity_work); with --liquibase: default and tracking schema
         --rule NAME           With --changelog: only this rule name
         --ticket TEXT         With --changelog: only this ticket
         --last N              With --changelog: how many rows (default 30)
-        --apply               Commit template replacement, data restore, data load or change; otherwise roll back the preview
+        --apply               Commit template replacement, data restore, data load, change or Liquibase migrations
         --check               Ask the databases to EXPLAIN every query and describe its columns, then check the rule against them (nothing is executed or read)
         --quiet               No progress messages on the console (the log files and outputs are unchanged)
         --menu                Interactive menu (also the default when started without arguments in a terminal)
@@ -72,6 +74,8 @@ public final class Cli {
         public Path restore;
         public Path load;
         public Path change;
+        public Path liquibase;
+        public boolean status;
         public String targetEnv;
         public boolean apply;
         /** --change: scripted confirmation, skip of the typed APPLY, apply again. */
@@ -113,7 +117,7 @@ public final class Cli {
             }
             int equal = argument.indexOf('=');
             String name = equal > 0 ? argument.substring(0, equal) : argument;
-            if (Set.of("--template-export", "--template-import", "--template-upload", "--restore", "--load", "--change", "--confirm", "--db", "--schema", "--rule", "--ticket", "--last", "--rules", "--out", "--param", "--session", "--limit", "--partitions", "--export", "--sample-rows", "--parallel", "--max-partition-mb", "--target-env").contains(name)) {
+            if (Set.of("--liquibase", "--template-export", "--template-import", "--template-upload", "--restore", "--load", "--change", "--confirm", "--db", "--schema", "--rule", "--ticket", "--last", "--rules", "--out", "--param", "--session", "--limit", "--partitions", "--export", "--sample-rows", "--parallel", "--max-partition-mb", "--target-env").contains(name)) {
                 String value;
                 if (equal > 0) value = argument.substring(equal + 1);
                 else {
@@ -122,6 +126,10 @@ public final class Cli {
                 }
                 try {
                     switch (name) {
+                        case "--liquibase" -> {
+                            if (options.liquibase != null) throw new ToolException("Supply only one Liquibase changelog file");
+                            options.liquibase = Path.of(value);
+                        }
                         case "--template-export" -> {
                             if (options.templateExport != null) throw new ToolException("Supply only one template export rule");
                             options.templateExport = Path.of(value);
@@ -177,6 +185,7 @@ public final class Cli {
                     }
                 } catch (IllegalArgumentException e) { throw new ToolException("Invalid value for " + name); }
             } else switch (argument) {
+                case "--status" -> options.status = true;
                 case "--quiet" -> options.quiet = true;
                 case "--check" -> options.check = true;
                 case "--menu" -> { options.menu = true; options.menuRequested = true; }
@@ -196,6 +205,18 @@ public final class Cli {
         }
         if (options.limit < 0 || options.partitions < 1 || options.partitions > 256 || options.sampleRows < 0 || options.maxPartitionMb < 1)
             throw new ToolException("limit/sample-rows must be nonnegative, max-partition-mb positive, and partitions between 1 and 256.");
+        if (options.status && options.liquibase == null) throw new ToolException("--status needs --liquibase FILE.");
+        if (options.liquibase != null) {
+            if (options.rules != null || options.restore != null || options.load != null || options.change != null
+                || options.templateUpload != null || options.templateExport != null || options.changelog || options.datasources
+                || options.menu || options.check || options.db != null || options.changelogRule != null || options.changelogTicket != null
+                || options.confirm != null || options.yes || options.rerun || !options.parameters.isEmpty())
+                throw new ToolException("--liquibase cannot be combined with other operation modes, --check, --db, data-change confirmations or --param.");
+            if ((options.validate && (options.apply || options.status)) || (options.status && options.apply))
+                throw new ToolException("Choose one Liquibase operation: --validate, --status, --apply, or preview (no operation flag).");
+            if (options.changelogSchema != null && options.changelogSchema.isBlank()) throw new ToolException("--schema cannot be blank.");
+            return options;
+        }
         if (options.templateUpload != null && (options.rules != null || options.datasources || !options.parameters.isEmpty()))
             throw new ToolException("Template upload cannot be combined with comparison rules, datasource listing or parameters.");
         if (options.templateExport != null && (options.templateUpload != null || options.rules != null
@@ -241,6 +262,11 @@ public final class Cli {
     public int execute(Options options) throws IOException {
         Progress.get().quiet(options.quiet);
         SessionSettings.init(options.session);
+        if (options.liquibase != null) {
+            try { return new LiquibaseRunner(settings).execute(options); }
+            catch (ToolException e) { throw e; }
+            catch (Exception e) { throw new ToolException("Liquibase failed: " + SecretRedactor.clean(e.getMessage()), e); }
+        }
         if (options.menu) return Menu.launch(settings, options);
         if (options.templateExport != null) return new TemplateExporter(settings).execute(options);
         if (options.templateUpload != null) return new TemplateUploader(settings).execute(options);

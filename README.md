@@ -9,6 +9,28 @@ two instances of the same database type, or different database types. MySQL and 
 The Spring Boot version is 4.1.2. Java source/bytecode targets 21; the launcher uses your JAVA_HOME or PATH and can
 run on a newer JDK, including Java 27. The runtime Java and Spring Boot versions are recorded in the log at startup.
 
+## Liquibase from any project's changelog
+
+The tool embeds Liquibase 4.31.1. Supply the full YAML path; the enclosing `src/main/resources` folder is detected automatically to resolve `db/changelog/...` includes and preserve existing changeset identities. Outside that layout, the YAML directory is the resource root.
+
+```powershell
+$master = 'D:\oga\oga-opera-transaction-core\transaction-core\src\main\resources\db\changelog\db.changelog-master.yaml'
+$views = 'D:\oga\oga-opera-transaction-core\transaction-core\src\main\resources\db\changelog\views-and-procedures.yaml'
+.\compare.ps1 --liquibase $master --validate
+.\compare.ps1 --liquibase $views --validate
+.\compare.ps1 --liquibase $master --target-env postgres-uat --schema opera --status
+.\compare.ps1 --liquibase $master --target-env postgres-uat --schema opera
+.\compare.ps1 --liquibase $master --target-env postgres-uat --schema opera --session statement_timeout=0 --apply
+.\compare.ps1 --liquibase $views --target-env postgres-uat --schema opera
+.\compare.ps1 --liquibase $views --target-env postgres-uat --schema opera --session statement_timeout=0 --apply
+```
+
+Default operation generates `PREVIEW.sql` for review without executing migrations or creating/upgrading tracking tables. It omits lock/history SQL; changeset preconditions are evaluated during apply. `--status` lists eligible changesets; `--validate` parses includes and SQL-file checksums offline using a PostgreSQL dialect (it does not establish SQL/runtime correctness or deployed checksum compatibility). Connected operations use `--target-env` or `TARGET_ENV` and the existing datasource settings. `--schema` sets the JDBC current schema plus Liquibase's default and tracking schema; the schema must exist, and explicit schema names in SQL remain unchanged.
+
+Only the named changelog runs. Master and views/procedures are separate invocations; pre-run/migrations prerequisites are not automatically executed. Apply uses Liquibase's normal tracking, locks, checksum checks, preconditions and changeset transactions; this includes nontransactional changesets. A later failure can leave earlier changesets committed. There is no automatic backup or whole-run rollback. Existing `--allow-prod`, `allow-write` and `--session` controls apply. Completed changesets are skipped, subject to `runAlways`/`runOnChange`.
+
+Each invocation writes `SUMMARY.md` and `RESULTS.md`, plus `PENDING.md` for connected operations, in `out/liquibase-...`. Apply prints/saves each changeset's status and elapsed milliseconds; the summary records complete-operation time, including failures. Exit codes are 0 success, 2 failure. See [HOW-TO-USE.md section 6.13](HOW-TO-USE.md#613-run-liquibase-from-a-full-changelog-path) for details.
+
 ## What the console tells you
 
 While a rule runs the tool prints short, plain messages; the log files in `logs/` keep the full detail and the stack traces.

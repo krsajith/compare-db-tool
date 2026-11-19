@@ -112,10 +112,12 @@ Exit codes: `0` success / equal / all `<expect>` met · `1` differences or an `<
 | `--restore FILE` | Restore rows from a backup table using a JSON rule. **Preview by default.** |
 | `--load FILE` | Copy rows from a SELECT on any datasource into a table using a JSON rule (section 6.9b). Insert only. **Preview by default.** `--param` overrides a rule parameter. |
 | `--change FILE` | Run UPDATE / DELETE / free SQL steps from a JSON rule (section 6.9c). **Preview by default.** |
+| `--liquibase FILE` | Full path to a Liquibase changelog. Detects the enclosing `src/main/resources` folder. Generates migration SQL by default; `--apply` executes it (section 6.13). |
+| `--status` | With `--liquibase`: connect and list eligible changesets without migrating. |
 | `--confirm TEXT`, `--yes`, `--rerun` | With `--change --apply`: `--confirm` gives the typed phrase for a scripted run (it must equal the phrase asked for), `--yes` skips the typed `APPLY` of a normal change (never for a risky change or a production database), `--rerun` applies a rule again although the same content was already applied in that database. |
 | `--changelog` | Print the changelog of a database, newest first, with each backup table (section 6.9c). Needs `--db`. |
-| `--db NAME`, `--schema NAME`, `--rule NAME`, `--ticket TEXT`, `--last N` | With `--changelog`: the datasource, the schema that holds the changelog (default `parity_work`), filters by rule name and ticket, and the number of rows (default 30). |
-| `--apply` | Commit a restore, a load, a change or a template import. Without it everything is rolled back. |
+| `--db NAME`, `--schema NAME`, `--rule NAME`, `--ticket TEXT`, `--last N` | With `--changelog`: the datasource, the schema that holds the changelog (default `parity_work`), filters by rule name and ticket, and the number of rows (default 30). With `--liquibase`, `--schema` sets the connection's current schema plus Liquibase's default and tracking schema. |
+| `--apply` | Commit a restore, a load, a change or a template import, or execute Liquibase migrations. Liquibase preview only generates SQL; other write previews roll back. |
 | `--template-export FILE`, `--template-import FILE` (`--template-upload`) | Report templates (section 6.10). Import is a preview unless `--apply`. |
 | `--datasources` | List configured datasource names and flags (no secrets). |
 | `--quiet` | No progress messages (warnings and errors still show). |
@@ -613,6 +615,46 @@ compare-db-tool: done in 6.1 s - exit 1 (differences, or an expectation was not 
   summary: out\trade-parity-...\SUMMARY.md
 ```
 A step slower than 30 s prints "still running (...)" every 30 s with rows so far.
+
+---
+
+
+### 6.13 Run Liquibase from a full changelog path
+
+Use `--liquibase FILE` for a Liquibase changelog, `--rules FILE` for this tool's comparison XML, and `--change FILE` for its data-change JSON.
+
+The tool embeds Liquibase 4.31.1; no separate Liquibase installation is needed. Pass the full YAML path from any project. For the standard layout `src/main/resources/db/changelog`, it finds the enclosing `src/main/resources` folder automatically. Includes such as `db/changelog/tables/example.xml` retain their original resource-relative identities in `DATABASECHANGELOG`; the absolute Windows path is not used as their identity. Without that standard ancestor, the YAML's directory is the resource root. Relative includes and SQL files are resolved by Liquibase. The original files are never rewritten.
+
+```powershell
+$master = 'D:\oga\oga-opera-transaction-core\transaction-core\src\main\resources\db\changelog\db.changelog-master.yaml'
+$views = 'D:\oga\oga-opera-transaction-core\transaction-core\src\main\resources\db\changelog\views-and-procedures.yaml'
+
+# Offline: parse includes, validate changeset definitions and read SQL files for checksums.
+.\compare.ps1 --liquibase $master --validate
+.\compare.ps1 --liquibase $views --validate
+
+# Connected: list changesets eligible to run.
+.\compare.ps1 --liquibase $master --target-env postgres-uat --schema opera --status
+
+# Connected SQL preview: no migrations or tracking-table creation.
+.\compare.ps1 --liquibase $master --target-env postgres-uat --schema opera
+
+# Execute pending master changes, then preview views using the updated database state.
+.\compare.ps1 --liquibase $master --target-env postgres-uat --schema opera --session statement_timeout=0 --apply
+.\compare.ps1 --liquibase $views --target-env postgres-uat --schema opera
+
+# Execute the selected views/procedures changelog.
+.\compare.ps1 --liquibase $views --target-env postgres-uat --schema opera --session statement_timeout=0 --apply
+```
+
+- Choose the database through `--target-env` or `TARGET_ENV`; credentials come from the existing datasource configuration. Substitute `postgres-dev` for a dev run. Offline validation does not need a target.
+- `--schema opera` sets the JDBC current schema and Liquibase's default and tracking schema. If omitted, the connection's default is used. It does not rewrite explicit schema names in SQL, and the schema must already exist.
+- Only the selected changelog runs. Master and views are separate operations; pre-run and migrations changelogs are not automatically added. Existing databases must already have the prerequisites for the selected file.
+- `--validate` opens no connection and cannot verify deployed checksums, SQL correctness or database prerequisites. It uses an offline PostgreSQL dialect. `--status` and preview read existing database metadata and history without creating/upgrading tracking tables; a fresh database reports all eligible changesets. Changed checksums are reported, not silently repaired.
+- Preview writes `PREVIEW.sql` using Liquibase SQL generation for eligible changesets. It omits lock/history SQL and does not evaluate changeset preconditions; apply may skip or mark changesets according to those preconditions. This is a review artifact, not a replacement for applying through Liquibase. Unsupported SQL-generation changes fail rather than claiming a complete preview.
+- `--apply` uses normal Liquibase locking, checksum validation, preconditions and changeset transactions, including `runInTransaction="false"`. Completed changesets are skipped; Liquibase's `runAlways` and `runOnChange` rules still apply. Earlier changesets may remain committed if a later one fails. There is no automatic backup or whole-run rollback.
+- Existing production protection (`--allow-prod`) and `allow-write=false` apply. Session settings are reused. Do not combine this mode with comparison/restore/load/change/template modes or `--check`.
+- Every operation writes `SUMMARY.md` and `RESULTS.md` under a new `out/liquibase-...` folder, including failures. Connected operations also write `PENDING.md`; previews write `PREVIEW.sql`. Apply prints and saves each executed changeset's status/time; the summary records the complete-operation milliseconds. Exit 0 means success (pending changes in status/preview are not differences); exit 2 means failure.
 
 ---
 

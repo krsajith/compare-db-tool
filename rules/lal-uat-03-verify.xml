@@ -3,7 +3,7 @@
      the fill logged its scopes, the cache statistics are fresh, and the thin view state is shown.
      Run on its own: compare.ps1 with rules rules\lal-uat-03-verify.xml and target-env postgres-uat -->
 <rules name="lal-uat-03-verify">
-  <sql id="drift" db="target" export="full" timeout="1800"><![CDATA[
+  <sql id="drift" db="postgres-uat" export="full" timeout="1800"><![CDATA[
     WITH cut AS (
       SELECT v.tenant_id, v.business_unit, max(v.value_date) AS d
       FROM opera.valuation_date_table v GROUP BY v.tenant_id, v.business_unit
