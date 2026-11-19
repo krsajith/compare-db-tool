@@ -10,7 +10,7 @@
   <sql id="sessions" db="target" export="full" timeout="60"><![CDATA[
     SELECT a.pid, a.usename, a.application_name, host(a.client_addr) AS client, a.state, a.wait_event_type, a.wait_event,
            date_trunc('second', now() - a.xact_start)::text AS xact_age, date_trunc('second', now() - a.query_start)::text AS query_age,
-           pg_blocking_pids(a.pid)::text AS blocked_by, left(regexp_replace(a.query, '\s+', ' ', 'g'), 400) AS query
+           pg_blocking_pids(a.pid)::text AS blocked_by, left(translate(a.query, chr(10) || chr(13) || chr(9), '   '), 400) AS query
     FROM pg_stat_activity a
     WHERE a.datname = current_database() AND a.pid <> pg_backend_pid() AND a.backend_type = 'client backend' AND a.state <> 'idle'
     ORDER BY a.xact_start NULLS LAST
@@ -21,8 +21,8 @@
            date_trunc('second', now() - w.query_start)::text AS waiting_for,
            b.pid AS blocking_pid, b.usename AS blocking_user, b.application_name AS blocking_app, b.state AS blocking_state,
            date_trunc('second', now() - b.xact_start)::text AS blocking_xact_age,
-           left(regexp_replace(w.query, '\s+', ' ', 'g'), 300) AS waiting_query,
-           left(regexp_replace(b.query, '\s+', ' ', 'g'), 300) AS blocking_query
+           left(translate(w.query, chr(10) || chr(13) || chr(9), '   '), 300) AS waiting_query,
+           left(translate(b.query, chr(10) || chr(13) || chr(9), '   '), 300) AS blocking_query
     FROM pg_stat_activity w
     CROSS JOIN LATERAL unnest(pg_blocking_pids(w.pid)) AS bp(pid)
     JOIN pg_stat_activity b ON b.pid = bp.pid
@@ -33,7 +33,7 @@
 
   <sql id="advisory" db="target" export="full" timeout="60"><![CDATA[
     SELECT l.pid, l.mode, l.granted, l.classid, l.objid, a.application_name, a.state,
-           date_trunc('second', now() - a.xact_start)::text AS xact_age, left(regexp_replace(a.query, '\s+', ' ', 'g'), 200) AS query
+           date_trunc('second', now() - a.xact_start)::text AS xact_age, left(translate(a.query, chr(10) || chr(13) || chr(9), '   '), 200) AS query
     FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid
     WHERE l.locktype = 'advisory' AND l.database = (SELECT oid FROM pg_database WHERE datname = current_database())
     ORDER BY l.granted, a.xact_start
