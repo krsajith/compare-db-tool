@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rules name="recon-dup-12-stored-sp-vs-live">
+  <!--
+    Question: shape C (orm osg rmc) of helper_settle_pricing_subportfoliovalues_view takes eight values from
+    helper_settle_pricing_and_traders_pricing_view (sp). The settle snapshot already stores eight columns with the same names. Are they
+    equal, row for row? If yes, view v6 shape C reads them and only the two fx factors need new snapshot columns.
+
+      stored  the published snapshot rows (helper_settle_p_and_g_view_cache_table), shape C BUs
+      live    the joins of sp, verbatim, with its three UNION views (curr_mult_view, cloned_curr_mult_view, murex_nc_factor_view) computed
+              once as MATERIALIZED CTEs for the tenant (same rows as the view; the view itself does not return), joined to the same rows
+    Exact equality for numbers; trim for text. Read only. Parameter: tenant. Expected time: about a minute.
+    Note: v5 joins sp on security only and sp uses the current valuation_date_table date, so for older snapshot days v5 shows today's
+    factors while the snapshot holds the factors of its refresh day (the way shapes A B D E F work since v4). The breakdown by
+    settlement_date shows whether differences sit only on older days (expected, by design) or also on the latest day (a real mismatch).
+  -->
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+  </parameters>
+
+  <sql id="stored" db="target" timeout="60"><![CDATA[
+    SELECT h.uuid::text AS row_id, h.business_unit, h.security_id, h.settlement_date,
+           h.asset_class, h.invenio_product_code, h.product_name, h.exchange_name,
+           h.lot_mult1::double precision AS lot_mult1, h.curr_mult1::double precision AS curr_mult1,
+           h.mult_factor::double precision AS mult_factor, h.nc_factor::double precision AS nc_factor
+    FROM opera.helper_settle_p_and_g_view_cache_table h
+    WHERE h.tenant_id = :tenant AND h.business_unit IN ('orm', 'osg', 'rmc', 'ORM', 'OSG', 'RMC')
+  ]]></sql>
+
+  <sql id="live" db="target" timeout="300" after="stored"><![CDATA[
+    WITH cmv AS MATERIALIZED (SELECT tenant_id, business_unit, invenio_product_code, value_date, curr_mult FROM opera.curr_mult_view WHERE tenant_id = :tenant),
+         ccmv AS MATERIALIZED (SELECT tenant_id, business_unit, invenio_product_code, value_date FROM opera.cloned_curr_mult_view WHERE tenant_id = :tenant),
+         mxv AS MATERIALIZED (SELECT tenant_id, business_unit, invenio_product_code, value_date, murex_nc_factor FROM opera.murex_nc_factor_view WHERE tenant_id = :tenant),
+    sp AS (
+      SELECT s.tenant_id, s.business_unit, s.security_id, pm1.asset_class, pm1.invenio_product_code, pm1.product_name, pm1.exchange_name,
+             pm1.lot_mult AS lot_mult1, cm1.curr_mult AS curr_mult1, pm1.murex_mult AS mult_factor, mx.murex_nc_factor AS nc_factor
+      FROM opera.cloned_security_info_table s
+      JOIN opera.valuation_date_table v ON v.tenant_id = s.tenant_id AND v.business_unit = s.business_unit
+      LEFT JOIN opera.cloned_underlying_list_table u1 ON u1.tenant_id = s.tenant_id AND u1.underlying_id = s.underlying1_id
+      LEFT JOIN opera.cloned_underlying_list_table u2 ON u2.tenant_id = s.tenant_id AND u2.underlying_id = s.underlying2_id
+      LEFT JOIN cmv cm1 ON cm1.tenant_id = s.tenant_id AND cm1.business_unit = s.business_unit
+             AND cm1.invenio_product_code = s.product_code AND cm1.value_date = v.value_date
+      LEFT JOIN opera.product_master_table pm1 ON pm1.tenant_id = s.tenant_id AND pm1.invenio_product_code = s.product_code
+      LEFT JOIN ccmv cm2 ON cm2.tenant_id = s.tenant_id AND cm2.business_unit = s.business_unit
+             AND cm2.invenio_product_code = u2.invenio_product_code AND cm2.value_date = v.value_date
+      LEFT JOIN opera.cloned_product_master_table pm2 ON pm2.tenant_id = s.tenant_id AND pm2.invenio_product_code = u2.invenio_product_code
+      LEFT JOIN mxv mx ON mx.tenant_id = s.tenant_id AND mx.business_unit = s.business_unit
+             AND mx.invenio_product_code = s.product_code AND mx.value_date = v.value_date
+      WHERE s.tenant_id = :tenant AND s.business_unit IN ('orm', 'osg', 'rmc', 'ORM', 'OSG', 'RMC')
+    )
+    SELECT h.uuid::text AS row_id, h.business_unit, h.security_id, h.settlement_date,
+           sp.asset_class, sp.invenio_product_code, sp.product_name, sp.exchange_name,
+           sp.lot_mult1, sp.curr_mult1, sp.mult_factor, sp.nc_factor
+    FROM opera.helper_settle_p_and_g_view_cache_table h
+    LEFT JOIN sp ON sp.tenant_id = h.tenant_id AND sp.business_unit = h.business_unit AND sp.security_id = h.security_id
+    WHERE h.tenant_id = :tenant AND h.business_unit IN ('orm', 'osg', 'rmc', 'ORM', 'OSG', 'RMC')
+  ]]></sql>
+
+  <compare id="cmp-sp" source="stored" target="live">
+    <key columns="row_id"/>
+    <column name="asset_class" trim="true"/>
+    <column name="invenio_product_code" trim="true"/>
+    <column name="product_name" trim="true"/>
+    <column name="exchange_name" trim="true"/>
+    <breakdown columns="business_unit" top="5"/>
+    <breakdown columns="settlement_date" top="10"/>
+  </compare>
+
+  <expect ref="stored" rows=">=1" reason="shape C BUs have published settle rows"/>
+  <expect ref="cmp-sp" different="0" only-source="0" only-target="0" duplicates="0"
+          reason="the stored product fields, multipliers and nc_factor equal what sp returns, so view v6 can read them"/>
+  <compress id="bundle" file="recon-dup-12-stored-sp-vs-live.zip"><include ref="cmp-sp"/></compress>
+</rules>
