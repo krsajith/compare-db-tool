@@ -10,7 +10,7 @@
     ), expected AS (
       SELECT DISTINCT ON (d.tenant_id, d.business_unit, d.trade_id) d.tenant_id, d.business_unit, d.trade_id, d.value_date, d.active_lots
       FROM opera.deal_active_lots_table d
-      JOIN cut c ON c.tenant_id = d.tenant_id AND c.business_unit = d.business_unit AND d.value_date &lt;= c.d
+      JOIN cut c ON c.tenant_id = d.tenant_id AND c.business_unit = d.business_unit AND d.value_date <= c.d
       ORDER BY d.tenant_id, d.business_unit, d.trade_id, d.value_date DESC
     ), actual AS (
       SELECT l.tenant_id, l.business_unit, l.trade_id, l.value_date, l.active_lots FROM opera.latest_active_lot l
