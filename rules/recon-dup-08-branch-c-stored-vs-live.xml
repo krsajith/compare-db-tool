@@ -1,0 +1,100 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rules name="recon-dup-08-branch-c-stored-vs-live">
+  <!--
+    Question: can branch C of helper_settle_pricing_subportfoliovalues_view (orm osg rmc) read its factors from the settle snapshot,
+    like the other branches, instead of joining helper_settle_pricing_and_traders_pricing_view (sp) and fx_nc_factor_view (fx)?
+    Those two joins cost 150+ s and 143 s (recon-dup-07). Yes only if the stored values equal what the live joins return today.
+
+      stored    published settle snapshot rows of orm osg rmc with the stored columns: asset_class, invenio_product_code, product_name,
+                exchange_name, lot_mult1, curr_mult1, mult_factor, nc_factor, fx_nc_factor
+      live-sp   the same rows with the eight columns branch C takes from sp, joined exactly as the view does (security_id). The
+                security list of the stored rows is passed in, so the sp branches are filtered by it instead of being built whole
+      live-fx   the same rows with fx_nc_factor from fx, joined as the view does (source_trade_id), plus actual_fx_nc_factor and a flag
+                saying whether it differs from fx_nc_factor. fx is built whole (its CTE is materialized): about 2.5 minutes
+      cmp-sp    stored against live-sp by snapshot row (uuid); duplicates mean sp returns more than one row per security (fan out)
+      cmp-fx    stored against live-fx by snapshot row
+    The last expectation is information: when it fails, actual_fx_nc_factor differs from fx_nc_factor for some rows, so the new stored
+    column actual_fx_nc_factor is really needed (rmc only).
+    Read only. Parameter: tenant. Run with the target-env flag (UAT has rmc rows only; run on dev as well for orm and osg).
+  -->
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+  </parameters>
+
+  <sql id="stored" db="target" timeout="300"><![CDATA[
+    SELECT h.uuid::text AS row_id, h.business_unit, h.trade_id, h.source_trade_id, h.security_id,
+           h.asset_class::text AS asset_class, h.invenio_product_code::text AS invenio_product_code,
+           h.product_name::text AS product_name, h.exchange_name::text AS exchange_name,
+           h.lot_mult1::double precision AS lot_mult1, h.curr_mult1::double precision AS curr_mult1,
+           h.mult_factor::double precision AS mult_factor, h.nc_factor::double precision AS nc_factor,
+           h.fx_nc_factor::double precision AS fx_nc_factor
+    FROM opera.helper_settle_p_and_g_view_cache_table h
+    WHERE h.tenant_id = :tenant AND h.business_unit IN ('orm', 'osg', 'rmc', 'ORM', 'OSG', 'RMC')
+  ]]></sql>
+
+  <sql id="live-sp" db="target" timeout="900" uses="s=stored"><![CDATA[
+    SELECT h.uuid::text AS row_id, h.business_unit, h.trade_id, h.security_id,
+           sp.asset_class::text AS asset_class, sp.invenio_product_code::text AS invenio_product_code,
+           sp.product_name::text AS product_name, sp.exchange_name::text AS exchange_name,
+           sp.lot_mult1::double precision AS lot_mult1, sp.curr_mult1::double precision AS curr_mult1,
+           sp.mult_factor::double precision AS mult_factor, sp.nc_factor::double precision AS nc_factor
+    FROM opera.helper_settle_p_and_g_view_cache_table h
+    LEFT JOIN opera.helper_settle_pricing_and_traders_pricing_view sp
+           ON sp.tenant_id = h.tenant_id AND sp.business_unit = h.business_unit AND sp.security_id = h.security_id
+          AND sp.tenant_id = :tenant AND sp.security_id IN (:s.security_id[])
+    WHERE h.tenant_id = :tenant AND h.business_unit IN ('orm', 'osg', 'rmc', 'ORM', 'OSG', 'RMC')
+      AND h.security_id IN (:s.security_id[])
+  ]]></sql>
+
+  <sql id="live-fx" db="target" timeout="900" after="stored"><![CDATA[
+    SELECT h.uuid::text AS row_id, h.business_unit, h.trade_id, h.security_id,
+           fx.fx_nc_factor::double precision AS fx_nc_factor,
+           fx.actual_fx_nc_factor::double precision AS actual_fx_nc_factor,
+           (fx.actual_fx_nc_factor IS DISTINCT FROM fx.fx_nc_factor) AS actual_differs
+    FROM opera.helper_settle_p_and_g_view_cache_table h
+    LEFT JOIN opera.fx_nc_factor_view fx
+           ON fx.tenant_id = h.tenant_id AND fx.business_unit = h.business_unit AND fx.trade_id = h.source_trade_id
+    WHERE h.tenant_id = :tenant AND h.business_unit IN ('orm', 'osg', 'rmc', 'ORM', 'OSG', 'RMC')
+  ]]></sql>
+
+  <compare id="cmp-sp" source="stored" target="live-sp">
+    <key columns="row_id"/>
+    <column name="source_trade_id" ignore="true"/>
+    <column name="fx_nc_factor" ignore="true"/>
+    <column name="asset_class" trim="true"/>
+    <column name="invenio_product_code" trim="true"/>
+    <column name="product_name" trim="true"/>
+    <column name="exchange_name" trim="true"/>
+    <column name="lot_mult1" relTol="0.000000001"/>
+    <column name="curr_mult1" relTol="0.000000001"/>
+    <column name="mult_factor" relTol="0.000000001"/>
+    <column name="nc_factor" relTol="0.000000001"/>
+    <breakdown columns="business_unit" top="5"/>
+  </compare>
+
+  <compare id="cmp-fx" source="stored" target="live-fx">
+    <key columns="row_id"/>
+    <column name="source_trade_id" ignore="true"/>
+    <column name="asset_class" ignore="true"/>
+    <column name="invenio_product_code" ignore="true"/>
+    <column name="product_name" ignore="true"/>
+    <column name="exchange_name" ignore="true"/>
+    <column name="lot_mult1" ignore="true"/>
+    <column name="curr_mult1" ignore="true"/>
+    <column name="mult_factor" ignore="true"/>
+    <column name="nc_factor" ignore="true"/>
+    <column name="actual_fx_nc_factor" ignore="true"/>
+    <column name="actual_differs" ignore="true"/>
+    <column name="fx_nc_factor" relTol="0.000000001"/>
+    <breakdown columns="business_unit" top="5"/>
+  </compare>
+
+  <expect ref="stored" rows="&gt;=1" reason="branch C BUs have published settle rows"/>
+  <expect ref="cmp-sp" different="0" only-source="0" only-target="0" duplicates="0" reason="stored product fields, multipliers and nc_factor equal what sp returns"/>
+  <expect ref="cmp-fx" different="0" only-source="0" only-target="0" duplicates="0" reason="stored fx_nc_factor equals what fx_nc_factor_view returns"/>
+  <expect expr="#size(#rows('live-fx').?[actual_differs == true]) == 0" reason="INFORMATION: a failure means actual_fx_nc_factor differs from fx_nc_factor for some rows, so a stored actual_fx_nc_factor column is needed"/>
+
+  <compress id="bundle" file="recon-dup-08-branch-c-stored-vs-live.zip">
+    <include ref="cmp-sp"/><include ref="cmp-fx"/><include ref="stored"/><include ref="live-sp"/><include ref="live-fx"/>
+  </compress>
+</rules>
