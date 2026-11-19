@@ -1,0 +1,104 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- latest_active_lot on UAT, read-only diagnosis (19 Nov 2026).
+     Q1 drift per tenant and BU: the rule of fn_latest_active_lot_reconcile as one SELECT (newest deal_active_lots_table row per trade
+        on or before the BU valuation date, zero lots kept) against the cache. Lists only scopes with a difference.
+     Q2 why: the missing trades split by when their source row was written against when the BU valuation row was created.
+        before_valuation_row = the insert trigger saw no valuation date and skipped it (fn_sync_latest_active_lot_v2: v_value_date IS NULL).
+        after_valuation_row  = the trigger did not fire (disabled or session_replication_role = replica during the load).
+     Q3 triggers on both tables, Q4 drift log, Q5 thin view changeset and the current view text, Q6 insert counters.
+     Run: compare.ps1 with rules rules\lal-uat-01-diagnose.xml and target-env postgres-uat
+     Heavy part is Q1/Q2 (one pass over deal_active_lots_table, about 10.7 M rows), so the timeout is 30 min. -->
+<rules name="lal-uat-01-diagnose">
+  <sql id="drift" db="target" export="full" timeout="1800"><![CDATA[
+    WITH cut AS (
+      SELECT v.tenant_id, v.business_unit, max(v.value_date) AS d
+      FROM opera.valuation_date_table v GROUP BY v.tenant_id, v.business_unit
+    ), expected AS (
+      SELECT DISTINCT ON (d.tenant_id, d.business_unit, d.trade_id) d.tenant_id, d.business_unit, d.trade_id, d.value_date, d.active_lots
+      FROM opera.deal_active_lots_table d
+      JOIN cut c ON c.tenant_id = d.tenant_id AND c.business_unit = d.business_unit AND d.value_date <= c.d
+      ORDER BY d.tenant_id, d.business_unit, d.trade_id, d.value_date DESC
+    ), actual AS (
+      SELECT l.tenant_id, l.business_unit, l.trade_id, l.value_date, l.active_lots FROM opera.latest_active_lot l
+    ), j AS (
+      SELECT coalesce(e.tenant_id, a.tenant_id) AS tenant_id, coalesce(e.business_unit, a.business_unit) AS business_unit,
+             e.trade_id AS e_trade, a.trade_id AS a_trade,
+             (e.value_date IS DISTINCT FROM a.value_date OR e.active_lots IS DISTINCT FROM a.active_lots) AS diff
+      FROM expected e
+      FULL JOIN actual a ON a.tenant_id = e.tenant_id AND a.business_unit = e.business_unit AND a.trade_id = e.trade_id
+    )
+    SELECT j.tenant_id, j.business_unit, c.d AS cutoff,
+           count(j.e_trade) AS expected_rows, count(j.a_trade) AS cache_rows,
+           count(*) FILTER (WHERE j.a_trade IS NULL) AS missing,
+           count(*) FILTER (WHERE j.e_trade IS NULL) AS extra,
+           count(*) FILTER (WHERE j.e_trade IS NOT NULL AND j.a_trade IS NOT NULL AND j.diff) AS different
+    FROM j LEFT JOIN cut c ON c.tenant_id = j.tenant_id AND c.business_unit = j.business_unit
+    GROUP BY j.tenant_id, j.business_unit, c.d
+    HAVING count(*) FILTER (WHERE j.a_trade IS NULL OR j.e_trade IS NULL OR j.diff) > 0
+    ORDER BY missing DESC
+  ]]></sql>
+
+  <sql id="bu_without_valuation" db="target" export="full" timeout="600"><![CDATA[
+    SELECT d.tenant_id, d.business_unit, count(*) AS history_rows
+    FROM opera.deal_active_lots_table d
+    WHERE NOT EXISTS (SELECT 1 FROM opera.valuation_date_table v WHERE v.tenant_id = d.tenant_id AND v.business_unit = d.business_unit)
+    GROUP BY d.tenant_id, d.business_unit ORDER BY 3 DESC
+  ]]></sql>
+
+  <sql id="why" db="target" export="full" timeout="1800"><![CDATA[
+    WITH vrow AS (
+      SELECT v.tenant_id, v.business_unit, max(v.value_date) AS cutoff, min(v.created_timestamp) AS valuation_created, max(v.updated_timestamp) AS valuation_updated
+      FROM opera.valuation_date_table v GROUP BY v.tenant_id, v.business_unit
+    ), newest AS (
+      SELECT DISTINCT ON (d.tenant_id, d.business_unit, d.trade_id) d.tenant_id, d.business_unit, d.trade_id, d.created_timestamp, d.created_by
+      FROM opera.deal_active_lots_table d
+      JOIN vrow r ON r.tenant_id = d.tenant_id AND r.business_unit = d.business_unit AND d.value_date <= r.cutoff
+      ORDER BY d.tenant_id, d.business_unit, d.trade_id, d.value_date DESC
+    )
+    SELECT n.tenant_id, n.business_unit, r.valuation_created, r.valuation_updated,
+           count(*) AS missing_trades,
+           count(*) FILTER (WHERE n.created_timestamp < r.valuation_created) AS before_valuation_row,
+           count(*) FILTER (WHERE n.created_timestamp >= r.valuation_created) AS after_valuation_row,
+           count(*) FILTER (WHERE n.created_timestamp IS NULL) AS no_created_timestamp,
+           min(n.created_timestamp) AS first_written, max(n.created_timestamp) AS last_written,
+           string_agg(DISTINCT n.created_by, ', ') AS written_by
+    FROM newest n
+    JOIN vrow r ON r.tenant_id = n.tenant_id AND r.business_unit = n.business_unit
+    WHERE NOT EXISTS (SELECT 1 FROM opera.latest_active_lot l
+                      WHERE l.tenant_id = n.tenant_id AND l.business_unit = n.business_unit AND l.trade_id = n.trade_id)
+    GROUP BY n.tenant_id, n.business_unit, r.valuation_created, r.valuation_updated
+    ORDER BY missing_trades DESC
+  ]]></sql>
+
+  <sql id="triggers" db="target" export="full"><![CDATA[
+    SELECT c.relname AS table_name, t.tgname, t.tgenabled,
+           CASE t.tgenabled WHEN 'O' THEN 'fires (origin/local)' WHEN 'D' THEN 'DISABLED' WHEN 'R' THEN 'replica only' WHEN 'A' THEN 'always' END AS state,
+           p.proname AS function_name,
+           CASE WHEN pg_get_functiondef(p.oid) LIKE '%fn_lock_active_lot_scope%' THEN 'v2 (locks)' ELSE 'v1' END AS body
+    FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid JOIN pg_namespace n ON n.oid = c.relnamespace JOIN pg_proc p ON p.oid = t.tgfoid
+    WHERE n.nspname = 'opera' AND NOT t.tgisinternal AND c.relname IN ('deal_active_lots_table', 'valuation_date_table')
+    ORDER BY 1, 2
+  ]]></sql>
+
+  <sql id="drift_log" db="target" export="full"><![CDATA[
+    SELECT run_at, tenant_id, business_unit, cutoff, missing, extra, different, repaired, caller
+    FROM opera.latest_active_lot_reconcile_log ORDER BY run_at DESC LIMIT 100
+  ]]></sql>
+
+  <sql id="thin_view" db="target" export="full"><![CDATA[
+    SELECT (SELECT count(*) FROM opera.databasechangelog WHERE id = 'redefine-deal_ticket_active_lots_view-v2-latest-active-lot') AS changeset_recorded,
+           (SELECT max(dateexecuted)::text FROM opera.databasechangelog WHERE id = 'redefine-deal_ticket_active_lots_view-v2-latest-active-lot') AS changeset_run_at,
+           CASE WHEN pg_get_viewdef('opera.deal_ticket_active_lots_view'::regclass) LIKE '%latest_active_lot%' THEN 'reads latest_active_lot' ELSE 'old window over history' END AS view_reads
+  ]]></sql>
+
+  <sql id="counters" db="target" export="full"><![CDATA[
+    SELECT relname, n_tup_ins, n_tup_upd, n_tup_del, n_live_tup, last_autovacuum::text, last_autoanalyze::text, last_analyze::text
+    FROM pg_stat_user_tables WHERE schemaname = 'opera' AND relname IN ('deal_active_lots_table', 'latest_active_lot', 'valuation_date_table')
+    ORDER BY relname
+  ]]></sql>
+
+  <compress id="bundle" file="lal-uat-01-diagnose.zip">
+    <include ref="drift"/><include ref="bu_without_valuation"/><include ref="why"/><include ref="triggers"/>
+    <include ref="drift_log"/><include ref="thin_view"/><include ref="counters"/>
+  </compress>
+</rules>

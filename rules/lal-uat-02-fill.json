@@ -1,0 +1,39 @@
+{
+  "name": "lal-uat-02-fill",
+  "db": "postgres-uat",
+  "backupSchema": "parity_work",
+  "ticket": "latest-active-lot-uat-fill-20261119",
+  "description": "Fills latest_active_lot on UAT after the 14-15 Nov load bypassed the sync trigger (1,177,828 CFS trades missing, every BU affected). Runs the deployed repair fn_latest_active_lot_reconcile(NULL, NULL, true) for every tenant and BU: it takes the exclusive scope lock per BU, writes only rows that differ and logs each scope to latest_active_lot_reconcile_log. Then ANALYZE. One transaction: BUs already done keep their lock until the commit, so deal saves, netting and valuation-date saves on UAT wait (or get the 'busy' message) until it ends; run when UAT users are idle. The step backs up the current cache (about 154 k rows), so the undo rule can put it back. Session: statement_timeout=0 and opera.lal_exclusive_wait_seconds=120 (see the command in analysis/latest-active-lot-uat-2026-11-19/README.md).",
+  "steps": [
+    {
+      "id": "fill-all-bus",
+      "action": "sql",
+      "table": "opera.latest_active_lot",
+      "where": "tenant_id IS NOT NULL",
+      "key": ["tenant_id", "business_unit", "trade_id"],
+      "sql": "DO $$ BEGIN PERFORM * FROM opera.fn_latest_active_lot_reconcile(NULL, NULL, true, 'lal-uat-02-fill'); EXECUTE 'ANALYZE opera.latest_active_lot'; END $$",
+      "preconditions": [
+        {
+          "sql": "SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'opera' AND p.proname IN ('fn_latest_active_lot_reconcile', 'fn_lock_active_lot_scope')",
+          "expect": "2",
+          "reason": "the PR 177 repair and lock functions are deployed"
+        },
+        {
+          "sql": "SELECT count(*) FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'opera' AND c.relname = 'deal_active_lots_table' AND t.tgname = 'trg_sync_latest_active_lot' AND t.tgenabled IN ('O', 'A')",
+          "expect": "1",
+          "reason": "the sync trigger is enabled, so rows written after the fill keep the cache current"
+        }
+      ],
+      "expect": {
+        "targetBefore": ">=0",
+        "affected": "0",
+        "targetAfter": ">=1"
+      }
+    }
+  ],
+  "verify": [
+    {
+      "rule": "lal-uat-03-verify.xml"
+    }
+  ]
+}

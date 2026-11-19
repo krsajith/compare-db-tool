@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Verify of lal-uat-02-fill.json, read-only (19 Nov 2026): latest_active_lot equals the reconcile rule for every tenant and BU,
+     the fill logged its scopes, the cache statistics are fresh, and the thin view state is shown.
+     Run on its own: compare.ps1 with rules rules\lal-uat-03-verify.xml and target-env postgres-uat -->
+<rules name="lal-uat-03-verify">
+  <sql id="drift" db="target" export="full" timeout="1800"><![CDATA[
+    WITH cut AS (
+      SELECT v.tenant_id, v.business_unit, max(v.value_date) AS d
+      FROM opera.valuation_date_table v GROUP BY v.tenant_id, v.business_unit
+    ), expected AS (
+      SELECT DISTINCT ON (d.tenant_id, d.business_unit, d.trade_id) d.tenant_id, d.business_unit, d.trade_id, d.value_date, d.active_lots
+      FROM opera.deal_active_lots_table d
+      JOIN cut c ON c.tenant_id = d.tenant_id AND c.business_unit = d.business_unit AND d.value_date <= c.d
+      ORDER BY d.tenant_id, d.business_unit, d.trade_id, d.value_date DESC
+    ), actual AS (
+      SELECT l.tenant_id, l.business_unit, l.trade_id, l.value_date, l.active_lots FROM opera.latest_active_lot l
+    ), j AS (
+      SELECT coalesce(e.tenant_id, a.tenant_id) AS tenant_id, coalesce(e.business_unit, a.business_unit) AS business_unit,
+             e.trade_id AS e_trade, a.trade_id AS a_trade,
+             (e.value_date IS DISTINCT FROM a.value_date OR e.active_lots IS DISTINCT FROM a.active_lots) AS diff
+      FROM expected e
+      FULL JOIN actual a ON a.tenant_id = e.tenant_id AND a.business_unit = e.business_unit AND a.trade_id = e.trade_id
+    )
+    SELECT j.tenant_id, j.business_unit,
+           count(j.e_trade) AS expected_rows, count(j.a_trade) AS cache_rows,
+           count(*) FILTER (WHERE j.a_trade IS NULL) AS missing,
+           count(*) FILTER (WHERE j.e_trade IS NULL) AS extra,
+           count(*) FILTER (WHERE j.e_trade IS NOT NULL AND j.a_trade IS NOT NULL AND j.diff) AS different
+    FROM j GROUP BY j.tenant_id, j.business_unit ORDER BY j.tenant_id, j.business_unit
+  ]]></sql>
+  <expect ref="drift" rows=">=1" reason="at least one BU checked"/>
+  <expect ref="drift" column="missing" each="true" equals="0" reason="no trade missing in any BU"/>
+  <expect ref="drift" column="extra" each="true" equals="0" reason="no extra cache row in any BU"/>
+  <expect ref="drift" column="different" each="true" equals="0" reason="no cache row with another date or lots"/>
+
+  <sql id="fill_log" db="target" export="full"><![CDATA[
+    SELECT count(*) AS scopes_repaired, sum(missing) AS rows_missing_before, sum(extra) AS rows_extra_before, sum(different) AS rows_different_before, max(run_at)::text AS run_at
+    FROM opera.latest_active_lot_reconcile_log WHERE caller = 'lal-uat-02-fill'
+  ]]></sql>
+
+  <sql id="stats" db="target" export="full"><![CDATA[
+    SELECT n_live_tup, last_analyze::text, last_autoanalyze::text,
+           CASE WHEN greatest(coalesce(last_analyze, 'epoch'), coalesce(last_autoanalyze, 'epoch')) > now() - interval '1 day' THEN 1 ELSE 0 END AS analyzed_today
+    FROM pg_stat_user_tables WHERE schemaname = 'opera' AND relname = 'latest_active_lot'
+  ]]></sql>
+  <expect ref="stats" column="analyzed_today" equals="1" reason="statistics refreshed after the fill"/>
+
+  <sql id="thin_view" db="target" export="full"><![CDATA[
+    SELECT (SELECT count(*) FROM opera.databasechangelog WHERE id = 'redefine-deal_ticket_active_lots_view-v2-latest-active-lot') AS changeset_recorded,
+           CASE WHEN pg_get_viewdef('opera.deal_ticket_active_lots_view'::regclass) LIKE '%latest_active_lot%' THEN 'reads latest_active_lot' ELSE 'old window over history' END AS view_reads
+  ]]></sql>
+
+  <compress id="bundle" file="lal-uat-03-verify.zip">
+    <include ref="drift"/><include ref="fill_log"/><include ref="stats"/><include ref="thin_view"/>
+  </compress>
+</rules>
