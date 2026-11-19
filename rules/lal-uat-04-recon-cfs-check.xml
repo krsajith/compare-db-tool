@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Read-only (19 Nov 2026). Are the published CFS recon snapshots on UAT built from the old, incomplete latest_active_lot?
+     The recon builders (recon_materialize_settle / actual / traders) read latest_active_lot when the snapshot is built and store the result;
+     the fill on 19 Nov 16:05 does not change a snapshot that already exists.
+     filled  = CFS trades the fill added = cache now minus the backup the fill took (parity_work.change_lal_uat_02_fill_fill_all_bus_20261119160510).
+     per view type (latest published settlement date): snapshot rows, distinct trades, and how many of those trades are filled trades.
+     from_filled = 0 means the snapshot was built before the fill and is missing those trades: rebuild it (lal-uat-05-recon-cfs-rebuild.json).
+     After the rebuild the same rule is the verify: from_filled must be above 0 for every published view type. -->
+<rules name="lal-uat-04-recon-cfs-check">
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+  </parameters>
+
+  <sql id="filled" db="postgres-uat" export="full" timeout="600"><![CDATA[
+    WITH filled AS (
+      SELECT l.trade_id, l.active_lots FROM opera.latest_active_lot l
+      WHERE l.tenant_id = :tenant AND l.business_unit = 'CFS'
+        AND NOT EXISTS (SELECT 1 FROM parity_work.change_lal_uat_02_fill_fill_all_bus_20261119160510 b
+                        WHERE b.tenant_id = l.tenant_id AND b.business_unit = l.business_unit AND b.trade_id = l.trade_id)
+    )
+    SELECT count(*) AS filled_trades,
+           count(*) FILTER (WHERE active_lots <> 0) AS filled_nonzero_lots,
+           (SELECT count(*) FROM opera.latest_active_lot WHERE tenant_id = :tenant AND business_unit = 'CFS') AS cache_trades
+    FROM filled
+  ]]></sql>
+  <expect ref="filled" column="filled_trades" min="1" reason="the fill added CFS trades (1,177,828 expected)"/>
+
+  <sql id="snapshots" db="postgres-uat" export="full" timeout="1200"><![CDATA[
+    WITH filled AS (
+      SELECT l.trade_id FROM opera.latest_active_lot l
+      WHERE l.tenant_id = :tenant AND l.business_unit = 'CFS'
+        AND NOT EXISTS (SELECT 1 FROM parity_work.change_lal_uat_02_fill_fill_all_bus_20261119160510 b
+                        WHERE b.tenant_id = l.tenant_id AND b.business_unit = l.business_unit AND b.trade_id = l.trade_id)
+    ), ptr AS (
+      SELECT p.view_type, p.settlement_date, p.published_run_id FROM opera.recon_snapshot_pointer p
+      WHERE p.tenant_id = :tenant AND p.business_unit = 'CFS'
+        AND p.settlement_date = (SELECT max(p2.settlement_date) FROM opera.recon_snapshot_pointer p2
+                                 WHERE p2.tenant_id = p.tenant_id AND p2.business_unit = p.business_unit AND p2.view_type = p.view_type)
+    ), snap AS (
+      SELECT 'SETTLE_PRICING' AS view_type, s.run_id, coalesce(s.source_trade_id, regexp_replace(s.trade_id, '-CFS$', '')) AS trade
+      FROM opera.recon_settle_snapshot s JOIN ptr p ON p.view_type = 'SETTLE_PRICING' AND s.run_id = p.published_run_id
+      WHERE s.tenant_id = :tenant AND s.business_unit = 'CFS'
+      UNION ALL
+      SELECT 'SETTLE_ACTUAL_PRICING', s.run_id, coalesce(s.source_trade_id, regexp_replace(s.trade_id, '-CFS$', ''))
+      FROM opera.recon_actual_snapshot s JOIN ptr p ON p.view_type = 'SETTLE_ACTUAL_PRICING' AND s.run_id = p.published_run_id
+      WHERE s.tenant_id = :tenant AND s.business_unit = 'CFS'
+      UNION ALL
+      SELECT 'TRADERS_PRICING', s.run_id, coalesce(s.source_trade_id, regexp_replace(s.trade_id, '-CFS$', ''))
+      FROM opera.recon_traders_snapshot s JOIN ptr p ON p.view_type = 'TRADERS_PRICING' AND s.run_id = p.published_run_id
+      WHERE s.tenant_id = :tenant AND s.business_unit = 'CFS'
+    )
+    SELECT p.view_type, p.settlement_date, rr.resolved_value_date, rr.completed_at::text AS run_completed, rr.updated_timestamp::text AS run_updated,
+           count(x.trade) AS snapshot_rows, count(DISTINCT x.trade) AS snapshot_trades,
+           count(DISTINCT x.trade) FILTER (WHERE f.trade_id IS NOT NULL) AS from_filled,
+           CASE WHEN count(DISTINCT x.trade) FILTER (WHERE f.trade_id IS NOT NULL) > 0 THEN 1 ELSE 0 END AS built_after_fill
+    FROM ptr p
+    JOIN opera.recon_refresh_run rr ON rr.uuid = p.published_run_id
+    LEFT JOIN snap x ON x.view_type = p.view_type AND x.run_id = p.published_run_id
+    LEFT JOIN filled f ON f.trade_id = x.trade
+    GROUP BY p.view_type, p.settlement_date, rr.resolved_value_date, rr.completed_at, rr.updated_timestamp
+    ORDER BY p.view_type
+  ]]></sql>
+  <expect ref="snapshots" rows=">=1" reason="CFS has at least one published recon snapshot"/>
+  <expect ref="snapshots" column="built_after_fill" each="true" equals="1" reason="every published CFS snapshot contains trades the fill added (FAIL before the rebuild is expected)"/>
+
+  <compress id="bundle" file="lal-uat-04-recon-cfs-check.zip"><include ref="filled"/><include ref="snapshots"/></compress>
+</rules>
