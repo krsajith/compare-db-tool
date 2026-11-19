@@ -1,0 +1,300 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rules name="recon-dup-09-sp-fx-funnel">
+  <!--
+    Question: helper_settle_pricing_and_traders_pricing_view (sp) and fx_nc_factor_view (fx) do not come back, so their plans cannot
+    be read. Where inside each view do the rows grow, and which join is the cost?
+
+    Method: rebuild each view one join at a time, for the whole tenant (that is what the views compute; outside filters do not reach
+    them), and count after every join: rows and distinct key. Rows rising while the key stays flat = a join that fans out; a stage that
+    hits its timeout = the cost. Every input also gets a key uniqueness count (rows against distinct join key), so a non unique join key
+    is visible directly. Every query returns one row and is printed in SUMMARY.md; the Rule timing table gives the time of each stage.
+    A cumulative stage runs only when the stage before it completed (after=), each with a 300 s cap.
+
+    sp (helper_settle_pricing_and_traders_pricing_view), driver cloned_security_info_table s:
+      sp-1 s   sp-2 + valuation_date_table v   sp-3 + underlying lists u1 u2   sp-4 + curr_mult_view cm1   sp-5 + product_master pm1
+      sp-6 + cloned_curr_mult_view cm2   sp-7 + cloned_product_master pm2   sp-8 + murex_nc_factor_view mx
+      keys: k-v, k-ul, k-cm, k-ccm, k-mx, k-pm
+    fx (fx_nc_factor_view, CTE b), driver drv (cloned_deal_ticket_table for 11 BUs, deal_ticket_table_with_fy_premium_view for 6):
+      fx-1 drv   fx-2 + v   fx-3 + security_info si   fx-4 + helper_invenio_product_code hipc   fx-5 + product_master pm
+      fx-6 + fixing_table ft   fx-7 + settle value by curr_mult_factor   fx-8 + settle value by underlying1   fx-9, fx-10 actual values
+      keys: k-si, k-hipc, k-ft, k-usv, k-uav
+    Read only. Parameter: tenant. Run with the target-env flag and the export flag set to none.
+  -->
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+  </parameters>
+
+  <!-- key uniqueness of the inputs -->
+  <sql id="k-v" db="target" timeout="120"><![CDATA[
+    SELECT 'valuation_date_table (tenant, bu)' AS input, count(*) AS row_count, count(DISTINCT business_unit) AS distinct_key
+    FROM opera.valuation_date_table WHERE tenant_id = :tenant
+  ]]></sql>
+  <sql id="k-ul" db="target" timeout="120"><![CDATA[
+    SELECT 'cloned_underlying_list_table (underlying_id)' AS input, count(*) AS row_count, count(DISTINCT underlying_id) AS distinct_key
+    FROM opera.cloned_underlying_list_table WHERE tenant_id = :tenant
+  ]]></sql>
+  <sql id="k-pm" db="target" timeout="120"><![CDATA[
+    SELECT 'product_master_table (invenio_product_code)' AS input, count(*) AS row_count, count(DISTINCT invenio_product_code) AS distinct_key
+    FROM opera.product_master_table WHERE tenant_id = :tenant
+  ]]></sql>
+  <sql id="k-cm" db="target" timeout="300"><![CDATA[
+    SELECT 'curr_mult_view (bu, product, value_date)' AS input, count(*) AS row_count,
+           count(DISTINCT business_unit || '|' || invenio_product_code || '|' || value_date) AS distinct_key
+    FROM opera.curr_mult_view WHERE tenant_id = :tenant
+  ]]></sql>
+  <sql id="k-ccm" db="target" timeout="300"><![CDATA[
+    SELECT 'cloned_curr_mult_view (bu, product, value_date)' AS input, count(*) AS row_count,
+           count(DISTINCT business_unit || '|' || invenio_product_code || '|' || value_date) AS distinct_key
+    FROM opera.cloned_curr_mult_view WHERE tenant_id = :tenant
+  ]]></sql>
+  <sql id="k-mx" db="target" timeout="300"><![CDATA[
+    SELECT 'murex_nc_factor_view (bu, product, value_date)' AS input, count(*) AS row_count,
+           count(DISTINCT business_unit || '|' || invenio_product_code || '|' || value_date) AS distinct_key
+    FROM opera.murex_nc_factor_view WHERE tenant_id = :tenant
+  ]]></sql>
+  <sql id="k-si" db="target" timeout="120"><![CDATA[
+    SELECT 'security_info_table (bu, security_id)' AS input, count(*) AS row_count, count(DISTINCT business_unit || '|' || security_id) AS distinct_key
+    FROM opera.security_info_table WHERE tenant_id = :tenant
+  ]]></sql>
+  <sql id="k-hipc" db="target" timeout="300"><![CDATA[
+    SELECT 'helper_invenio_product_code (bu, security_id)' AS input, count(*) AS row_count, count(DISTINCT business_unit || '|' || security_id) AS distinct_key
+    FROM opera.helper_invenio_product_code WHERE tenant_id = :tenant
+  ]]></sql>
+  <sql id="k-ft" db="target" timeout="120"><![CDATA[
+    SELECT 'fixing_table (bu, trade_id)' AS input, count(*) AS row_count, count(DISTINCT business_unit || '|' || trade_id) AS distinct_key
+    FROM opera.fixing_table WHERE tenant_id = :tenant
+  ]]></sql>
+  <sql id="k-usv" db="target" timeout="120"><![CDATA[
+    SELECT 'underlying_settle_value_table (underlying_id, value_date)' AS input, count(*) AS row_count, count(DISTINCT underlying_id || '|' || value_date) AS distinct_key
+    FROM opera.underlying_settle_value_table WHERE tenant_id = :tenant
+  ]]></sql>
+  <sql id="k-uav" db="target" timeout="120"><![CDATA[
+    SELECT 'underlying_actual_value_table (underlying_id, value_date)' AS input, count(*) AS row_count, count(DISTINCT underlying_id || '|' || value_date) AS distinct_key
+    FROM opera.underlying_actual_value_table WHERE tenant_id = :tenant
+  ]]></sql>
+
+  <!-- sp funnel, cumulative -->
+  <sql id="sp-1" db="target" timeout="300"><![CDATA[
+    SELECT 'sp-1 cloned_security_info_table' AS stage, count(*) AS row_count, count(DISTINCT s.business_unit || '|' || s.security_id) AS distinct_security
+    FROM opera.cloned_security_info_table s WHERE s.tenant_id = :tenant
+  ]]></sql>
+  <sql id="sp-2" db="target" timeout="300" after="sp-1"><![CDATA[
+    SELECT 'sp-2 + valuation_date_table' AS stage, count(*) AS row_count, count(DISTINCT s.business_unit || '|' || s.security_id) AS distinct_security
+    FROM opera.cloned_security_info_table s
+    JOIN opera.valuation_date_table v ON v.tenant_id = s.tenant_id AND v.business_unit = s.business_unit
+    WHERE s.tenant_id = :tenant
+  ]]></sql>
+  <sql id="sp-3" db="target" timeout="300" after="sp-2"><![CDATA[
+    SELECT 'sp-3 + underlying lists u1 u2' AS stage, count(*) AS row_count, count(DISTINCT s.business_unit || '|' || s.security_id) AS distinct_security
+    FROM opera.cloned_security_info_table s
+    JOIN opera.valuation_date_table v ON v.tenant_id = s.tenant_id AND v.business_unit = s.business_unit
+    LEFT JOIN opera.cloned_underlying_list_table u1 ON u1.tenant_id = s.tenant_id AND u1.underlying_id = s.underlying1_id
+    LEFT JOIN opera.cloned_underlying_list_table u2 ON u2.tenant_id = s.tenant_id AND u2.underlying_id = s.underlying2_id
+    WHERE s.tenant_id = :tenant
+  ]]></sql>
+  <sql id="sp-4" db="target" timeout="300" after="sp-3"><![CDATA[
+    SELECT 'sp-4 + curr_mult_view cm1' AS stage, count(*) AS row_count, count(DISTINCT s.business_unit || '|' || s.security_id) AS distinct_security
+    FROM opera.cloned_security_info_table s
+    JOIN opera.valuation_date_table v ON v.tenant_id = s.tenant_id AND v.business_unit = s.business_unit
+    LEFT JOIN opera.cloned_underlying_list_table u1 ON u1.tenant_id = s.tenant_id AND u1.underlying_id = s.underlying1_id
+    LEFT JOIN opera.cloned_underlying_list_table u2 ON u2.tenant_id = s.tenant_id AND u2.underlying_id = s.underlying2_id
+    LEFT JOIN opera.curr_mult_view cm1 ON cm1.tenant_id = s.tenant_id AND cm1.business_unit = s.business_unit
+           AND cm1.invenio_product_code = s.product_code AND cm1.value_date = v.value_date
+    WHERE s.tenant_id = :tenant
+  ]]></sql>
+  <sql id="sp-5" db="target" timeout="300" after="sp-4"><![CDATA[
+    SELECT 'sp-5 + product_master_table pm1' AS stage, count(*) AS row_count, count(DISTINCT s.business_unit || '|' || s.security_id) AS distinct_security
+    FROM opera.cloned_security_info_table s
+    JOIN opera.valuation_date_table v ON v.tenant_id = s.tenant_id AND v.business_unit = s.business_unit
+    LEFT JOIN opera.cloned_underlying_list_table u1 ON u1.tenant_id = s.tenant_id AND u1.underlying_id = s.underlying1_id
+    LEFT JOIN opera.cloned_underlying_list_table u2 ON u2.tenant_id = s.tenant_id AND u2.underlying_id = s.underlying2_id
+    LEFT JOIN opera.curr_mult_view cm1 ON cm1.tenant_id = s.tenant_id AND cm1.business_unit = s.business_unit
+           AND cm1.invenio_product_code = s.product_code AND cm1.value_date = v.value_date
+    LEFT JOIN opera.product_master_table pm1 ON pm1.tenant_id = s.tenant_id AND pm1.invenio_product_code = s.product_code
+    WHERE s.tenant_id = :tenant
+  ]]></sql>
+  <sql id="sp-6" db="target" timeout="300" after="sp-5"><![CDATA[
+    SELECT 'sp-6 + cloned_curr_mult_view cm2' AS stage, count(*) AS row_count, count(DISTINCT s.business_unit || '|' || s.security_id) AS distinct_security
+    FROM opera.cloned_security_info_table s
+    JOIN opera.valuation_date_table v ON v.tenant_id = s.tenant_id AND v.business_unit = s.business_unit
+    LEFT JOIN opera.cloned_underlying_list_table u1 ON u1.tenant_id = s.tenant_id AND u1.underlying_id = s.underlying1_id
+    LEFT JOIN opera.cloned_underlying_list_table u2 ON u2.tenant_id = s.tenant_id AND u2.underlying_id = s.underlying2_id
+    LEFT JOIN opera.curr_mult_view cm1 ON cm1.tenant_id = s.tenant_id AND cm1.business_unit = s.business_unit
+           AND cm1.invenio_product_code = s.product_code AND cm1.value_date = v.value_date
+    LEFT JOIN opera.product_master_table pm1 ON pm1.tenant_id = s.tenant_id AND pm1.invenio_product_code = s.product_code
+    LEFT JOIN opera.cloned_curr_mult_view cm2 ON cm2.tenant_id = s.tenant_id AND cm2.business_unit = s.business_unit
+           AND cm2.invenio_product_code = u2.invenio_product_code AND cm2.value_date = v.value_date
+    WHERE s.tenant_id = :tenant
+  ]]></sql>
+  <sql id="sp-7" db="target" timeout="300" after="sp-6"><![CDATA[
+    SELECT 'sp-7 + cloned_product_master_table pm2' AS stage, count(*) AS row_count, count(DISTINCT s.business_unit || '|' || s.security_id) AS distinct_security
+    FROM opera.cloned_security_info_table s
+    JOIN opera.valuation_date_table v ON v.tenant_id = s.tenant_id AND v.business_unit = s.business_unit
+    LEFT JOIN opera.cloned_underlying_list_table u1 ON u1.tenant_id = s.tenant_id AND u1.underlying_id = s.underlying1_id
+    LEFT JOIN opera.cloned_underlying_list_table u2 ON u2.tenant_id = s.tenant_id AND u2.underlying_id = s.underlying2_id
+    LEFT JOIN opera.curr_mult_view cm1 ON cm1.tenant_id = s.tenant_id AND cm1.business_unit = s.business_unit
+           AND cm1.invenio_product_code = s.product_code AND cm1.value_date = v.value_date
+    LEFT JOIN opera.product_master_table pm1 ON pm1.tenant_id = s.tenant_id AND pm1.invenio_product_code = s.product_code
+    LEFT JOIN opera.cloned_curr_mult_view cm2 ON cm2.tenant_id = s.tenant_id AND cm2.business_unit = s.business_unit
+           AND cm2.invenio_product_code = u2.invenio_product_code AND cm2.value_date = v.value_date
+    LEFT JOIN opera.cloned_product_master_table pm2 ON pm2.tenant_id = s.tenant_id AND pm2.invenio_product_code = u2.invenio_product_code
+    WHERE s.tenant_id = :tenant
+  ]]></sql>
+  <sql id="sp-8" db="target" timeout="300" after="sp-7"><![CDATA[
+    SELECT 'sp-8 + murex_nc_factor_view mx' AS stage, count(*) AS row_count, count(DISTINCT s.business_unit || '|' || s.security_id) AS distinct_security
+    FROM opera.cloned_security_info_table s
+    JOIN opera.valuation_date_table v ON v.tenant_id = s.tenant_id AND v.business_unit = s.business_unit
+    LEFT JOIN opera.cloned_underlying_list_table u1 ON u1.tenant_id = s.tenant_id AND u1.underlying_id = s.underlying1_id
+    LEFT JOIN opera.cloned_underlying_list_table u2 ON u2.tenant_id = s.tenant_id AND u2.underlying_id = s.underlying2_id
+    LEFT JOIN opera.curr_mult_view cm1 ON cm1.tenant_id = s.tenant_id AND cm1.business_unit = s.business_unit
+           AND cm1.invenio_product_code = s.product_code AND cm1.value_date = v.value_date
+    LEFT JOIN opera.product_master_table pm1 ON pm1.tenant_id = s.tenant_id AND pm1.invenio_product_code = s.product_code
+    LEFT JOIN opera.cloned_curr_mult_view cm2 ON cm2.tenant_id = s.tenant_id AND cm2.business_unit = s.business_unit
+           AND cm2.invenio_product_code = u2.invenio_product_code AND cm2.value_date = v.value_date
+    LEFT JOIN opera.cloned_product_master_table pm2 ON pm2.tenant_id = s.tenant_id AND pm2.invenio_product_code = u2.invenio_product_code
+    LEFT JOIN opera.murex_nc_factor_view mx ON mx.tenant_id = s.tenant_id AND mx.business_unit = s.business_unit
+           AND mx.invenio_product_code = s.product_code AND mx.value_date = v.value_date
+    WHERE s.tenant_id = :tenant
+  ]]></sql>
+
+  <!-- fx funnel (CTE b of fx_nc_factor_view), cumulative -->
+  <sql id="fx-1" db="target" timeout="300"><![CDATA[
+    SELECT 'fx-1 drv' AS stage, count(*) AS row_count, count(DISTINCT d.business_unit || '|' || d.trade_id) AS distinct_trade
+    FROM (
+      SELECT tenant_id, business_unit, trade_id, security_id FROM opera.cloned_deal_ticket_table
+      WHERE tenant_id = :tenant AND lower(business_unit) IN ('bkr', 'ebo', 'gpc', 'grn', 'og2', 'ogp', 'rba', 'rbc', 'stg', 'tsy', 'usg')
+      UNION ALL
+      SELECT tenant_id, business_unit, trade_id, security_id FROM opera.deal_ticket_table_with_fy_premium_view
+      WHERE tenant_id = :tenant AND lower(business_unit) IN ('cfs', 'rov', 'cto', 'orm', 'osg', 'rmc')
+    ) d
+  ]]></sql>
+  <sql id="fx-2" db="target" timeout="300" after="fx-1"><![CDATA[
+    SELECT 'fx-2 + valuation_date_table' AS stage, count(*) AS row_count, count(DISTINCT d.business_unit || '|' || d.trade_id) AS distinct_trade
+    FROM (
+      SELECT tenant_id, business_unit, trade_id, security_id FROM opera.cloned_deal_ticket_table
+      WHERE tenant_id = :tenant AND lower(business_unit) IN ('bkr', 'ebo', 'gpc', 'grn', 'og2', 'ogp', 'rba', 'rbc', 'stg', 'tsy', 'usg')
+      UNION ALL
+      SELECT tenant_id, business_unit, trade_id, security_id FROM opera.deal_ticket_table_with_fy_premium_view
+      WHERE tenant_id = :tenant AND lower(business_unit) IN ('cfs', 'rov', 'cto', 'orm', 'osg', 'rmc')
+    ) d
+    JOIN opera.valuation_date_table v ON v.tenant_id = d.tenant_id AND v.business_unit = d.business_unit
+  ]]></sql>
+  <sql id="fx-3" db="target" timeout="300" after="fx-2"><![CDATA[
+    SELECT 'fx-3 + security_info_table' AS stage, count(*) AS row_count, count(DISTINCT d.business_unit || '|' || d.trade_id) AS distinct_trade
+    FROM (
+      SELECT tenant_id, business_unit, trade_id, security_id FROM opera.cloned_deal_ticket_table
+      WHERE tenant_id = :tenant AND lower(business_unit) IN ('bkr', 'ebo', 'gpc', 'grn', 'og2', 'ogp', 'rba', 'rbc', 'stg', 'tsy', 'usg')
+      UNION ALL
+      SELECT tenant_id, business_unit, trade_id, security_id FROM opera.deal_ticket_table_with_fy_premium_view
+      WHERE tenant_id = :tenant AND lower(business_unit) IN ('cfs', 'rov', 'cto', 'orm', 'osg', 'rmc')
+    ) d
+    JOIN opera.valuation_date_table v ON v.tenant_id = d.tenant_id AND v.business_unit = d.business_unit
+    LEFT JOIN opera.security_info_table si ON si.tenant_id = d.tenant_id AND si.business_unit = d.business_unit AND si.security_id = d.security_id
+  ]]></sql>
+  <sql id="fx-4" db="target" timeout="300" after="fx-3"><![CDATA[
+    SELECT 'fx-4 + helper_invenio_product_code' AS stage, count(*) AS row_count, count(DISTINCT d.business_unit || '|' || d.trade_id) AS distinct_trade
+    FROM (
+      SELECT tenant_id, business_unit, trade_id, security_id FROM opera.cloned_deal_ticket_table
+      WHERE tenant_id = :tenant AND lower(business_unit) IN ('bkr', 'ebo', 'gpc', 'grn', 'og2', 'ogp', 'rba', 'rbc', 'stg', 'tsy', 'usg')
+      UNION ALL
+      SELECT tenant_id, business_unit, trade_id, security_id FROM opera.deal_ticket_table_with_fy_premium_view
+      WHERE tenant_id = :tenant AND lower(business_unit) IN ('cfs', 'rov', 'cto', 'orm', 'osg', 'rmc')
+    ) d
+    JOIN opera.valuation_date_table v ON v.tenant_id = d.tenant_id AND v.business_unit = d.business_unit
+    LEFT JOIN opera.security_info_table si ON si.tenant_id = d.tenant_id AND si.business_unit = d.business_unit AND si.security_id = d.security_id
+    LEFT JOIN opera.helper_invenio_product_code hipc ON hipc.tenant_id = si.tenant_id AND hipc.business_unit = si.business_unit AND hipc.security_id = si.security_id
+  ]]></sql>
+  <sql id="fx-5" db="target" timeout="300" after="fx-4"><![CDATA[
+    SELECT 'fx-5 + product_master_table' AS stage, count(*) AS row_count, count(DISTINCT d.business_unit || '|' || d.trade_id) AS distinct_trade
+    FROM (
+      SELECT tenant_id, business_unit, trade_id, security_id FROM opera.cloned_deal_ticket_table
+      WHERE tenant_id = :tenant AND lower(business_unit) IN ('bkr', 'ebo', 'gpc', 'grn', 'og2', 'ogp', 'rba', 'rbc', 'stg', 'tsy', 'usg')
+      UNION ALL
+      SELECT tenant_id, business_unit, trade_id, security_id FROM opera.deal_ticket_table_with_fy_premium_view
+      WHERE tenant_id = :tenant AND lower(business_unit) IN ('cfs', 'rov', 'cto', 'orm', 'osg', 'rmc')
+    ) d
+    JOIN opera.valuation_date_table v ON v.tenant_id = d.tenant_id AND v.business_unit = d.business_unit
+    LEFT JOIN opera.security_info_table si ON si.tenant_id = d.tenant_id AND si.business_unit = d.business_unit AND si.security_id = d.security_id
+    LEFT JOIN opera.helper_invenio_product_code hipc ON hipc.tenant_id = si.tenant_id AND hipc.business_unit = si.business_unit AND hipc.security_id = si.security_id
+    LEFT JOIN opera.product_master_table pm ON pm.tenant_id = si.tenant_id AND pm.invenio_product_code = hipc.invenio_product_code
+  ]]></sql>
+  <sql id="fx-6" db="target" timeout="300" after="fx-5"><![CDATA[
+    SELECT 'fx-6 + fixing_table' AS stage, count(*) AS row_count, count(DISTINCT d.business_unit || '|' || d.trade_id) AS distinct_trade
+    FROM (
+      SELECT tenant_id, business_unit, trade_id, security_id FROM opera.cloned_deal_ticket_table
+      WHERE tenant_id = :tenant AND lower(business_unit) IN ('bkr', 'ebo', 'gpc', 'grn', 'og2', 'ogp', 'rba', 'rbc', 'stg', 'tsy', 'usg')
+      UNION ALL
+      SELECT tenant_id, business_unit, trade_id, security_id FROM opera.deal_ticket_table_with_fy_premium_view
+      WHERE tenant_id = :tenant AND lower(business_unit) IN ('cfs', 'rov', 'cto', 'orm', 'osg', 'rmc')
+    ) d
+    JOIN opera.valuation_date_table v ON v.tenant_id = d.tenant_id AND v.business_unit = d.business_unit
+    LEFT JOIN opera.security_info_table si ON si.tenant_id = d.tenant_id AND si.business_unit = d.business_unit AND si.security_id = d.security_id
+    LEFT JOIN opera.helper_invenio_product_code hipc ON hipc.tenant_id = si.tenant_id AND hipc.business_unit = si.business_unit AND hipc.security_id = si.security_id
+    LEFT JOIN opera.product_master_table pm ON pm.tenant_id = si.tenant_id AND pm.invenio_product_code = hipc.invenio_product_code
+    LEFT JOIN opera.fixing_table ft ON ft.tenant_id = d.tenant_id AND ft.business_unit = d.business_unit AND ft.trade_id = d.trade_id
+  ]]></sql>
+  <sql id="fx-7" db="target" timeout="300" after="fx-6"><![CDATA[
+    SELECT 'fx-7 + settle value by curr_mult_factor' AS stage, count(*) AS row_count, count(DISTINCT d.business_unit || '|' || d.trade_id) AS distinct_trade
+    FROM (
+      SELECT tenant_id, business_unit, trade_id, security_id FROM opera.cloned_deal_ticket_table
+      WHERE tenant_id = :tenant AND lower(business_unit) IN ('bkr', 'ebo', 'gpc', 'grn', 'og2', 'ogp', 'rba', 'rbc', 'stg', 'tsy', 'usg')
+      UNION ALL
+      SELECT tenant_id, business_unit, trade_id, security_id FROM opera.deal_ticket_table_with_fy_premium_view
+      WHERE tenant_id = :tenant AND lower(business_unit) IN ('cfs', 'rov', 'cto', 'orm', 'osg', 'rmc')
+    ) d
+    JOIN opera.valuation_date_table v ON v.tenant_id = d.tenant_id AND v.business_unit = d.business_unit
+    LEFT JOIN opera.security_info_table si ON si.tenant_id = d.tenant_id AND si.business_unit = d.business_unit AND si.security_id = d.security_id
+    LEFT JOIN opera.helper_invenio_product_code hipc ON hipc.tenant_id = si.tenant_id AND hipc.business_unit = si.business_unit AND hipc.security_id = si.security_id
+    LEFT JOIN opera.product_master_table pm ON pm.tenant_id = si.tenant_id AND pm.invenio_product_code = hipc.invenio_product_code
+    LEFT JOIN opera.fixing_table ft ON ft.tenant_id = d.tenant_id AND ft.business_unit = d.business_unit AND ft.trade_id = d.trade_id
+    LEFT JOIN opera.underlying_settle_value_table usv_cm ON usv_cm.tenant_id = pm.tenant_id AND usv_cm.underlying_id = pm.curr_mult_factor AND usv_cm.value_date = v.value_date
+  ]]></sql>
+  <sql id="fx-8" db="target" timeout="300" after="fx-7"><![CDATA[
+    SELECT 'fx-8 + settle value by underlying1' AS stage, count(*) AS row_count, count(DISTINCT d.business_unit || '|' || d.trade_id) AS distinct_trade
+    FROM (
+      SELECT tenant_id, business_unit, trade_id, security_id FROM opera.cloned_deal_ticket_table
+      WHERE tenant_id = :tenant AND lower(business_unit) IN ('bkr', 'ebo', 'gpc', 'grn', 'og2', 'ogp', 'rba', 'rbc', 'stg', 'tsy', 'usg')
+      UNION ALL
+      SELECT tenant_id, business_unit, trade_id, security_id FROM opera.deal_ticket_table_with_fy_premium_view
+      WHERE tenant_id = :tenant AND lower(business_unit) IN ('cfs', 'rov', 'cto', 'orm', 'osg', 'rmc')
+    ) d
+    JOIN opera.valuation_date_table v ON v.tenant_id = d.tenant_id AND v.business_unit = d.business_unit
+    LEFT JOIN opera.security_info_table si ON si.tenant_id = d.tenant_id AND si.business_unit = d.business_unit AND si.security_id = d.security_id
+    LEFT JOIN opera.helper_invenio_product_code hipc ON hipc.tenant_id = si.tenant_id AND hipc.business_unit = si.business_unit AND hipc.security_id = si.security_id
+    LEFT JOIN opera.product_master_table pm ON pm.tenant_id = si.tenant_id AND pm.invenio_product_code = hipc.invenio_product_code
+    LEFT JOIN opera.fixing_table ft ON ft.tenant_id = d.tenant_id AND ft.business_unit = d.business_unit AND ft.trade_id = d.trade_id
+    LEFT JOIN opera.underlying_settle_value_table usv_cm ON usv_cm.tenant_id = pm.tenant_id AND usv_cm.underlying_id = pm.curr_mult_factor AND usv_cm.value_date = v.value_date
+    LEFT JOIN opera.underlying_settle_value_table usv_u1 ON usv_u1.tenant_id = si.tenant_id AND usv_u1.underlying_id = si.underlying1_id AND usv_u1.value_date = v.value_date
+  ]]></sql>
+  <sql id="fx-10" db="target" timeout="300" after="fx-8"><![CDATA[
+    SELECT 'fx-10 + both actual values (all of b)' AS stage, count(*) AS row_count, count(DISTINCT d.business_unit || '|' || d.trade_id) AS distinct_trade
+    FROM (
+      SELECT tenant_id, business_unit, trade_id, security_id FROM opera.cloned_deal_ticket_table
+      WHERE tenant_id = :tenant AND lower(business_unit) IN ('bkr', 'ebo', 'gpc', 'grn', 'og2', 'ogp', 'rba', 'rbc', 'stg', 'tsy', 'usg')
+      UNION ALL
+      SELECT tenant_id, business_unit, trade_id, security_id FROM opera.deal_ticket_table_with_fy_premium_view
+      WHERE tenant_id = :tenant AND lower(business_unit) IN ('cfs', 'rov', 'cto', 'orm', 'osg', 'rmc')
+    ) d
+    JOIN opera.valuation_date_table v ON v.tenant_id = d.tenant_id AND v.business_unit = d.business_unit
+    LEFT JOIN opera.security_info_table si ON si.tenant_id = d.tenant_id AND si.business_unit = d.business_unit AND si.security_id = d.security_id
+    LEFT JOIN opera.helper_invenio_product_code hipc ON hipc.tenant_id = si.tenant_id AND hipc.business_unit = si.business_unit AND hipc.security_id = si.security_id
+    LEFT JOIN opera.product_master_table pm ON pm.tenant_id = si.tenant_id AND pm.invenio_product_code = hipc.invenio_product_code
+    LEFT JOIN opera.fixing_table ft ON ft.tenant_id = d.tenant_id AND ft.business_unit = d.business_unit AND ft.trade_id = d.trade_id
+    LEFT JOIN opera.underlying_settle_value_table usv_cm ON usv_cm.tenant_id = pm.tenant_id AND usv_cm.underlying_id = pm.curr_mult_factor AND usv_cm.value_date = v.value_date
+    LEFT JOIN opera.underlying_settle_value_table usv_u1 ON usv_u1.tenant_id = si.tenant_id AND usv_u1.underlying_id = si.underlying1_id AND usv_u1.value_date = v.value_date
+    LEFT JOIN opera.underlying_actual_value_table uav_cm ON uav_cm.tenant_id = pm.tenant_id AND uav_cm.underlying_id = pm.curr_mult_factor AND uav_cm.value_date = v.value_date
+    LEFT JOIN opera.underlying_actual_value_table uav_u1 ON uav_u1.tenant_id = si.tenant_id AND uav_u1.underlying_id = si.underlying1_id AND uav_u1.value_date = v.value_date
+  ]]></sql>
+
+  <expect ref="sp-1" rows="1" reason="the funnel starts"/>
+  <expect ref="fx-1" rows="1" reason="the funnel starts"/>
+  <expect expr="#q('sp-8').first.row_count == #q('sp-2').first.row_count" reason="the left joins of sp add no rows (no fan out after the valuation date join)"/>
+  <expect expr="#q('fx-10').first.row_count == #q('fx-2').first.row_count" reason="the left joins of fx add no rows (no fan out after the valuation date join)"/>
+
+  <compress id="bundle" file="recon-dup-09-sp-fx-funnel.zip">
+    <include ref="k-v"/><include ref="k-ul"/><include ref="k-pm"/><include ref="k-cm"/><include ref="k-ccm"/><include ref="k-mx"/>
+    <include ref="k-si"/><include ref="k-hipc"/><include ref="k-ft"/><include ref="k-usv"/><include ref="k-uav"/>
+    <include ref="sp-1"/><include ref="sp-2"/><include ref="sp-3"/><include ref="sp-4"/><include ref="sp-5"/><include ref="sp-6"/><include ref="sp-7"/><include ref="sp-8"/>
+    <include ref="fx-1"/><include ref="fx-2"/><include ref="fx-3"/><include ref="fx-4"/><include ref="fx-5"/><include ref="fx-6"/><include ref="fx-7"/><include ref="fx-8"/><include ref="fx-10"/>
+  </compress>
+</rules>
