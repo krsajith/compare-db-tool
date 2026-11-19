@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rules name="recon-dup-10-stored-fx-vs-legacy-rules">
+  <!--
+    Question: the stored fx_nc_factor in the settle snapshot (recon_materialize_settle_v4 stage 7, and fn_recon_fx_nc_factor_source
+    before it) has no "factor is 1" rules for CFS ORM ROV. Legacy MySQL fx_nc_factor_view_BU has them (db-schema, Bifurcated Views Def,
+    fx_nc_factor_view.sql), and the PG fx_nc_factor_view ports them. On dev 152 ORM rows differ (stored about 0.0297, legacy 1).
+    How many published snapshot rows per BU break the legacy rules?
+
+    Method: no join to sp or fx (they never return). Only the published snapshot rows (helper_settle_p_and_g_view_cache_table) plus
+    product_master_table for curr_mult_type. One scan, 60 s cap. Legacy rules applied, per BU group:
+      out of scope (factor 1): cfs rov = 18 fx option types; cto orm osg rmc = fx_vanilla_call / put;
+                               bkr ebo gpc og2 ogp rba rbc stg tsy usg = not fx_forward%; grn = never
+      short list (factor 1, division and not fixed only): derivative_type starting cs_, or the per BU product code lists
+    Columns: rows, distinct trades and securities in scope (upstream count), stored factor not 1, and per rule the rows it hits and
+    how many of those have stored factor not 1 (= rows legacy prints differently). Out of scope is split by fixing because the
+    out of scope and fixed case is only proven for ORM (legacy returns 1 whatever the fixing).
+    Read only. Parameter: tenant.
+  -->
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+  </parameters>
+
+  <sql id="per-bu" db="target" timeout="60" export="full"><![CDATA[
+    WITH h AS (
+      SELECT lower(h.business_unit) AS bu, h.source_trade_id, h.security_id, lower(h.derivative_type) AS dt,
+             lower(h.product_code) AS pc, COALESCE(h.is_fixing_done, 0) AS fixed, h.fx_nc_factor,
+             lower(pm.curr_mult_type) AS cmt
+      FROM opera.helper_settle_p_and_g_view_cache_table h
+      LEFT JOIN opera.product_master_table pm ON pm.tenant_id = h.tenant_id AND pm.invenio_product_code = h.invenio_product_code
+      WHERE h.tenant_id = :tenant
+    ), r AS (
+      SELECT h.*,
+        CASE
+          WHEN bu IN ('cfs','rov') THEN dt IN ('fx_vanilla_call','fx_vanilla_put','fx_amer_down_in_call','fx_amer_down_in_put',
+                 'fx_amer_down_out_call','fx_amer_down_out_put','fx_amer_up_in_call','fx_amer_up_in_put','fx_amer_up_out_call',
+                 'fx_amer_up_out_put','fx_euro_down_in_call','fx_euro_down_in_put','fx_euro_down_out_call','fx_euro_down_out_put',
+                 'fx_euro_up_in_call','fx_euro_up_in_put','fx_euro_up_out_call','fx_euro_up_out_put')
+          WHEN bu IN ('cto','orm','osg','rmc') THEN dt IN ('fx_vanilla_call','fx_vanilla_put')
+          WHEN bu = 'grn' THEN false
+          ELSE dt NOT LIKE 'fx_forward%'
+        END AS out_scope,
+        (cmt = 'division' AND fixed = 0 AND (left(dt,3) = 'cs_' OR CASE
+          WHEN bu IN ('cfs','rov') THEN left(pc,5) IN ('cm ko','cm rs','cm ac','cm ae','cm vv') OR left(pc,6) IN ('cm crd','eg the')
+          WHEN bu = 'cto' THEN left(pc,5) IN ('cm ko','cm ac','cm ae','cm vv') OR left(pc,6) IN ('cm ccl')
+          WHEN bu IN ('orm','osg') THEN left(pc,5) IN ('cm ko','cm ac','cm ae','cm vv')
+          WHEN bu = 'rmc' THEN left(pc,5) IN ('cm ko','cm ac','cm ae','cm vv','im rt','cm sh','cm ak','cm bp')
+                            OR left(pc,6) IN ('cm pal','cm zrr','cm bdr')
+          WHEN bu = 'grn' THEN left(pc,5) IN ('cm eb','cm wz','cm yw','cm ac','cm ae','cm ak','cm bp','cm cb','cm fo','cm rs','cm sh',
+                            'cm vn','cm vv','cm ko','im rt')
+                            OR left(pc,6) IN ('cm crd','cm apw','cm bdr','cm blc','cm dce','cm dcs','cm dpr','cm fre','cm ibc','cm iri',
+                            'cm irl','cm jci','cm ksp','cm kab','cm lge','cm lhd','cm p2l','cm pal','cm pap','cm pgr','cm pkr','cm qcy',
+                            'cm sat','cm scp','cm sls','cm srb','cm syr','cm uri','cm voo','cm wrt','cm zrc','cm zro','cm zrr','cm zst',
+                            'cm zsy','cm zvb','cm zzp','cm vbe')
+          ELSE false END)) AS short_list
+      FROM h
+    )
+    SELECT bu, count(*) AS rows, count(DISTINCT source_trade_id) AS trades, count(DISTINCT security_id) AS securities,
+           count(*) FILTER (WHERE cmt IS NULL) AS no_product_master,
+           count(*) FILTER (WHERE fx_nc_factor IS DISTINCT FROM 1) AS stored_not_1,
+           count(*) FILTER (WHERE out_scope AND fixed = 0) AS out_scope_unfixed,
+           count(*) FILTER (WHERE out_scope AND fixed = 0 AND fx_nc_factor IS DISTINCT FROM 1) AS out_scope_unfixed_not_1,
+           count(*) FILTER (WHERE out_scope AND fixed = 1) AS out_scope_fixed,
+           count(*) FILTER (WHERE out_scope AND fixed = 1 AND fx_nc_factor IS DISTINCT FROM 1) AS out_scope_fixed_not_1,
+           count(*) FILTER (WHERE NOT out_scope AND short_list) AS short_list,
+           count(*) FILTER (WHERE NOT out_scope AND short_list AND fx_nc_factor IS DISTINCT FROM 1) AS short_list_not_1
+    FROM r GROUP BY bu ORDER BY bu
+  ]]></sql>
+
+  <expect ref="per-bu" rows=">=1" reason="published settle snapshot rows exist for the tenant"/>
+  <expect expr="#size(#rows('per-bu').?[out_scope_unfixed_not_1 > 0 or short_list_not_1 > 0]) == 0"
+          reason="INFORMATION: a failure lists BUs whose stored fx_nc_factor breaks a proven legacy rule, so materializer stage 7 needs the rule"/>
+  <compress id="bundle" file="recon-dup-10-stored-fx-vs-legacy-rules.zip"><include ref="per-bu"/></compress>
+</rules>
