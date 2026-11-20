@@ -1,0 +1,33 @@
+{
+  "name": "encoding-fix-client-dripping-dev",
+  "db": "postgres-dev",
+  "backupSchema": "parity_work",
+  "ticket": "encoding-client-dripping-structure-name",
+  "description": "DEV. Puts the trade mark sign back into client_dripping_table.structure_name for CFS and RMC. The rows were loaded by the loader on 2 Oct 2026, before the UTF-8 fix of 3 Nov, so every trade mark sign became three question marks. Proven on dev by rule encoding-01-client-dripping-structure-name (run of 20 Nov 2026): legacy holds no question mark in structure_name, the only non-ASCII character in the legacy names is the trade mark sign (U+2122), every damaged value has exactly one run of three question marks, and 174 of 175 distinct damaged values give an existing legacy name after the replacement (the last one is a structure legacy no longer has). The update replaces the run of three question marks by the trade mark sign (chr 8482). Only structure_name changes. Rows in scope on dev: 20,709 (CFS 20,287 and RMC 422). Check again with the encoding-01 rule afterwards.",
+  "steps": [
+    {
+      "id": "restore-trade-mark-sign",
+      "action": "update",
+      "table": "opera.client_dripping_table",
+      "where": "tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND business_unit IN ('CFS', 'RMC') AND structure_name LIKE '%' || repeat(chr(63), 3) || '%'",
+      "key": [
+        "uuid"
+      ],
+      "set": {
+        "structure_name": "replace(structure_name, repeat(chr(63), 3), chr(8482))"
+      },
+      "preconditions": [
+        {
+          "sql": "SELECT count(*) FROM opera.client_dripping_table WHERE {{where}} AND replace(structure_name, repeat(chr(63), 3), chr(8482)) LIKE '%' || chr(63) || '%'",
+          "expect": "0",
+          "reason": "after the replacement no question mark may remain, so every damaged value is exactly the three-question-mark pattern and nothing else is touched"
+        }
+      ],
+      "expect": {
+        "targetBefore": "20709",
+        "affected": "20709",
+        "targetAfter": "0"
+      }
+    }
+  ]
+}

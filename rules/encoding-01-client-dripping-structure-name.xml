@@ -18,8 +18,9 @@
       name-diff       legacy distinct structure names against the new ones. only-source = text legacy has and the new table lacks (the right text of a damaged
                       value), only-target = text only the new table has (the damaged text, or a structure created after the load). row_count is not compared
                       because dripping rows keep being added after the load.
-    Verdict: FAIL on a question mark or WIN1252 sign in the new table, or on any difference of the distinct structure names.
-    A FAIL with only-source and only-target both showing the same structure name (right text against damaged text) means it was loaded before the fix and can be updated from legacy.
+    Verdict: FAIL on a question mark or WIN1252 sign in the new table, or on a question mark in legacy. The lists of names on one side only are information:
+    right text in only-source against damaged text in only-target means it was loaded before the fix and can be updated, and a few names on one side only
+    are normal because legacy keeps changing after the load.
   -->
   <parameters>
     <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
@@ -101,7 +102,7 @@
   <expect ref="pg-summary" column="with_question_mark" equals="0" each="true" reason="no structure name may contain a question mark (the loader did not read UTF-8)"/>
   <expect ref="pg-summary" column="with_win1252_signs" equals="0" each="true" reason="no structure name may hold UTF-8 read as WIN1252"/>
   <expect ref="legacy-summary" column="with_question_mark" equals="0" each="true" reason="if legacy already has a question mark the source is damaged and a reload cannot repair it"/>
-  <expect ref="name-diff" only-source="0" only-target="0" different="0" reason="the distinct structure names of CFS and RMC should be the same in legacy and in the new table"/>
+  <expect ref="name-diff" different="0" reason="a structure name present on both sides is identical. Names on one side only are listed for reading, not judged: legacy gets new structures and drops old ones after the load, so only the question mark checks above decide the verdict"/>
 
   <compress id="bundle" file="encoding-01-client-dripping-structure-name.zip">
     <include ref="pg-summary"/>
