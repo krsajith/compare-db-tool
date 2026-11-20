@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rules name="combined-var-stuck-01-history">
+  <!--
+    Question: which Combined VAR runs stayed in Processing, how old are they, and did a later run for the same procedure succeed?
+
+    Code facts (bulk-uploader, combined-var.controller.js): processCombinedVar inserts a history row with status Processing in
+    oga_bulk_upload_history (processing_type Combined VAR, position = the procedure in capitals, file_name = executionId/zip name),
+    starts a worker thread in the same Node process, and only the main thread's finishRun turns the row Success or Failed.
+    A pod restart, out of memory kill, a worker that ends without a message, or a hung query leaves the row in Processing.
+
+    Checks (read only; tenant_id first in every filter):
+      clock          database clock and zone, to read the ages below (start_time is written from the service clock)
+      status-counts  Combined VAR rows since :since by procedure and status
+      stuck          rows still Processing older than :stuckHours, with the executionId and the next row for the same procedure
+      timeline       the 40 newest Combined VAR rows
+      durations      Success rows: median, 90th percentile and longest minutes per procedure (basis for a watchdog timeout)
+    Parameters: tenant, since (default 14 days back), stuckHours (default 2).
+  -->
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+    <param name="since" type="date" expr="#minusDays(#today(), 14)"/>
+    <param name="stuckHours" type="integer" value="2"/>
+  </parameters>
+
+  <sql id="clock" db="target" timeout="60" export="full"><![CDATA[
+    SELECT localtimestamp AS db_now, current_setting('TimeZone') AS db_time_zone,
+           max(start_time) AS last_start_time, count(*) AS rows_since
+    FROM opera.oga_bulk_upload_history
+    WHERE tenant_id = :tenant AND processing_type = 'Combined VAR' AND start_time >= :since
+  ]]></sql>
+
+  <sql id="status-counts" db="target" timeout="60" export="full"><![CDATA[
+    SELECT position AS procedure_name, status, count(*) AS runs, min(start_time) AS first_start, max(start_time) AS last_start
+    FROM opera.oga_bulk_upload_history
+    WHERE tenant_id = :tenant AND processing_type = 'Combined VAR' AND start_time >= :since
+    GROUP BY position, status
+    ORDER BY position, status
+  ]]></sql>
+
+  <sql id="stuck" db="target" timeout="60" export="full"><![CDATA[
+    SELECT h.position AS procedure_name, h.username, h.start_time, h.status,
+           round(extract(epoch FROM (localtimestamp - h.start_time)) / 3600, 1) AS age_hours,
+           split_part(h.file_name, '/', 1) AS execution_id, h.original_file_name,
+           n.status AS next_run_status, n.start_time AS next_run_start
+    FROM opera.oga_bulk_upload_history h
+    LEFT JOIN LATERAL (
+      SELECT x.status, x.start_time
+      FROM opera.oga_bulk_upload_history x
+      WHERE x.tenant_id = h.tenant_id AND x.processing_type = 'Combined VAR' AND x.position = h.position
+        AND x.start_time > h.start_time
+      ORDER BY x.start_time
+      LIMIT 1
+    ) n ON true
+    WHERE h.tenant_id = :tenant AND h.processing_type = 'Combined VAR' AND h.start_time >= :since
+      AND h.status = 'Processing' AND h.start_time < localtimestamp - make_interval(hours => :stuckHours)
+    ORDER BY h.start_time DESC
+    LIMIT 50
+  ]]></sql>
+
+  <sql id="timeline" db="target" timeout="60" export="full"><![CDATA[
+    SELECT position AS procedure_name, username, start_time, completion_time, status, file_size,
+           split_part(file_name, '/', 1) AS execution_id
+    FROM opera.oga_bulk_upload_history
+    WHERE tenant_id = :tenant AND processing_type = 'Combined VAR' AND start_time >= :since
+    ORDER BY start_time DESC
+    LIMIT 40
+  ]]></sql>
+
+  <sql id="durations" db="target" timeout="60" export="full"><![CDATA[
+    SELECT position AS procedure_name, count(*) AS runs,
+           round((percentile_cont(0.5) WITHIN GROUP (ORDER BY extract(epoch FROM (completion_time - start_time))) / 60)::numeric, 1) AS median_minutes,
+           round((percentile_cont(0.9) WITHIN GROUP (ORDER BY extract(epoch FROM (completion_time - start_time))) / 60)::numeric, 1) AS p90_minutes,
+           round((max(extract(epoch FROM (completion_time - start_time))) / 60)::numeric, 1) AS max_minutes
+    FROM opera.oga_bulk_upload_history
+    WHERE tenant_id = :tenant AND processing_type = 'Combined VAR' AND start_time >= :since
+      AND status = 'Success' AND completion_time IS NOT NULL
+    GROUP BY position
+    ORDER BY position
+  ]]></sql>
+
+  <expect ref="stuck" rows="0" reason="no Combined VAR run is stuck in Processing longer than stuckHours"/>
+
+  <compress id="bundle" file="combined-var-stuck-01-history.zip">
+    <include ref="clock"/><include ref="status-counts"/><include ref="stuck"/><include ref="timeline"/><include ref="durations"/>
+  </compress>
+</rules>
