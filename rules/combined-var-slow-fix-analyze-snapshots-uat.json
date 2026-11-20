@@ -1,0 +1,18 @@
+{
+  "name": "combined-var-slow-fix-analyze-snapshots-uat",
+  "db": "postgres-uat",
+  "backupSchema": "parity_work",
+  "ticket": "combined-var-slow",
+  "description": "Refresh the planner statistics of the recon snapshot tables on UAT. Why: after v6 the Combined VAR RMC read (helper_settle_pricing_subportfoliovalues_view, one BU, one value date) still passes 600 s. The plan shows every branch starting with recon_settle_snapshot estimated at 1 row, then a nested loop over an Append of about 630 rows rebuilt per outer row; the real outer count is about 10586. The snapshot tables are rewritten on every refresh and the backfill updated every row, so the statistics are stale. ANALYZE changes no data, only statistics (same as autovacuum would do). Known recipe from the recon optimisation: rows=1 estimates turn every join into a nested loop, fix = ANALYZE so the planner sees real counts (knowledge-base/TECH-LEARNINGS.md point 2). After apply run rule combined-var-slow-04-after-analyze. Permanent fix if this works: ANALYZE inside recon_materialize_settle at the end, so the statistics are right after every refresh.",
+  "steps": [
+    {
+      "id": "analyze-snapshots",
+      "action": "sql",
+      "note": "Statistics only, no row is changed. Takes seconds on tables of this size.",
+      "sql": "ANALYZE opera.recon_settle_snapshot, opera.recon_actual_snapshot, opera.recon_traders_snapshot, opera.recon_snapshot_pointer",
+      "expect": {
+        "affected": "0"
+      }
+    }
+  ]
+}

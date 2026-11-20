@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rules name="combined-var-slow-04-after-analyze">
+  <!--
+    Question: after ANALYZE of the recon snapshot tables (combined-var-slow-fix-analyze-snapshots-uat.json), does the Combined VAR RMC read
+    return in seconds? plan-app is the service read, plan only: the first recon_settle_snapshot node should now be estimated near its real
+    size (about 10586 for RMC) and not 1. t06 runs the same read with a 180 s cap (it was over 600 s). t05 is the CFS read for comparison (5.8 s before).
+    Read only. Parameter: tenant.
+  -->
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+  </parameters>
+
+  <sql id="stats" db="target" timeout="60" export="full"><![CDATA[
+    SELECT relname, n_live_tup, n_mod_since_analyze, last_analyze, last_autoanalyze
+    FROM pg_stat_user_tables
+    WHERE schemaname = 'opera' AND relname IN ('recon_settle_snapshot', 'recon_snapshot_pointer')
+    ORDER BY relname
+  ]]></sql>
+
+  <explain id="plan-app" db="target" analyze="false" timeout="60"><![CDATA[
+    SELECT count(*) AS n, sum(mtm_usd) AS s1, sum(mtm_nc) AS s2, sum(settle_delta_1) AS s3, sum(settle_vega_1) AS s4, sum(settle_theta) AS s5
+    FROM opera.helper_settle_pricing_subportfoliovalues_view
+    WHERE tenant_id = :tenant AND UPPER(business_unit) = 'RMC'
+      AND value_date = (SELECT value_date FROM opera.valuation_date_table WHERE tenant_id = :tenant AND UPPER(business_unit) = 'RMC' LIMIT 1)
+      AND derivative_type NOT ILIKE 'fx%' AND subportfolio NOT ILIKE 'conso%' AND p1_name NOT ILIKE 'CM OR%'
+  ]]></explain>
+
+  <sql id="t06-positions-rmc" db="target" timeout="180" export="full"><![CDATA[
+    SELECT count(*) AS n, sum(mtm_usd) AS s1, sum(mtm_nc) AS s2, sum(settle_delta_1) AS s3, sum(settle_vega_1) AS s4, sum(settle_theta) AS s5
+    FROM opera.helper_settle_pricing_subportfoliovalues_view
+    WHERE tenant_id = :tenant AND UPPER(business_unit) = 'RMC'
+      AND value_date = (SELECT value_date FROM opera.valuation_date_table WHERE tenant_id = :tenant AND UPPER(business_unit) = 'RMC' LIMIT 1)
+      AND derivative_type NOT ILIKE 'fx%' AND subportfolio NOT ILIKE 'conso%' AND p1_name NOT ILIKE 'CM OR%'
+  ]]></sql>
+
+  <expect ref="t06-positions-rmc" rows="1" reason="the RMC positions read returns inside 180 s (it was over 600 s)"/>
+
+  <compress id="bundle" file="combined-var-slow-04-after-analyze.zip"><include ref="stats"/><include ref="plan-app"/><include ref="t06-positions-rmc"/></compress>
+</rules>
