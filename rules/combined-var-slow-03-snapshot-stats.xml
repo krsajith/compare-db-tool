@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rules name="combined-var-slow-03-snapshot-stats">
+  <!--
+    Question: v6 is live on UAT (rule combined-var-slow-02) yet the Combined VAR RMC read still passes 600 s. The plan (no ANALYZE) shows every
+    branch starting with recon_settle_snapshot estimated at 1 row, then a nested loop over an Append of about 630 rows that is rebuilt once per
+    outer row (it seq scans cloned_security_info_table, 3556 rows, each time). If the real outer count is 10586 and not 1, that is about 10000 rebuilds.
+    That would be a wrong row estimate, most likely stale statistics: the snapshot tables are rewritten on every refresh and the backfill updated
+    every row. This rule reads the facts, nothing is executed on the view:
+      stats    last analyze, live and dead rows and rows changed since analyze for the recon snapshot tables and the pointer
+      actual   real row counts of recon_settle_snapshot per BU and snapshot, against what the planner believes (see stats)
+      estimate planner row estimate of the plain snapshot filter the view uses (plan only)
+    Read only. Parameter: tenant.
+  -->
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+  </parameters>
+
+  <sql id="stats" db="target" timeout="60" export="full"><![CDATA[
+    SELECT relname, n_live_tup, n_dead_tup, n_mod_since_analyze, last_analyze, last_autoanalyze, last_autovacuum
+    FROM pg_stat_user_tables
+    WHERE schemaname = 'opera' AND relname IN ('recon_settle_snapshot', 'recon_actual_snapshot', 'recon_traders_snapshot', 'recon_snapshot_pointer', 'cloned_security_info_table')
+    ORDER BY relname
+  ]]></sql>
+
+  <sql id="actual" db="target" timeout="120" export="full"><![CDATA[
+    SELECT s.business_unit, s.settlement_date, count(*) AS snapshot_rows, count(DISTINCT s.run_id) AS runs, count(*) FILTER (WHERE s.builder_version IS NULL) AS no_builder
+    FROM opera.recon_settle_snapshot s
+    JOIN opera.recon_snapshot_pointer p ON p.tenant_id = s.tenant_id AND p.business_unit = s.business_unit AND p.settlement_date = s.settlement_date
+     AND p.view_type = 'SETTLE_PRICING' AND p.published_run_id = s.run_id
+    WHERE s.tenant_id = :tenant
+    GROUP BY s.business_unit, s.settlement_date
+    ORDER BY s.settlement_date DESC, s.business_unit
+    LIMIT 20
+  ]]></sql>
+
+  <explain id="estimate" db="target" analyze="false" timeout="60"><![CDATA[
+    SELECT count(*)
+    FROM opera.recon_settle_snapshot s
+    JOIN opera.recon_snapshot_pointer p ON p.tenant_id = s.tenant_id AND p.business_unit = s.business_unit AND p.settlement_date = s.settlement_date
+     AND p.view_type = 'SETTLE_PRICING' AND p.published_run_id = s.run_id
+    WHERE s.tenant_id = :tenant AND UPPER(s.business_unit) = 'RMC'
+  ]]></explain>
+
+  <compress id="bundle" file="combined-var-slow-03-snapshot-stats.zip"><include ref="stats"/><include ref="actual"/><include ref="estimate"/></compress>
+</rules>

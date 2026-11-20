@@ -1,0 +1,164 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- helper_eod_monthend_report_view is very slow on dev (CFS). The plan estimates 76 billion rows; CFS has about 1M trades.
+     First principle: a join multiplies rows when the key it uses is not unique on the other side. This rule answers that in one run.
+       1. fan-out-* : for every object the netting view joins (cs, sp, ag, fx, rp, pf, vf, vdt, latest_active_lot, si, bm): rows, distinct keys, max rows per key.
+          max_per_key above 1 on the join key means that join multiplies every trade of that key.
+       2. join-funnel : cumulative row count after each join of helper_netting_deal_ticket_table_fy_view, start = helper_deal_ticket_table_deal_status_view.
+          count(*) rising while distinct trade_id stays flat marks the join that multiplies (the lineage funnel idea).
+       3. worst-keys-* : the five worst keys of cs and sp with their full row, to see which column makes them differ.
+       4. final-* : rows and distinct trades of d (deal_ticket_table_deal_status_view), s (consumer view) and n (the netting view), the three inputs of the slow join.
+     Read only. Each query has its own timeout; a slow query does not stop the others. Run on dev with the validate flag, then the check flag,
+     then the export none flag (see HOW-TO-USE section 2). -->
+
+<rules name="eod-monthend-01-fanout-funnel-cfs">
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+    <param name="bu" type="string" value="CFS"/>
+  </parameters>
+
+  <!-- 1a. the plain tables and small views: one statement, one row per object -->
+  <sql id="fan-out-tables" db="postgres-dev" timeout="900" export="full"><![CDATA[
+    SELECT 'premium_fy_table (trade_id, financial_year)' AS object, count(*) AS key_rows, sum(c) AS total_rows, max(c) AS max_per_key
+      FROM (SELECT trade_id, financial_year, count(*) AS c FROM opera.premium_fy_table WHERE tenant_id = :tenant AND business_unit = :bu GROUP BY trade_id, financial_year) t
+    UNION ALL
+    SELECT 'rms_premium_paid_table (trade_id)', count(*), sum(c), max(c)
+      FROM (SELECT trade_id, count(*) AS c FROM opera.rms_premium_paid_table WHERE tenant_id = :tenant AND business_unit = :bu GROUP BY trade_id) t
+    UNION ALL
+    SELECT 'latest_active_lot (trade_id)', count(*), sum(c), max(c)
+      FROM (SELECT trade_id, count(*) AS c FROM opera.latest_active_lot WHERE tenant_id = :tenant AND business_unit = :bu GROUP BY trade_id) t
+    UNION ALL
+    SELECT 'cloned_security_info_table (security_id)', count(*), sum(c), max(c)
+      FROM (SELECT security_id, count(*) AS c FROM opera.cloned_security_info_table WHERE tenant_id = :tenant AND business_unit = :bu GROUP BY security_id) t
+    UNION ALL
+    SELECT 'valuation_date_table (business_unit)', count(*), sum(c), max(c)
+      FROM (SELECT business_unit, count(*) AS c FROM opera.valuation_date_table WHERE tenant_id = :tenant AND business_unit = :bu GROUP BY business_unit) t
+    UNION ALL
+    SELECT 'valuation_financial_year_view (business_unit)', count(*), sum(c), max(c)
+      FROM (SELECT business_unit, count(*) AS c FROM opera.valuation_financial_year_view WHERE tenant_id = :tenant AND business_unit = :bu GROUP BY business_unit) t
+  ]]></sql>
+
+  <!-- 1b. the views joined by security_id or trade_id, each on its own so one slow view does not hide the others -->
+  <sql id="fan-out-cs" db="postgres-dev" timeout="900" export="full"><![CDATA[
+    SELECT 'helper_calculated_settle_price_view (security_id)' AS object, count(*) AS key_rows, sum(c) AS total_rows, max(c) AS max_per_key
+      FROM (SELECT security_id, count(*) AS c FROM opera.helper_calculated_settle_price_view WHERE tenant_id = :tenant AND business_unit = :bu GROUP BY security_id) t
+  ]]></sql>
+  <sql id="fan-out-sp" db="postgres-dev" timeout="900" export="full"><![CDATA[
+    SELECT 'helper_settle_pricing_and_traders_pricing_view (security_id)' AS object, count(*) AS key_rows, sum(c) AS total_rows, max(c) AS max_per_key
+      FROM (SELECT security_id, count(*) AS c FROM opera.helper_settle_pricing_and_traders_pricing_view WHERE tenant_id = :tenant AND business_unit = :bu GROUP BY security_id) t
+  ]]></sql>
+  <sql id="fan-out-ag" db="postgres-dev" timeout="900" export="full"><![CDATA[
+    SELECT 'helper_acc_group_type_view (security_id)' AS object, count(*) AS key_rows, sum(c) AS total_rows, max(c) AS max_per_key
+      FROM (SELECT security_id, count(*) AS c FROM opera.helper_acc_group_type_view WHERE tenant_id = :tenant AND business_unit = :bu GROUP BY security_id) t
+  ]]></sql>
+  <sql id="fan-out-bm" db="postgres-dev" timeout="900" export="full"><![CDATA[
+    SELECT 'helper_barrier_monitoring_view (security_id)' AS object, count(*) AS key_rows, sum(c) AS total_rows, max(c) AS max_per_key
+      FROM (SELECT security_id, count(*) AS c FROM opera.helper_barrier_monitoring_view WHERE tenant_id = :tenant AND business_unit = :bu GROUP BY security_id) t
+  ]]></sql>
+  <sql id="fan-out-fx" db="postgres-dev" timeout="900" export="full"><![CDATA[
+    SELECT 'fx_nc_factor_view (trade_id)' AS object, count(*) AS key_rows, sum(c) AS total_rows, max(c) AS max_per_key
+      FROM (SELECT trade_id, count(*) AS c FROM opera.fx_nc_factor_view WHERE tenant_id = :tenant AND business_unit = :bu GROUP BY trade_id) t
+  ]]></sql>
+
+  <!-- 2. cumulative join funnel of the netting view (branch for the CFS group of business units), computed on one materialised deal-status set -->
+  <sql id="join-funnel" db="postgres-dev" timeout="1800" export="full"><![CDATA[
+    WITH ds AS MATERIALIZED (
+      SELECT tenant_id, business_unit, trade_id, security_id
+      FROM opera.helper_deal_ticket_table_deal_status_view
+      WHERE tenant_id = :tenant AND business_unit = :bu
+    ),
+    s1 AS MATERIALIZED (
+      SELECT ds.trade_id, ds.security_id, ds.business_unit, ds.tenant_id, vf.financial_year
+      FROM ds JOIN opera.valuation_financial_year_view vf ON vf.tenant_id = ds.tenant_id AND vf.business_unit = ds.business_unit
+    ),
+    s2 AS MATERIALIZED (
+      SELECT s1.trade_id, s1.security_id, s1.business_unit, s1.tenant_id
+      FROM s1 JOIN opera.premium_fy_table pf ON pf.tenant_id = s1.tenant_id AND pf.business_unit = s1.business_unit AND pf.trade_id = s1.trade_id AND pf.financial_year = s1.financial_year
+    ),
+    s3 AS MATERIALIZED (
+      SELECT s2.trade_id, s2.security_id, s2.business_unit, s2.tenant_id
+      FROM s2 LEFT JOIN opera.helper_acc_group_type_view ag ON ag.tenant_id = s2.tenant_id AND ag.business_unit = s2.business_unit AND ag.security_id = s2.security_id
+    ),
+    s4 AS MATERIALIZED (
+      SELECT s3.trade_id, s3.security_id, s3.business_unit, s3.tenant_id
+      FROM s3 LEFT JOIN opera.helper_calculated_settle_price_view cs ON cs.tenant_id = s3.tenant_id AND cs.business_unit = s3.business_unit AND cs.security_id = s3.security_id
+    ),
+    s5 AS MATERIALIZED (
+      SELECT s4.trade_id, s4.security_id, s4.business_unit, s4.tenant_id
+      FROM s4 LEFT JOIN opera.rms_premium_paid_table rp ON rp.tenant_id = s4.tenant_id AND rp.business_unit = s4.business_unit AND rp.trade_id = s4.trade_id
+    ),
+    s6 AS MATERIALIZED (
+      SELECT s5.trade_id, s5.security_id, s5.business_unit, s5.tenant_id
+      FROM s5 LEFT JOIN opera.helper_settle_pricing_and_traders_pricing_view sp ON sp.tenant_id = s5.tenant_id AND sp.business_unit = s5.business_unit AND sp.security_id = s5.security_id
+    ),
+    s7 AS MATERIALIZED (
+      SELECT s6.trade_id
+      FROM s6 LEFT JOIN opera.fx_nc_factor_view fx ON fx.tenant_id = s6.tenant_id AND fx.business_unit = s6.business_unit AND fx.trade_id = s6.trade_id
+    )
+    SELECT 1 AS stage, 'ds: helper_deal_ticket_table_deal_status_view' AS step, count(*) AS total_rows, count(DISTINCT trade_id) AS distinct_trades FROM ds
+    UNION ALL SELECT 2, '+ valuation_financial_year_view', count(*), count(DISTINCT trade_id) FROM s1
+    UNION ALL SELECT 3, '+ premium_fy_table (inner)', count(*), count(DISTINCT trade_id) FROM s2
+    UNION ALL SELECT 4, '+ helper_acc_group_type_view (left)', count(*), count(DISTINCT trade_id) FROM s3
+    UNION ALL SELECT 5, '+ helper_calculated_settle_price_view (left)', count(*), count(DISTINCT trade_id) FROM s4
+    UNION ALL SELECT 6, '+ rms_premium_paid_table (left)', count(*), count(DISTINCT trade_id) FROM s5
+    UNION ALL SELECT 7, '+ helper_settle_pricing_and_traders_pricing_view (left)', count(*), count(DISTINCT trade_id) FROM s6
+    UNION ALL SELECT 8, '+ fx_nc_factor_view (left)', count(*), count(DISTINCT trade_id) FROM s7
+    ORDER BY 1
+  ]]></sql>
+
+  <!-- 3. the worst keys with their full rows: which column makes the duplicates different -->
+  <sql id="worst-keys-cs" db="postgres-dev" timeout="900" export="full"><![CDATA[
+    SELECT security_id, c AS rows_for_key, to_jsonb(v)::text AS row_json
+    FROM (
+      SELECT security_id, count(*) AS c FROM opera.helper_calculated_settle_price_view
+      WHERE tenant_id = :tenant AND business_unit = :bu GROUP BY security_id HAVING count(*) > 1 ORDER BY count(*) DESC LIMIT 5
+    ) w
+    JOIN opera.helper_calculated_settle_price_view v USING (security_id)
+    WHERE v.tenant_id = :tenant AND v.business_unit = :bu
+    ORDER BY c DESC, security_id
+    LIMIT 50
+  ]]></sql>
+  <sql id="worst-keys-sp" db="postgres-dev" timeout="900" export="full"><![CDATA[
+    SELECT security_id, c AS rows_for_key, to_jsonb(v)::text AS row_json
+    FROM (
+      SELECT security_id, count(*) AS c FROM opera.helper_settle_pricing_and_traders_pricing_view
+      WHERE tenant_id = :tenant AND business_unit = :bu GROUP BY security_id HAVING count(*) > 1 ORDER BY count(*) DESC LIMIT 5
+    ) w
+    JOIN opera.helper_settle_pricing_and_traders_pricing_view v USING (security_id)
+    WHERE v.tenant_id = :tenant AND v.business_unit = :bu
+    ORDER BY c DESC, security_id
+    LIMIT 50
+  ]]></sql>
+
+  <!-- 4. the three inputs of the slow join -->
+  <sql id="final-d" db="postgres-dev" timeout="1800" export="full"><![CDATA[
+    SELECT 'd: deal_ticket_table_deal_status_view' AS object, count(*) AS total_rows, count(DISTINCT trade_id) AS distinct_trades
+    FROM opera.deal_ticket_table_deal_status_view WHERE tenant_id = :tenant AND business_unit = :bu
+  ]]></sql>
+  <sql id="final-n" db="postgres-dev" timeout="1800" export="full"><![CDATA[
+    SELECT 'n: helper_netting_deal_ticket_table_fy_view' AS object, count(*) AS total_rows, count(DISTINCT trade_id) AS distinct_trades
+    FROM opera.helper_netting_deal_ticket_table_fy_view WHERE tenant_id = :tenant AND business_unit = :bu
+  ]]></sql>
+  <sql id="final-s" db="postgres-dev" timeout="1800" export="full"><![CDATA[
+    SELECT 's: helper_settle_pricing_subportfoliovalues_view' AS object, count(*) AS total_rows, count(DISTINCT source_trade_id) AS distinct_trades
+    FROM opera.helper_settle_pricing_subportfoliovalues_view WHERE tenant_id = :tenant AND business_unit = :bu
+  ]]></sql>
+
+  <!-- the expectations say what a healthy join looks like; a FAIL names the object that multiplies -->
+  <expect ref="fan-out-tables" column="max_per_key" max="1" each="true" reason="every joined table should be unique on its join key (premium_fy on trade and year)"/>
+  <expect ref="fan-out-cs" column="max_per_key" max="1" reason="cs is joined on security_id only"/>
+  <expect ref="fan-out-sp" column="max_per_key" max="1" reason="sp is joined on security_id only"/>
+  <expect ref="fan-out-ag" column="max_per_key" max="1" reason="ag is joined on security_id only"/>
+  <expect ref="fan-out-bm" column="max_per_key" max="1" reason="bm is joined on security_id only"/>
+  <expect ref="fan-out-fx" column="max_per_key" max="1" reason="fx is joined on trade_id only"/>
+  <expect ref="join-funnel" rows="8" reason="eight stages"/>
+  <expect ref="final-d" rows="1"/>
+  <expect ref="final-n" rows="1"/>
+  <expect ref="final-s" rows="1"/>
+
+  <compress id="bundle" file="eod-monthend-01-fanout-funnel-cfs.zip">
+    <include ref="fan-out-tables"/><include ref="fan-out-cs"/><include ref="fan-out-sp"/><include ref="fan-out-ag"/>
+    <include ref="fan-out-bm"/><include ref="fan-out-fx"/><include ref="join-funnel"/>
+    <include ref="worst-keys-cs"/><include ref="worst-keys-sp"/>
+    <include ref="final-d"/><include ref="final-n"/><include ref="final-s"/>
+  </compress>
+</rules>
