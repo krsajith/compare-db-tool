@@ -1,0 +1,112 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rules name="encoding-01-client-dripping-structure-name">
+  <!--
+    Was client_dripping_table.structure_name loaded with damaged special characters?
+    Example of the right text: LONG CASH ACCRUAL then the trade mark sign then DDU.
+    Damage seen: the trade mark sign turned into three question marks (the loader did not read UTF-8, fixed in the loaders on 3 Nov 2026),
+    or into the three characters a-circumflex, euro sign, trade mark sign style text (UTF-8 read as WIN1252, written by an application or an upload).
+    Read only. Run it once per environment: pass this file to the rules flag and the datasource name (postgres-dev or postgres-uat) to the target-env flag.
+    The exact commands are in the HOW-TO-USE section 3 and in the hand-over note.
+    Legacy is dbsystemuat.client_dripping_table_cfs and _rmc (the only two per-BU tables the loader reads), the new side is opera.client_dripping_table.
+    All characters are built with chr() and CHAR() so the encoding of this file does not matter.
+
+    How to read the result:
+      pg-summary      per business unit: rows, rows with a question mark, rows with UTF-8-read-as-WIN1252 signs, rows with the trade mark sign, rows with any non-ASCII text.
+      legacy-summary  the same counts in the source. Question marks here mean the source itself is already damaged and a reload would not help.
+      suspects        the distinct damaged texts in the new table with how many rows, and created_by / created_timestamp:
+                      created_by migration means the loader wrote it; a user name means an application or upload wrote it.
+      name-diff       legacy distinct structure names against the new ones. only-source = text legacy has and the new table lacks (the right text of a damaged
+                      value), only-target = text only the new table has (the damaged text, or a structure created after the load). row_count is not compared
+                      because dripping rows keep being added after the load.
+    Verdict: FAIL on a question mark or WIN1252 sign in the new table, or on any difference of the distinct structure names.
+    A FAIL with only-source and only-target both showing the same structure name (right text against damaged text) means it was loaded before the fix and can be updated from legacy.
+  -->
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+  </parameters>
+
+  <sql id="pg-summary" db="target" timeout="300" export="full"><![CDATA[
+    SELECT business_unit,
+           count(*) AS row_count,
+           count(*) FILTER (WHERE structure_name LIKE '%' || chr(63) || '%') AS with_question_mark,
+           count(*) FILTER (WHERE structure_name ~ ('[' || chr(194) || chr(195) || chr(226) || ']')) AS with_win1252_signs,
+           count(*) FILTER (WHERE position(chr(8482) in structure_name) > 0) AS with_trade_mark_sign,
+           count(*) FILTER (WHERE structure_name !~ '^[ -~]*$') AS with_non_ascii
+    FROM opera.client_dripping_table
+    WHERE tenant_id = :tenant
+    GROUP BY business_unit
+    ORDER BY business_unit
+  ]]></sql>
+
+  <sql id="legacy-summary" db="mysql-oprdb02" timeout="300" export="full"><![CDATA[
+    SELECT 'CFS' AS business_unit,
+           CAST(count(*) AS SIGNED) AS row_count,
+           CAST(COALESCE(SUM(structure_name LIKE CONCAT('%', CHAR(63), '%')), 0) AS SIGNED) AS with_question_mark,
+           CAST(COALESCE(SUM(INSTR(structure_name, CONVERT(UNHEX('E284A2') USING utf8mb4)) > 0), 0) AS SIGNED) AS with_trade_mark_sign,
+           CAST(COALESCE(SUM(structure_name NOT REGEXP '^[ -~]*$'), 0) AS SIGNED) AS with_non_ascii
+    FROM dbsystemuat.client_dripping_table_cfs
+    UNION ALL
+    SELECT 'RMC',
+           CAST(count(*) AS SIGNED),
+           CAST(COALESCE(SUM(structure_name LIKE CONCAT('%', CHAR(63), '%')), 0) AS SIGNED),
+           CAST(COALESCE(SUM(INSTR(structure_name, CONVERT(UNHEX('E284A2') USING utf8mb4)) > 0), 0) AS SIGNED),
+           CAST(COALESCE(SUM(structure_name NOT REGEXP '^[ -~]*$'), 0) AS SIGNED)
+    FROM dbsystemuat.client_dripping_table_rmc
+  ]]></sql>
+
+  <sql id="suspects" db="target" timeout="300" export="full"><![CDATA[
+    SELECT business_unit,
+           structure_name,
+           count(*) AS row_count,
+           min(created_by) AS created_by_min,
+           max(created_by) AS created_by_max,
+           min(created_timestamp) AS first_created,
+           max(created_timestamp) AS last_created
+    FROM opera.client_dripping_table
+    WHERE tenant_id = :tenant
+      AND (structure_name LIKE '%' || chr(63) || '%' OR structure_name ~ ('[' || chr(194) || chr(195) || chr(226) || ']'))
+    GROUP BY business_unit, structure_name
+    ORDER BY business_unit, structure_name
+  ]]></sql>
+
+  <sql id="legacy-values" db="mysql-oprdb02" timeout="600" fetchSize="5000" export="full"><![CDATA[
+    SELECT 'CFS' AS business_unit, t.v AS structure_name, count(*) AS row_count
+    FROM (
+      SELECT COALESCE(SUBSTRING(REPLACE(REPLACE(CONVERT(structure_name USING utf8mb4) COLLATE utf8mb4_bin, CHAR(0), ''), CHAR(13), ''), 1, 100), '(null)') AS v
+      FROM dbsystemuat.client_dripping_table_cfs
+    ) t
+    GROUP BY t.v
+    UNION ALL
+    SELECT 'RMC' AS business_unit, t.v AS structure_name, count(*) AS row_count
+    FROM (
+      SELECT COALESCE(SUBSTRING(REPLACE(REPLACE(CONVERT(structure_name USING utf8mb4) COLLATE utf8mb4_bin, CHAR(0), ''), CHAR(13), ''), 1, 100), '(null)') AS v
+      FROM dbsystemuat.client_dripping_table_rmc
+    ) t
+    GROUP BY t.v
+  ]]></sql>
+
+  <sql id="pg-values" db="target" timeout="600" fetchSize="5000" export="full"><![CDATA[
+    SELECT business_unit, COALESCE(substr(structure_name, 1, 100), '(null)') AS structure_name, count(*) AS row_count
+    FROM opera.client_dripping_table
+    WHERE tenant_id = :tenant AND business_unit IN ('CFS', 'RMC')
+    GROUP BY business_unit, COALESCE(substr(structure_name, 1, 100), '(null)')
+  ]]></sql>
+
+  <compare id="name-diff" source="legacy-values" target="pg-values" export="full">
+    <key columns="business_unit,structure_name"/>
+    <column name="row_count" ignore="true"/>
+  </compare>
+
+  <expect ref="pg-summary" rows=">=1" reason="the new table must hold dripping rows for this tenant (a wrong tenant parameter gives 0)"/>
+  <expect ref="pg-summary" column="with_question_mark" equals="0" each="true" reason="no structure name may contain a question mark (the loader did not read UTF-8)"/>
+  <expect ref="pg-summary" column="with_win1252_signs" equals="0" each="true" reason="no structure name may hold UTF-8 read as WIN1252"/>
+  <expect ref="legacy-summary" column="with_question_mark" equals="0" each="true" reason="if legacy already has a question mark the source is damaged and a reload cannot repair it"/>
+  <expect ref="name-diff" only-source="0" only-target="0" different="0" reason="the distinct structure names of CFS and RMC should be the same in legacy and in the new table"/>
+
+  <compress id="bundle" file="encoding-01-client-dripping-structure-name.zip">
+    <include ref="pg-summary"/>
+    <include ref="legacy-summary"/>
+    <include ref="suspects"/>
+    <include ref="name-diff"/>
+  </compress>
+</rules>
