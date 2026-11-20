@@ -36,7 +36,7 @@
     FROM opera.recon_refresh_run
     WHERE tenant_id = :tenant AND requested_at >= :since
       AND (status = 'FAILED'
-           OR (status = 'RUNNING' AND started_at < now() - make_interval(hours => :stuckHours)))
+           OR (status = 'RUNNING' AND started_at < now() - make_interval(hours => (:stuckHours)::int)))
     ORDER BY requested_at DESC
     LIMIT 50
   ]]></sql>

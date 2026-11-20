@@ -1,0 +1,94 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rules name="combined-var-slow-01-app-queries">
+  <!--
+    Question: which step of a Combined VAR run is slow? UAT history (20 Nov): RMC and RMS_VAR Success runs took 29.1 to 29.3 minutes,
+    a Failed RMS_VAR 29.0 min, a Failed RMC 60.3 min. RMS_VAR runs the CFS and RMC write-backs but takes no longer than RMC alone,
+    so the time is probably in a step shared by every procedure, not in the per-BU positions read. This rule TIMES the exact queries
+    the service sends (combined-var.repository.js), one at a time, so the tool's Time column shows which one is slow.
+    Each query is wrapped in count(*) or sum(...) so the database does the whole work but returns one row. The tool runs one query at a time
+    per datasource, so the times are not distorted by the other queries here. Hard timeouts: 120 s, positions 600 s. A query that hits
+    the timeout shows FAILED in SUMMARY.md: that is the answer for that step. Worst case total about 25 minutes.
+
+    Value dates come from valuation_date_table exactly as the service reads them (CFS row for CFS, RMC row for RMC).
+    Not covered here: the pipeline reference queries of combined-var-pipeline-config-v2.json (scenario and master tables, 260 days),
+    because that file is not in git. Send me the file and I add them.
+    Read only. Parameter: tenant.
+  -->
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+  </parameters>
+
+  <sql id="dates" db="target" timeout="60" export="full"><![CDATA[
+    SELECT business_unit, value_date, settlement_date
+    FROM opera.valuation_date_table
+    WHERE tenant_id = :tenant AND UPPER(business_unit) IN ('CFS', 'RMC')
+  ]]></sql>
+
+  <sql id="t01-product-mapping" db="target" timeout="120" export="full"><![CDATA[
+    SELECT count(*) AS n
+    FROM (SELECT invenio_product_code, db_format_code, cont_month_format_code
+          FROM opera.var_product_code_mapping_table WHERE tenant_id = :tenant) q
+  ]]></sql>
+
+  <sql id="t02-future-underlyings" db="target" timeout="120" export="full"><![CDATA[
+    SELECT count(*) AS n
+    FROM (SELECT underlying_id, expiry_date, invenio_product_code
+          FROM opera.underlying_list_table
+          WHERE tenant_id = :tenant AND underlying_id NOT ILIKE '%USD%'
+            AND expiry_date > (SELECT settlement_date FROM opera.valuation_date_table WHERE tenant_id = :tenant AND UPPER(business_unit) = 'CFS' LIMIT 1)
+          ORDER BY UPPER(underlying_id) COLLATE "C", underlying_id COLLATE "C") q
+  ]]></sql>
+
+  <sql id="t03-option-volids" db="target" timeout="120" export="full"><![CDATA[
+    SELECT count(*) AS n
+    FROM (SELECT vol_id, expiry_date, product_code AS invenio_product_code
+          FROM opera.vol_id_table
+          WHERE tenant_id = :tenant AND vol_id NOT ILIKE '%USD%'
+            AND expiry_date > (SELECT settlement_date FROM opera.valuation_date_table WHERE tenant_id = :tenant AND UPPER(business_unit) = 'CFS' LIMIT 1)
+          ORDER BY UPPER(vol_id) COLLATE "C", vol_id COLLATE "C") q
+  ]]></sql>
+
+  <sql id="t04-cont-series-rows" db="target" timeout="120" export="full"><![CDATA[
+    SELECT (SELECT count(*) FROM opera.future_cont_series_table
+             WHERE tenant_id = :tenant AND settlement_date = (SELECT settlement_date FROM opera.valuation_date_table WHERE tenant_id = :tenant AND UPPER(business_unit) = 'CFS' LIMIT 1)) AS future_cont_rows,
+           (SELECT count(*) FROM opera.option_cont_series_table
+             WHERE tenant_id = :tenant AND settlement_date = (SELECT settlement_date FROM opera.valuation_date_table WHERE tenant_id = :tenant AND UPPER(business_unit) = 'CFS' LIMIT 1)) AS option_cont_rows
+  ]]></sql>
+
+  <sql id="t05-positions-cfs" db="target" timeout="600" export="full"><![CDATA[
+    SELECT count(*) AS n, sum(mtm_usd) AS s1, sum(mtm_nc) AS s2, sum(settle_delta_1) AS s3, sum(settle_vega_1) AS s4, sum(settle_theta) AS s5
+    FROM opera.helper_settle_pricing_subportfoliovalues_view
+    WHERE tenant_id = :tenant AND UPPER(business_unit) = 'CFS'
+      AND value_date = (SELECT value_date FROM opera.valuation_date_table WHERE tenant_id = :tenant AND UPPER(business_unit) = 'CFS' LIMIT 1)
+      AND derivative_type NOT ILIKE 'fx%' AND subportfolio NOT ILIKE 'conso%'
+  ]]></sql>
+
+  <sql id="t06-positions-rmc" db="target" timeout="600" export="full"><![CDATA[
+    SELECT count(*) AS n, sum(mtm_usd) AS s1, sum(mtm_nc) AS s2, sum(settle_delta_1) AS s3, sum(settle_vega_1) AS s4, sum(settle_theta) AS s5
+    FROM opera.helper_settle_pricing_subportfoliovalues_view
+    WHERE tenant_id = :tenant AND UPPER(business_unit) = 'RMC'
+      AND value_date = (SELECT value_date FROM opera.valuation_date_table WHERE tenant_id = :tenant AND UPPER(business_unit) = 'RMC' LIMIT 1)
+      AND derivative_type NOT ILIKE 'fx%' AND subportfolio NOT ILIKE 'conso%' AND p1_name NOT ILIKE 'CM OR%'
+  ]]></sql>
+
+  <sql id="t07-var-accounting-table" db="target" timeout="120" export="full"><![CDATA[
+    SELECT UPPER(business_unit) AS bu, value_date, count(*) AS rows_in_table
+    FROM opera.var_accounting_table
+    WHERE tenant_id = :tenant AND value_date >= (SELECT min(value_date) FROM opera.valuation_date_table WHERE tenant_id = :tenant AND UPPER(business_unit) IN ('CFS', 'RMC'))
+    GROUP BY UPPER(business_unit), value_date
+    ORDER BY 2 DESC, 1
+    LIMIT 40
+  ]]></sql>
+
+  <sql id="t08-accounting-report" db="target" timeout="600" export="full"><![CDATA[
+    SELECT count(*) AS n, max(settlement_date) AS max_settle
+    FROM opera.helper_var_accounting_report
+    WHERE tenant_id = :tenant
+  ]]></sql>
+
+  <compress id="bundle" file="combined-var-slow-01-app-queries.zip">
+    <include ref="dates"/><include ref="t01-product-mapping"/><include ref="t02-future-underlyings"/><include ref="t03-option-volids"/>
+    <include ref="t04-cont-series-rows"/><include ref="t05-positions-cfs"/><include ref="t06-positions-rmc"/>
+    <include ref="t07-var-accounting-table"/><include ref="t08-accounting-report"/>
+  </compress>
+</rules>

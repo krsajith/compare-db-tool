@@ -52,7 +52,7 @@
       LIMIT 1
     ) n ON true
     WHERE h.tenant_id = :tenant AND h.processing_type = 'Combined VAR' AND h.start_time >= :since
-      AND h.status = 'Processing' AND h.start_time < localtimestamp - make_interval(hours => :stuckHours)
+      AND h.status = 'Processing' AND h.start_time < localtimestamp - make_interval(hours => (:stuckHours)::int)
     ORDER BY h.start_time DESC
     LIMIT 50
   ]]></sql>

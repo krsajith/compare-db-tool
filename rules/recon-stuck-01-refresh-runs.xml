@@ -20,7 +20,9 @@
       stuck-runs            REQUESTED older than :stuckMinutes (never claimed) or RUNNING older than :stuckMinutes, with the next run for the same
                             BU, view and date, to see whether a retry recovered it
       failed-fingerprints   FAILED runs grouped by the first 100 characters of the error, to see crash related messages
-      durations             COMPLETED runs: median, 90th percentile and longest seconds per BU and view, the basis for a watchdog timeout
+      durations             real run time = pointer published_at (clock_timestamp at publish) minus started_at, for runs that are the CURRENT
+                            published run: median, 90th percentile and longest seconds. NOT completed_at: markCompleted writes CURRENT_TIMESTAMP,
+                            which is the start of the long transaction, so completed_at minus started_at shows about 0 s (seen on UAT 20 Nov).
       pointers-behind       published pointers whose newest run is NOT the published one: the report shows older data than the last refresh
     Parameters: tenant, since (date, default 14 days back), stuckMinutes (default 120).
     Override a parameter on the command line with the tool's param option, for example stuckMinutes=30.
@@ -63,8 +65,8 @@
       LIMIT 1
     ) n ON true
     WHERE r.tenant_id = :tenant AND r.requested_at >= :since
-      AND ((r.status = 'REQUESTED' AND r.requested_at < localtimestamp - make_interval(mins => :stuckMinutes))
-        OR (r.status = 'RUNNING' AND r.started_at < localtimestamp - make_interval(mins => :stuckMinutes)))
+      AND ((r.status = 'REQUESTED' AND r.requested_at < localtimestamp - make_interval(mins => (:stuckMinutes)::int))
+        OR (r.status = 'RUNNING' AND r.started_at < localtimestamp - make_interval(mins => (:stuckMinutes)::int)))
     ORDER BY r.requested_at DESC
     LIMIT 50
   ]]></sql>
@@ -79,15 +81,17 @@
   ]]></sql>
 
   <sql id="durations" db="target" timeout="60" export="full"><![CDATA[
-    SELECT business_unit, view_type, count(*) AS runs, max(row_count) AS max_rows,
-           round((percentile_cont(0.5) WITHIN GROUP (ORDER BY extract(epoch FROM (completed_at - started_at))))::numeric, 0) AS median_seconds,
-           round((percentile_cont(0.9) WITHIN GROUP (ORDER BY extract(epoch FROM (completed_at - started_at))))::numeric, 0) AS p90_seconds,
-           round(max(extract(epoch FROM (completed_at - started_at)))::numeric, 0) AS max_seconds
-    FROM opera.recon_refresh_run
-    WHERE tenant_id = :tenant AND requested_at >= :since AND status = 'COMPLETED'
-      AND started_at IS NOT NULL AND completed_at IS NOT NULL
-    GROUP BY business_unit, view_type
-    ORDER BY max(extract(epoch FROM (completed_at - started_at))) DESC
+    SELECT r.business_unit, r.view_type, count(*) AS runs, max(r.row_count) AS max_rows,
+           round((percentile_cont(0.5) WITHIN GROUP (ORDER BY extract(epoch FROM (p.published_at - r.started_at))))::numeric, 0) AS median_seconds,
+           round((percentile_cont(0.9) WITHIN GROUP (ORDER BY extract(epoch FROM (p.published_at - r.started_at))))::numeric, 0) AS p90_seconds,
+           round(max(extract(epoch FROM (p.published_at - r.started_at)))::numeric, 0) AS max_seconds
+    FROM opera.recon_refresh_run r
+    JOIN opera.recon_snapshot_pointer p
+      ON p.tenant_id = r.tenant_id AND p.business_unit = r.business_unit AND p.view_type = r.view_type
+     AND p.settlement_date = r.resolved_settlement_date AND p.published_run_id = r.uuid
+    WHERE r.tenant_id = :tenant AND r.requested_at >= :since AND r.status = 'COMPLETED' AND r.started_at IS NOT NULL
+    GROUP BY r.business_unit, r.view_type
+    ORDER BY max(extract(epoch FROM (p.published_at - r.started_at))) DESC
     LIMIT 40
   ]]></sql>
 
