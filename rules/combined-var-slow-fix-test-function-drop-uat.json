@@ -3,6 +3,7 @@
   "db": "postgres-uat",
   "backupSchema": "parity_work",
   "ticket": "combined-var-slow",
+  "confirm": "APPLY",
   "description": "Removes the test function opera.zz_t06_nonestloop created by combined-var-slow-fix-test-function-uat.json.",
   "steps": [
     {

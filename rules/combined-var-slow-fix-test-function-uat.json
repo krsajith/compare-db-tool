@@ -3,6 +3,7 @@
   "db": "postgres-uat",
   "backupSchema": "parity_work",
   "ticket": "combined-var-slow",
+  "confirm": "APPLY",
   "description": "TEST ONLY. Creates opera.zz_t06_nonestloop(tenant), a function that runs the service RMC positions read with the function level setting enable_nestloop = off, scoped to that call only. Why: ANALYZE did not help (rule combined-var-slow-04, estimate still 1 row, read still over 180 s). The plan shows the orm osg rmc branch looks up recon_settle_snapshot by business_unit, settlement_date and run_id from the pointer; these three are fully correlated so the planner multiplies their selectivities to 1 row (real about 10000) and chooses a nested loop with an unparameterised Append of about 630 rows rebuilt per outer row. Forcing the join type for this one call tests that without changing statistics or any other query. Run rule combined-var-slow-05-test-function next, then the drop file combined-var-slow-fix-test-function-drop-uat.json.",
   "steps": [
     {
