@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rules name="recon-stuck-03-export-exposure">
+  <!--
+    Question: how big are the published Recon snapshots that Export All reads, and what does the export read when the last refresh did not finish?
+
+    The optimised export (ReconViewController.exportAll, ReconExportDataProvider) is a synchronous download: no history row, no Processing state.
+    It streams the published run with a cursor (fetch size 1000, query timeout 600 s) into an SXSSF workbook, splitting sheets at the Excel row limit.
+    So it cannot stay "Processing"; its failure mode is a request that runs long, holds a session, or reads an older run.
+    This rule gives the numbers behind that:
+      published-sizes   every published pointer since :since with the row_count recorded on its run, a size band, and a rough JSON size
+                        (rows x 2494 bytes, the Actual view sample measured locally on 14 Nov: an ESTIMATE, not a measurement)
+      export-serves-old pointers whose newest run is REQUESTED, RUNNING or FAILED: Export All and the grid then read the previous published run
+    Parameters: tenant, since (default 14 days back).
+  -->
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+    <param name="since" type="date" expr="#minusDays(#today(), 14)"/>
+  </parameters>
+
+  <sql id="published-sizes" db="target" timeout="120" export="full"><![CDATA[
+    SELECT p.business_unit, p.view_type, p.settlement_date, p.published_at, r.status AS run_status, r.row_count,
+           CASE WHEN r.row_count > 1048575 THEN 'over one Excel sheet'
+                WHEN r.row_count > 500000 THEN 'large'
+                WHEN r.row_count > 100000 THEN 'medium'
+                ELSE 'normal' END AS size_band,
+           round((r.row_count * 2494 / 1073741824.0)::numeric, 2) AS est_json_gib
+    FROM opera.recon_snapshot_pointer p
+    LEFT JOIN opera.recon_refresh_run r ON r.uuid = p.published_run_id
+    WHERE p.tenant_id = :tenant AND p.settlement_date >= :since
+    ORDER BY r.row_count DESC NULLS LAST
+    LIMIT 100
+  ]]></sql>
+
+  <sql id="export-serves-old" db="target" timeout="120" export="full"><![CDATA[
+    SELECT p.business_unit, p.view_type, p.settlement_date, p.published_at,
+           l.status AS newest_run_status, l.requested_at AS newest_requested_at, left(l.error_message, 120) AS newest_error
+    FROM opera.recon_snapshot_pointer p
+    JOIN LATERAL (
+      SELECT r.uuid, r.status, r.requested_at, r.error_message
+      FROM opera.recon_refresh_run r
+      WHERE r.tenant_id = p.tenant_id AND r.business_unit = p.business_unit AND r.view_type = p.view_type
+        AND r.resolved_settlement_date = p.settlement_date AND r.status <> 'MANUAL_TEST'
+      ORDER BY r.requested_at DESC
+      LIMIT 1
+    ) l ON true
+    WHERE p.tenant_id = :tenant AND p.settlement_date >= :since AND l.uuid <> p.published_run_id
+      AND l.status IN ('REQUESTED', 'RUNNING', 'FAILED')
+    ORDER BY l.requested_at DESC
+    LIMIT 100
+  ]]></sql>
+
+  <expect expr="#size(#rows('published-sizes').?[run_status != 'COMPLETED' or run_status == null]) == 0" reason="every published pointer leads to a COMPLETED run"/>
+  <expect ref="export-serves-old" rows="0" reason="no export reads an older run than the last refresh because that refresh is unfinished or failed"/>
+
+  <compress id="bundle" file="recon-stuck-03-export-exposure.zip">
+    <include ref="published-sizes"/><include ref="export-serves-old"/>
+  </compress>
+</rules>

@@ -1,0 +1,118 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rules name="recon-stuck-01-refresh-runs">
+  <!--
+    Question: does the Recon refresh have the same "stuck in Processing" problem as Combined VAR?
+
+    Code facts (transaction-core, read 20 Nov 2026):
+      ReconRefreshService.requestRefresh saves a recon_refresh_run row as REQUESTED and calls ReconRefreshWorker.execute (@Async,
+      same JVM as the web server). The worker claims the row (REQUESTED to RUNNING, committed at once in its own transaction),
+      then runs materializeValidateAndPublish in ONE transaction that also moves the pointer and marks the run COMPLETED.
+      The worker catches Exception only and calls markFailed. Nothing else ever moves a run out of RUNNING:
+        pod killed or restarted, OutOfMemoryError (an Error, not an Exception), or a failed markFailed leaves RUNNING for ever.
+        a rejected or lost task leaves REQUESTED for ever (the row is saved before execute is called).
+      The snapshot work is one transaction, so a crash leaves no half-written published data: the pointer keeps the old run,
+      the report shows the OLD data, and the UI that polls run-status keeps waiting.
+
+    Checks (read only; tenant_id first in every filter):
+      clock-check           database clock, time zone, and the gap between requested_at (written by the JVM) and started_at (written by the
+                            database). A gap near 19800 s means the two clocks differ by 5.5 h and the age columns below must be read with that in mind.
+      run-counts            runs since :since by view type and status
+      stuck-runs            REQUESTED older than :stuckMinutes (never claimed) or RUNNING older than :stuckMinutes, with the next run for the same
+                            BU, view and date, to see whether a retry recovered it
+      failed-fingerprints   FAILED runs grouped by the first 100 characters of the error, to see crash related messages
+      durations             COMPLETED runs: median, 90th percentile and longest seconds per BU and view, the basis for a watchdog timeout
+      pointers-behind       published pointers whose newest run is NOT the published one: the report shows older data than the last refresh
+    Parameters: tenant, since (date, default 14 days back), stuckMinutes (default 120).
+    Override a parameter on the command line with the tool's param option, for example stuckMinutes=30.
+  -->
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+    <param name="since" type="date" expr="#minusDays(#today(), 14)"/>
+    <param name="stuckMinutes" type="integer" value="120"/>
+  </parameters>
+
+  <sql id="clock-check" db="target" timeout="60" export="full"><![CDATA[
+    SELECT localtimestamp AS db_now, current_setting('TimeZone') AS db_time_zone,
+           max(requested_at) AS last_requested, max(started_at) AS last_started, max(completed_at) AS last_completed,
+           round((percentile_cont(0.5) WITHIN GROUP (ORDER BY extract(epoch FROM (started_at - requested_at))))::numeric, 0) AS median_request_to_start_seconds,
+           count(*) AS runs
+    FROM opera.recon_refresh_run
+    WHERE tenant_id = :tenant AND requested_at >= :since AND started_at IS NOT NULL AND status <> 'MANUAL_TEST'
+  ]]></sql>
+
+  <sql id="run-counts" db="target" timeout="60" export="full"><![CDATA[
+    SELECT view_type, status, count(*) AS runs, min(requested_at) AS first_requested, max(requested_at) AS last_requested
+    FROM opera.recon_refresh_run
+    WHERE tenant_id = :tenant AND requested_at >= :since AND status <> 'MANUAL_TEST'
+    GROUP BY view_type, status
+    ORDER BY view_type, status
+  ]]></sql>
+
+  <sql id="stuck-runs" db="target" timeout="60" export="full"><![CDATA[
+    SELECT r.business_unit, r.view_type, r.resolved_settlement_date, r.status, r.requested_by, r.requested_at, r.started_at,
+           round(extract(epoch FROM (localtimestamp - coalesce(r.started_at, r.requested_at))) / 60) AS age_minutes,
+           n.status AS next_run_status, n.requested_at AS next_requested_at
+    FROM opera.recon_refresh_run r
+    LEFT JOIN LATERAL (
+      SELECT x.status, x.requested_at
+      FROM opera.recon_refresh_run x
+      WHERE x.tenant_id = r.tenant_id AND x.business_unit = r.business_unit AND x.view_type = r.view_type
+        AND x.resolved_settlement_date = r.resolved_settlement_date AND x.requested_at > r.requested_at
+        AND x.status <> 'MANUAL_TEST'
+      ORDER BY x.requested_at
+      LIMIT 1
+    ) n ON true
+    WHERE r.tenant_id = :tenant AND r.requested_at >= :since
+      AND ((r.status = 'REQUESTED' AND r.requested_at < localtimestamp - make_interval(mins => :stuckMinutes))
+        OR (r.status = 'RUNNING' AND r.started_at < localtimestamp - make_interval(mins => :stuckMinutes)))
+    ORDER BY r.requested_at DESC
+    LIMIT 50
+  ]]></sql>
+
+  <sql id="failed-fingerprints" db="target" timeout="60" export="full"><![CDATA[
+    SELECT view_type, left(error_message, 100) AS error_start, count(*) AS runs, min(requested_at) AS first_seen, max(requested_at) AS last_seen
+    FROM opera.recon_refresh_run
+    WHERE tenant_id = :tenant AND requested_at >= :since AND status = 'FAILED'
+    GROUP BY view_type, left(error_message, 100)
+    ORDER BY count(*) DESC
+    LIMIT 30
+  ]]></sql>
+
+  <sql id="durations" db="target" timeout="60" export="full"><![CDATA[
+    SELECT business_unit, view_type, count(*) AS runs, max(row_count) AS max_rows,
+           round((percentile_cont(0.5) WITHIN GROUP (ORDER BY extract(epoch FROM (completed_at - started_at))))::numeric, 0) AS median_seconds,
+           round((percentile_cont(0.9) WITHIN GROUP (ORDER BY extract(epoch FROM (completed_at - started_at))))::numeric, 0) AS p90_seconds,
+           round(max(extract(epoch FROM (completed_at - started_at)))::numeric, 0) AS max_seconds
+    FROM opera.recon_refresh_run
+    WHERE tenant_id = :tenant AND requested_at >= :since AND status = 'COMPLETED'
+      AND started_at IS NOT NULL AND completed_at IS NOT NULL
+    GROUP BY business_unit, view_type
+    ORDER BY max(extract(epoch FROM (completed_at - started_at))) DESC
+    LIMIT 40
+  ]]></sql>
+
+  <sql id="pointers-behind" db="target" timeout="120" export="full"><![CDATA[
+    SELECT p.business_unit, p.view_type, p.settlement_date, p.published_at,
+           l.status AS newest_run_status, l.requested_at AS newest_requested_at, left(l.error_message, 120) AS newest_error
+    FROM opera.recon_snapshot_pointer p
+    JOIN LATERAL (
+      SELECT r.uuid, r.status, r.requested_at, r.error_message
+      FROM opera.recon_refresh_run r
+      WHERE r.tenant_id = p.tenant_id AND r.business_unit = p.business_unit AND r.view_type = p.view_type
+        AND r.resolved_settlement_date = p.settlement_date AND r.status <> 'MANUAL_TEST'
+      ORDER BY r.requested_at DESC
+      LIMIT 1
+    ) l ON true
+    WHERE p.tenant_id = :tenant AND p.settlement_date >= :since AND l.uuid <> p.published_run_id
+    ORDER BY l.requested_at DESC
+    LIMIT 100
+  ]]></sql>
+
+  <expect ref="stuck-runs" rows="0" reason="no run is stuck in REQUESTED or RUNNING longer than stuckMinutes (same defect as Combined VAR stuck in Processing)"/>
+  <expect expr="#size(#rows('pointers-behind').?[newest_run_status == 'REQUESTED' or newest_run_status == 'RUNNING']) == 0" reason="no published report is waiting behind a refresh that has not finished"/>
+
+  <compress id="bundle" file="recon-stuck-01-refresh-runs.zip">
+    <include ref="clock-check"/><include ref="run-counts"/><include ref="stuck-runs"/><include ref="failed-fingerprints"/>
+    <include ref="durations"/><include ref="pointers-behind"/>
+  </compress>
+</rules>

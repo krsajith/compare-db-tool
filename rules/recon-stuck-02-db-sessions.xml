@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rules name="recon-stuck-02-db-sessions">
+  <!--
+    Question: while a Recon refresh or export looks stuck, what is the database doing? Run it WHILE a run shows RUNNING or an export hangs.
+
+    Why: a run row says RUNNING from the moment the worker claims it. If the pod died, the row stays RUNNING but nobody works on it;
+    if the work hangs, a database session is still busy or waiting. The two cases look the same in recon_refresh_run and differ here.
+    The refresh calls recon_materialize_* and recon_postprocess_* (one transaction, one advisory lock per tenant, BU, view and date).
+    The export (ReconExportDataProvider) opens a read only transaction with a cursor on recon_*_snapshot, fetch size 1000, query timeout 600 s.
+    A client that went away while the cursor is open leaves a session idle in transaction until the timeout fires.
+
+    Checks (read only):
+      sessions        sessions that run recon functions, read recon snapshot tables, or sit idle in transaction
+      advisory-locks  advisory locks held or waited for (the refresh lock); a waiting lock explains a refresh that fails with "in progress"
+      orphan-check    one row: RUNNING runs for the tenant against backends that are actually executing a recon function.
+                      running_runs greater than active_backends means a RUNNING row nobody is working on (only judged when can_see_others is true;
+                      without the pg_read_all_stats role other sessions show no query text)
+    Parameter: tenant.
+  -->
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+  </parameters>
+
+  <sql id="sessions" db="target" timeout="60" export="full"><![CDATA[
+    SELECT pid, usename, application_name, client_addr, state, wait_event_type, wait_event,
+           round(extract(epoch FROM (now() - xact_start))) AS xact_seconds,
+           round(extract(epoch FROM (now() - query_start))) AS query_seconds,
+           left(query, 160) AS query_start_text
+    FROM pg_stat_activity
+    WHERE datname = current_database() AND pid <> pg_backend_pid()
+      AND (query ILIKE '%recon_materialize%' OR query ILIKE '%recon_postprocess%' OR query ILIKE '%recon_%_snapshot%'
+           OR state LIKE 'idle in transaction%')
+    ORDER BY xact_start NULLS LAST
+    LIMIT 100
+  ]]></sql>
+
+  <sql id="advisory-locks" db="target" timeout="60" export="full"><![CDATA[
+    SELECT l.pid, l.granted, a.state, a.application_name,
+           round(extract(epoch FROM (now() - a.xact_start))) AS xact_seconds,
+           left(a.query, 120) AS query_start_text
+    FROM pg_locks l
+    JOIN pg_stat_activity a ON a.pid = l.pid
+    WHERE l.locktype = 'advisory' AND a.datname = current_database()
+    ORDER BY a.xact_start NULLS LAST
+    LIMIT 50
+  ]]></sql>
+
+  <sql id="orphan-check" db="target" timeout="60" export="full"><![CDATA[
+    SELECT (SELECT count(*) FROM opera.recon_refresh_run WHERE tenant_id = :tenant AND status = 'RUNNING') AS running_runs,
+           (SELECT count(*) FROM pg_stat_activity
+             WHERE datname = current_database() AND state = 'active' AND pid <> pg_backend_pid()
+               AND (query ILIKE '%recon_materialize%' OR query ILIKE '%recon_postprocess%')) AS active_backends,
+           (pg_has_role(current_user, 'pg_read_all_stats', 'USAGE')
+             OR coalesce((SELECT rolsuper FROM pg_roles WHERE rolname = current_user), false)) AS can_see_others
+  ]]></sql>
+
+  <expect expr="#size(#rows('orphan-check').?[can_see_others == true and running_runs &gt; active_backends]) == 0" reason="every RUNNING run has a database session working on it (otherwise the pod died or the work was lost)"/>
+  <expect expr="#size(#rows('sessions').?[state != null and state.startsWith('idle in transaction') and xact_seconds &gt; 600]) == 0" reason="no session idle in transaction longer than the 600 s export and refresh timeout"/>
+
+  <compress id="bundle" file="recon-stuck-02-db-sessions.zip">
+    <include ref="sessions"/><include ref="advisory-locks"/><include ref="orphan-check"/>
+  </compress>
+</rules>
