@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rules name="gap-01-report-tables-discovery">
+  <!--
+    Step 1 of the report-tables gap: which legacy tables exist, how big they are, and are they still being written (output) or stale (input).
+    Read only, small results, no row data is read.
+    Families (legacy MySQL schema dbsystemuat):
+      A. five families that do not exist in PG yet, named with a BU prefix: reports_product_order_table, reports_productgroup_order_table,
+         reports_portfoliogroup_order_table, combined_report_mapping_table, portfoliowise_openbalance_table (also variants with a portfolio group suffix).
+      B. tables that exist in PG but are empty, named with a BU suffix or without one: subportfolio_fy_opening_balance_table, subportfolio_fy_monthwise_opening_balance_table,
+         subportfolio_fy_opening_balance_actual_table, portfolio_region_mapping_table, product_prcat_code_mapping_table, counterparty_party_code_mapping_table,
+         dbtodw_mapping, eod_realised_premium_table, client_unit_name_mapping_table, the netted_trades_adj_value_calculation tables, and anything with rbrchn in the name
+         (the legacy name of netted_trades_rbrchn_table is not known yet).
+    legacy-tables : name, estimated rows, size, create and last update time (update_time is kept by InnoDB; a recent time means the table is still written,
+                    so it is output that the application regenerates; an old or empty time means input that was maintained by hand).
+                    table_rows is an estimate only: the exact counts come in step 2.
+    pg-existing   : which of the family A names already exist in PG (expected none) and which of the B names exist.
+    pg-counts     : exact row counts of the B tables in PG (the 12 empty ones, plus pos_1211_port_trader_mapping_table which is loaded).
+    Run it once per environment: pass this file to the rules flag and postgres-dev or postgres-uat to the target-env flag. The legacy side is the same for both.
+  -->
+  <sql id="legacy-tables" db="mysql-oprdb02" timeout="300" export="full"><![CDATA[
+    SELECT table_name, table_rows, ROUND(data_length / 1024) AS data_kb, create_time, update_time
+    FROM information_schema.tables
+    WHERE table_schema = 'dbsystemuat'
+      AND table_type = 'BASE TABLE'
+      AND (table_name REGEXP 'reports[_]product[_]order[_]table'
+        OR table_name REGEXP 'reports[_]productgroup[_]order[_]table'
+        OR table_name REGEXP 'reports[_]portfoliogroup[_]order[_]table'
+        OR table_name REGEXP 'combined[_]report[_]mapping[_]table'
+        OR table_name REGEXP 'portfoliowise[_]openbalance[_]table'
+        OR table_name REGEXP 'subportfolio[_]fy[_]opening[_]balance[_]table'
+        OR table_name REGEXP 'subportfolio[_]fy[_]monthwise[_]opening[_]balance[_]table'
+        OR table_name REGEXP 'subportfolio[_]fy[_]opening[_]balance[_]actual[_]table'
+        OR table_name REGEXP 'portfolio[_]region[_]mapping[_]table'
+        OR table_name REGEXP 'product[_]prcat[_]code[_]mapping[_]table'
+        OR table_name REGEXP 'counterparty[_]party[_]code[_]mapping[_]table'
+        OR table_name REGEXP 'dbtodw[_]mapping'
+        OR table_name REGEXP 'eod[_]realised[_]premium[_]table'
+        OR table_name REGEXP 'client[_]unit[_]name[_]mapping[_]table'
+        OR table_name REGEXP 'netted[_]trades[_]adj[_]value[_]calculation'
+        OR table_name REGEXP 'rbrchn')
+    ORDER BY table_name
+  ]]></sql>
+
+  <sql id="pg-existing" db="target" timeout="120" export="full"><![CDATA[
+    SELECT c.relname AS table_name, c.relkind
+    FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'opera'
+      AND c.relkind IN ('r', 'v')
+      AND (c.relname IN ('reports_product_order_table', 'reports_productgroup_order_table', 'reports_portfoliogroup_order_table',
+                         'combined_report_mapping_table', 'portfoliowise_openbalance_table',
+                         'client_unit_mapping', 'counterparty_party_code_mapping_table', 'dbtodw_mapping', 'eod_realised_premium_table',
+                         'portfolio_region_mapping_table', 'product_prcat_code_mapping_table', 'subportfolio_fy_monthwise_opening_balance_table',
+                         'subportfolio_fy_opening_balance_actual_table', 'subportfolio_fy_opening_balance_table', 'pos_1211_port_trader_mapping_table')
+        OR c.relname LIKE 'netted%trades%adj%value%calculation%'
+        OR c.relname LIKE '%rbrchn%')
+    ORDER BY c.relname
+  ]]></sql>
+
+  <sql id="pg-counts" db="target" timeout="300" export="full"><![CDATA[
+    SELECT 'client_unit_mapping' AS table_name, count(*) AS row_count FROM opera.client_unit_mapping
+    UNION ALL SELECT 'counterparty_party_code_mapping_table', count(*) FROM opera.counterparty_party_code_mapping_table
+    UNION ALL SELECT 'dbtodw_mapping', count(*) FROM opera.dbtodw_mapping
+    UNION ALL SELECT 'eod_realised_premium_table', count(*) FROM opera.eod_realised_premium_table
+    UNION ALL SELECT 'netted_trades_adj_value_calculation_table', count(*) FROM opera.netted_trades_adj_value_calculation_table
+    UNION ALL SELECT 'netted_trades_adj_value_calculation_terminal_1242_table', count(*) FROM opera.netted_trades_adj_value_calculation_terminal_1242_table
+    UNION ALL SELECT 'netted_trades_rbrchn_table', count(*) FROM opera.netted_trades_rbrchn_table
+    UNION ALL SELECT 'portfolio_region_mapping_table', count(*) FROM opera.portfolio_region_mapping_table
+    UNION ALL SELECT 'product_prcat_code_mapping_table', count(*) FROM opera.product_prcat_code_mapping_table
+    UNION ALL SELECT 'subportfolio_fy_monthwise_opening_balance_table', count(*) FROM opera.subportfolio_fy_monthwise_opening_balance_table
+    UNION ALL SELECT 'subportfolio_fy_opening_balance_actual_table', count(*) FROM opera.subportfolio_fy_opening_balance_actual_table
+    UNION ALL SELECT 'subportfolio_fy_opening_balance_table', count(*) FROM opera.subportfolio_fy_opening_balance_table
+    UNION ALL SELECT 'pos_1211_port_trader_mapping_table', count(*) FROM opera.pos_1211_port_trader_mapping_table
+  ]]></sql>
+
+  <expect ref="legacy-tables" rows=">=1" reason="the legacy schema must hold these tables"/>
+  <expect ref="pg-counts" rows="13" reason="all 13 tables must exist in PG, otherwise this query fails and the missing name is in the error"/>
+
+  <compress id="bundle" file="gap-01-report-tables-discovery.zip">
+    <include ref="legacy-tables"/>
+    <include ref="pg-existing"/>
+    <include ref="pg-counts"/>
+  </compress>
+</rules>
