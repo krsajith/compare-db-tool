@@ -38,7 +38,7 @@
       AND derivative_type NOT ILIKE 'fx%' AND subportfolio NOT ILIKE 'conso%' AND p1_name NOT ILIKE 'CM OR%'
   ]]></explain>
 
-  <expect ref="viewdef" column="reads_stored_fx" value="true" row="1" reason="the live view is v6 and reads the stored fx columns"/>
+  <expect ref="viewdef" column="reads_stored_fx" equals="true" row="1" reason="the live view is v6 and reads the stored fx columns"/>
 
   <compress id="bundle" file="combined-var-slow-02-view-live-check.zip"><include ref="viewdef"/><include ref="changelog"/><include ref="plan-app"/></compress>
 </rules>
