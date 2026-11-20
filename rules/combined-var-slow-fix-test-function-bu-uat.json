@@ -1,0 +1,17 @@
+{
+  "name": "combined-var-slow-fix-test-function-bu-uat",
+  "db": "postgres-uat",
+  "backupSchema": "parity_work",
+  "confirm": "APPLY",
+  "ticket": "combined-var-slow",
+  "description": "TEST ONLY. Creates opera.zz_positions_nonestloop(tenant, bu), the service positions read for ANY business unit with the function level setting enable_nestloop = off, so the same read can be timed for CFS (and others) with nested loops off and compared with combined-var-slow-01 (CFS read: 5.8 s, n = 1134113, s1 = 25103361.86525723 with the default plan). Run rule combined-var-slow-06-all-bus next, then the drop file combined-var-slow-fix-test-function-bu-drop-uat.json.",
+  "steps": [
+    {
+      "id": "create-test-function",
+      "action": "sql",
+      "note": "Creates one function, no data touched. The SET clause applies only while the function runs.",
+      "sql": "CREATE OR REPLACE FUNCTION opera.zz_positions_nonestloop(p_tenant text, p_bu text) RETURNS TABLE(n bigint, s1 numeric, s2 numeric, s3 numeric, s4 numeric, s5 numeric) LANGUAGE sql STABLE SET enable_nestloop = off AS $f$ SELECT count(*), sum(mtm_usd)::numeric, sum(mtm_nc)::numeric, sum(settle_delta_1)::numeric, sum(settle_vega_1)::numeric, sum(settle_theta)::numeric FROM opera.helper_settle_pricing_subportfoliovalues_view WHERE tenant_id = p_tenant AND UPPER(business_unit) = upper(p_bu) AND value_date = (SELECT value_date FROM opera.valuation_date_table WHERE tenant_id = p_tenant AND UPPER(business_unit) = upper(p_bu) LIMIT 1) AND derivative_type NOT ILIKE 'fx%' AND subportfolio NOT ILIKE 'conso%' AND (upper(p_bu) = 'CFS' OR p1_name NOT ILIKE 'CM OR%') $f$",
+      "expect": { "affected": "0" }
+    }
+  ]
+}

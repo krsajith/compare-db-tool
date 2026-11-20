@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rules name="combined-var-slow-06-all-bus">
+  <!--
+    Question: is the service positions read still correct and fast for EVERY business unit with nested loops off (the PR applies it to all BUs)?
+    Calls opera.zz_positions_nonestloop (combined-var-slow-fix-test-function-bu-uat.json). Reference from combined-var-slow-01 with the default plan
+    on UAT: cfs n = 1134113, s1 = 25103361.86525723, s2 = 24139923.808848504, s3 = -631.0056989389677, 5.8 s. rmc with nested loops off: n = 10586, 2.7 s.
+    The cfs sums must match the reference (same rows, only the plan differs; compare with a few digits of float noise). Read only. Parameter: tenant.
+  -->
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+  </parameters>
+  <sql id="cfs" db="target" timeout="300" export="full"><![CDATA[
+    SELECT n, s1, s2, s3, s4, s5 FROM opera.zz_positions_nonestloop(:tenant, 'cfs')
+  ]]></sql>
+  <sql id="rmc" db="target" timeout="300" export="full"><![CDATA[
+    SELECT n, s1, s2, s3, s4, s5 FROM opera.zz_positions_nonestloop(:tenant, 'rmc')
+  ]]></sql>
+  <sql id="orm" db="target" timeout="300" export="full"><![CDATA[
+    SELECT n, s1, s2, s3, s4, s5 FROM opera.zz_positions_nonestloop(:tenant, 'orm')
+  ]]></sql>
+  <expect ref="cfs" rows="1" reason="cfs read returns inside 300 s with nested loops off"/>
+  <expect ref="cfs" column="n" equals="1134113" row="1" reason="same row count as the default plan (1134113)"/>
+  <expect ref="rmc" rows="1" reason="rmc read returns"/>
+  <compress id="bundle" file="combined-var-slow-06-all-bus.zip"><include ref="cfs"/><include ref="rmc"/><include ref="orm"/></compress>
+</rules>
