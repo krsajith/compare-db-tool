@@ -1,0 +1,17 @@
+{
+  "name": "combined-var-slow-fix-test-function-drop-uat",
+  "db": "postgres-uat",
+  "backupSchema": "parity_work",
+  "ticket": "combined-var-slow",
+  "description": "Removes the test function opera.zz_t06_nonestloop created by combined-var-slow-fix-test-function-uat.json.",
+  "steps": [
+    {
+      "id": "drop-test-function",
+      "action": "sql",
+      "sql": "DROP FUNCTION IF EXISTS opera.zz_t06_nonestloop(text)",
+      "expect": {
+        "affected": "0"
+      }
+    }
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "name": "combined-var-slow-fix-test-function-uat",
+  "db": "postgres-uat",
+  "backupSchema": "parity_work",
+  "ticket": "combined-var-slow",
+  "description": "TEST ONLY. Creates opera.zz_t06_nonestloop(tenant), a function that runs the service RMC positions read with the function level setting enable_nestloop = off, scoped to that call only. Why: ANALYZE did not help (rule combined-var-slow-04, estimate still 1 row, read still over 180 s). The plan shows the orm osg rmc branch looks up recon_settle_snapshot by business_unit, settlement_date and run_id from the pointer; these three are fully correlated so the planner multiplies their selectivities to 1 row (real about 10000) and chooses a nested loop with an unparameterised Append of about 630 rows rebuilt per outer row. Forcing the join type for this one call tests that without changing statistics or any other query. Run rule combined-var-slow-05-test-function next, then the drop file combined-var-slow-fix-test-function-drop-uat.json.",
+  "steps": [
+    {
+      "id": "create-test-function",
+      "action": "sql",
+      "note": "Creates one function, no data touched. The SET clause applies only while the function runs.",
+      "sql": "CREATE OR REPLACE FUNCTION opera.zz_t06_nonestloop(p_tenant text) RETURNS TABLE(n bigint, s1 numeric, s2 numeric, s3 numeric, s4 numeric, s5 numeric) LANGUAGE sql STABLE SET enable_nestloop = off AS $f$ SELECT count(*), sum(mtm_usd)::numeric, sum(mtm_nc)::numeric, sum(settle_delta_1)::numeric, sum(settle_vega_1)::numeric, sum(settle_theta)::numeric FROM opera.helper_settle_pricing_subportfoliovalues_view WHERE tenant_id = p_tenant AND UPPER(business_unit) = 'RMC' AND value_date = (SELECT value_date FROM opera.valuation_date_table WHERE tenant_id = p_tenant AND UPPER(business_unit) = 'RMC' LIMIT 1) AND derivative_type NOT ILIKE 'fx%' AND subportfolio NOT ILIKE 'conso%' AND p1_name NOT ILIKE 'CM OR%' $f$",
+      "expect": {
+        "affected": "0"
+      }
+    }
+  ]
+}

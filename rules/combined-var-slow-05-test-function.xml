@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rules name="combined-var-slow-05-test-function">
+  <!--
+    Question: does the Combined VAR RMC read return in seconds when the join type is forced (enable_nestloop = off, function level setting,
+    that call only)? f06 calls opera.zz_t06_nonestloop from combined-var-slow-fix-test-function-uat.json. cmp06 is the same read as the
+    service sent, kept for reference with a 30 s cap: it is known to pass 180 s. Expected f06: n about the RMC position count, seconds, and the
+    same n and sums as the service read would give. Read only. Parameter: tenant.
+  -->
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+  </parameters>
+
+  <sql id="f06" db="target" timeout="300" export="full"><![CDATA[
+    SELECT n, s1, s2, s3, s4, s5 FROM opera.zz_t06_nonestloop(:tenant)
+  ]]></sql>
+
+  <expect ref="f06" rows="1" reason="the forced plan returns the RMC read inside 300 s"/>
+
+  <compress id="bundle" file="combined-var-slow-05-test-function.zip"><include ref="f06"/></compress>
+</rules>
