@@ -1,0 +1,31 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<!-- Read-only. Legacy RRR query 2 drops positions whose counterparty_parent is NULL (SQL NOT IN with NULL); RrrPositionRules.java keeps them. Counts live positions per BU that pass the contract rules (not blank, chars 2-3 not 22 to 40) and have a NULL or blank counterparty_parent. Run with the target env flag for dev or UAT. -->
+<rules name="rrr-query2-null-counterparty-parent">
+<parameters>
+<param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+</parameters>
+
+<sql id="null-parent-counts" db="target" timeout="300" export="full"><![CDATA[
+SELECT cdt.business_unit,
+       count(*) AS live_positions,
+       count(*) FILTER (WHERE cdt.counterparty_parent IS NULL) AS parent_null,
+       count(*) FILTER (WHERE cdt.counterparty_parent IS NOT NULL AND btrim(cdt.counterparty_parent) = '') AS parent_blank
+  FROM opera.latest_active_lot l
+  JOIN opera.cloned_deal_ticket_table cdt
+    ON cdt.tenant_id = l.tenant_id AND cdt.business_unit = l.business_unit
+   AND cdt.trade_id = l.trade_id AND cdt.is_latest_version = 1
+ WHERE l.tenant_id = :tenant
+   AND l.business_unit IN ('cfs','orm','rmc','CFS','ORM','RMC')
+   AND btrim(coalesce(cdt.contract_number, '')) <> ''
+   AND substr(cdt.contract_number, 2, 2) NOT IN ('22','23','24','25','26','27','28','29','30','31','32','33','34','35','36','37','38','39','40')
+ GROUP BY cdt.business_unit
+ ORDER BY cdt.business_unit
+]]></sql>
+
+<expect ref="null-parent-counts" rows="&gt;=1" reason="at least one of cfs, orm, rmc has live positions"/>
+
+<compress id="bundle" file="rrr-query2-null-counterparty-parent.zip">
+<include ref="null-parent-counts"/>
+</compress>
+</rules>
+

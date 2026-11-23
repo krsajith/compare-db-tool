@@ -1,0 +1,23 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<!-- Read-only. Does rrr_report_configuration have a row for cfs, orm, rmc or DEFAULT? Without one RRR throws RRR_CONFIGURATION_MISSING. Run with the target env flag for dev or UAT. -->
+<rules name="rrr-config-01-seed-check">
+<parameters>
+<param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+</parameters>
+
+<sql id="rrr-config-rows" db="target" timeout="60" export="full"><![CDATA[
+SELECT tenant_id, business_unit, ofi_internal_threshold, threshold_def_ageing_buffer, cash_def_ageing_buffer,
+       client_cash_call_buffer, account_balance_buffer, ofi_external_threshold, ofi_total_threshold,
+       ogh_internal_threshold, ogh_external_threshold, ogh_total_threshold, updated_timestamp
+  FROM opera.rrr_report_configuration
+ WHERE tenant_id = :tenant
+ ORDER BY business_unit
+]]></sql>
+
+<expect ref="rrr-config-rows" rows="&gt;=1" reason="RRR needs a DEFAULT or per-BU row; legacy values are 10000000, -500, -500, -1000, -1, 20000000, 20000000, 0, 0, 10000000"/>
+
+<compress id="bundle" file="rrr-config-01-seed-check.zip">
+<include ref="rrr-config-rows"/>
+</compress>
+</rules>
+
