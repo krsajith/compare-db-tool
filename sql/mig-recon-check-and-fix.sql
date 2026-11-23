@@ -25,7 +25,7 @@ DECLARE
   only_bu text    := NULL;    -- e.g. 'CFS' for one BU, NULL for all
   r record; n int := 0; v_rows bigint; v_cnt bigint; v_tbl text; bad int; nosnap text;
 BEGIN
-  RAISE NOTICE 'Database: %  (fix = %, only_bu = %)', current_database(), fix, coalesce(only_bu, 'all');
+  RAISE NOTICE 'Database: % @ %  (fix = %, only_bu = %)', current_database(), coalesce(inet_server_addr()::text, 'local') || ':' || inet_server_port(), fix, coalesce(only_bu, 'all');
   PERFORM set_config('search_path', 'opera, public', true);
 
   IF NOT EXISTS (SELECT 1 FROM pg_proc WHERE pronamespace = 'opera'::regnamespace AND proname = 'fn_latest_active_lot_reconcile') THEN

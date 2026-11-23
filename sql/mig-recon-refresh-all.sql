@@ -12,7 +12,8 @@
 -- Views: SETTLE_PRICING for every BU; SETTLE_ACTUAL_PRICING for GPC, RBA, RBC, RMC when they have actual values;
 -- TRADERS_PRICING for BUs that have trader values on the value date. Edit  views  below to restrict.
 --
--- HOW TO RUN (DBeaver connected to the database you mean, AUTO-COMMIT ON, Output tab open):
+-- HOW TO RUN (DBeaver connected to the database you mean, Output tab open). The connection MUST be in AUTO-COMMIT mode (toolbar: Auto):
+--   in manual-commit mode fix mode stops with 'invalid transaction termination' before building anything.
 --   1. Run the whole file as a script (Alt+X). Default = check only: it lists NEW / STALE per BU and view and changes nothing.
 --   2. Test on one small BU first: set only_bu := 'PF6' and fix := true, run, look at the notices. Then fix := true with only_bu NULL.
 --   3. Rerun any time: finished combinations are OK and skipped, so an interrupted run just continues.
@@ -36,7 +37,7 @@ DECLARE
   v_vt text; v_state text; v_run uuid; v_rows bigint; v_cnt bigint; v_tbl text; v_plan jsonb; v_key text; v_t timestamptz;
   bad int; n_new int := 0; n_stale int := 0; n_ok int := 0; n_skip int := 0; n_done int := 0;
 BEGIN
-  RAISE NOTICE 'Database: %  (fix = %, only_bu = %)', current_database(), fix, coalesce(only_bu, 'all');
+  RAISE NOTICE 'Database: % @ %  (fix = %, only_bu = %)', current_database(), coalesce(inet_server_addr()::text, 'local') || ':' || inet_server_port(), fix, coalesce(only_bu, 'all');
   IF NOT EXISTS (SELECT 1 FROM pg_proc WHERE pronamespace = 'opera'::regnamespace AND proname = 'fn_latest_active_lot_reconcile') THEN
     RAISE EXCEPTION 'opera.fn_latest_active_lot_reconcile is not installed (transaction-core PR 177). Nothing was changed.';
   END IF;
@@ -44,6 +45,12 @@ BEGIN
   WHERE missing + extra + different > 0;
   IF bad > 0 THEN
     RAISE EXCEPTION 'latest_active_lot still differs in % BU(s): run mig-lal-check-and-fix.sql first. Nothing was changed.', bad;
+  END IF;
+
+  IF fix THEN
+    -- fix mode commits after each BU and view. This COMMIT is a test run: if it fails, nothing has been built yet.
+    RAISE NOTICE 'Fix mode. If the next line is "invalid transaction termination": DBeaver is in manual-commit mode. Switch to Auto-commit (toolbar) and run again.';
+    COMMIT;
   END IF;
 
   FOR r IN

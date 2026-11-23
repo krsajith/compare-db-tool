@@ -20,7 +20,7 @@ DECLARE
   fix  boolean := false;      -- false = check only, true = check and correct
   bus  int; m bigint; e bigint; d bigint;
 BEGIN
-  RAISE NOTICE 'Database: %  (fix = %)', current_database(), fix;
+  RAISE NOTICE 'Database: % @ %  (fix = %)', current_database(), coalesce(inet_server_addr()::text, 'local') || ':' || inet_server_port(), fix;
   IF NOT EXISTS (SELECT 1 FROM pg_proc WHERE pronamespace = 'opera'::regnamespace AND proname = 'fn_latest_active_lot_reconcile') THEN
     RAISE EXCEPTION 'opera.fn_latest_active_lot_reconcile is not installed (transaction-core PR 177). Nothing was changed.';
   END IF;
