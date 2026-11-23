@@ -37,7 +37,7 @@
 
   <sql id="triggers" db="target" export="full"><![CDATA[
     SELECT count(*) AS triggers, count(*) FILTER (WHERE t.tgenabled NOT IN ('O', 'A')) AS disabled,
-           string_agg(c.relname || '.' || t.tgname || '=' || t.tgenabled, ', ' ORDER BY c.relname, t.tgname) AS detail
+           string_agg(c.relname || '.' || t.tgname || '=' || t.tgenabled::text, ', ' ORDER BY c.relname, t.tgname) AS detail
     FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid
     WHERE c.relnamespace = 'opera'::regnamespace AND t.tgname LIKE 'trg_%latest_active_lot%' AND NOT t.tgisinternal
   ]]></sql>
