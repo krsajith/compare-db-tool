@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Read-only, any environment (23 Nov 2026). After a migration: is latest_active_lot equal to the rule for every BU?
+     Rule = newest deal_active_lots_table row per trade with value_date up to the BU valuation date.
+     Run on dev or UAT: compare.ps1 with rules rules\mig-lal-01-check.xml and target-env postgres-dev (or postgres-uat).
+     missing = trades with lots but no cache row (the migration bypassed the sync trigger). Fix: mig-lal-02-fill.json.
+     triggers = the sync triggers must be enabled after cutover, otherwise later loads miss the cache again. -->
+<rules name="mig-lal-01-check">
+  <sql id="drift" db="target" export="full" timeout="1800"><![CDATA[
+    WITH cut AS (
+      SELECT v.tenant_id, v.business_unit, max(v.value_date) AS d
+      FROM opera.valuation_date_table v GROUP BY v.tenant_id, v.business_unit
+    ), expected AS (
+      SELECT DISTINCT ON (d.tenant_id, d.business_unit, d.trade_id) d.tenant_id, d.business_unit, d.trade_id, d.value_date, d.active_lots
+      FROM opera.deal_active_lots_table d
+      JOIN cut c ON c.tenant_id = d.tenant_id AND c.business_unit = d.business_unit AND d.value_date <= c.d
+      ORDER BY d.tenant_id, d.business_unit, d.trade_id, d.value_date DESC
+    ), actual AS (
+      SELECT l.tenant_id, l.business_unit, l.trade_id, l.value_date, l.active_lots FROM opera.latest_active_lot l
+    ), j AS (
+      SELECT coalesce(e.tenant_id, a.tenant_id) AS tenant_id, coalesce(e.business_unit, a.business_unit) AS business_unit,
+             e.trade_id AS e_trade, a.trade_id AS a_trade,
+             (e.value_date IS DISTINCT FROM a.value_date OR e.active_lots IS DISTINCT FROM a.active_lots) AS diff
+      FROM expected e
+      FULL JOIN actual a ON a.tenant_id = e.tenant_id AND a.business_unit = e.business_unit AND a.trade_id = e.trade_id
+    )
+    SELECT j.tenant_id, j.business_unit,
+           count(j.e_trade) AS expected_rows, count(j.a_trade) AS cache_rows,
+           count(*) FILTER (WHERE j.a_trade IS NULL) AS missing,
+           count(*) FILTER (WHERE j.e_trade IS NULL) AS extra,
+           count(*) FILTER (WHERE j.e_trade IS NOT NULL AND j.a_trade IS NOT NULL AND j.diff) AS different
+    FROM j GROUP BY j.tenant_id, j.business_unit ORDER BY j.tenant_id, j.business_unit
+  ]]></sql>
+  <expect ref="drift" rows=">=1" reason="at least one BU checked"/>
+  <expect ref="drift" column="missing" each="true" equals="0" reason="no trade missing in any BU"/>
+  <expect ref="drift" column="extra" each="true" equals="0" reason="no extra cache row in any BU"/>
+  <expect ref="drift" column="different" each="true" equals="0" reason="no cache row with another date or lots"/>
+
+  <sql id="triggers" db="target" export="full"><![CDATA[
+    SELECT count(*) AS triggers, count(*) FILTER (WHERE t.tgenabled NOT IN ('O', 'A')) AS disabled,
+           string_agg(c.relname || '.' || t.tgname || '=' || t.tgenabled, ', ' ORDER BY c.relname, t.tgname) AS detail
+    FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid
+    WHERE c.relnamespace = 'opera'::regnamespace AND t.tgname LIKE 'trg_%latest_active_lot%' AND NOT t.tgisinternal
+  ]]></sql>
+  <expect ref="triggers" column="triggers" min="1" reason="the latest_active_lot sync triggers exist after cutover (4 expected)"/>
+  <expect ref="triggers" column="disabled" equals="0" reason="no sync trigger is disabled"/>
+
+  <sql id="stats" db="target" export="full"><![CDATA[
+    SELECT s.n_live_tup, s.last_analyze::text AS last_analyze, s.last_autoanalyze::text AS last_autoanalyze
+    FROM pg_stat_user_tables s WHERE s.schemaname = 'opera' AND s.relname = 'latest_active_lot'
+  ]]></sql>
+
+  <compress id="bundle" file="mig-lal-01-check.zip"><include ref="drift"/><include ref="triggers"/><include ref="stats"/></compress>
+</rules>

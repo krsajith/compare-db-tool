@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Read-only, any environment (23 Nov 2026). After a migration: are the published recon snapshots stale?
+     The recon builders read latest_active_lot when a snapshot is built and store the result. A snapshot built before the cache was
+     filled or repaired misses those trades. Per BU and view type, for the latest published settlement date:
+       snapshot_rows = rows really stored for the published run; run_row_count = what the run recorded (must be equal);
+       fixed_after_run = 1 when latest_active_lot_reconcile_log shows a repair (rows missing, extra or different) after the run finished.
+     fixed_after_run = 1 means rebuild: mig-recon-02-rebuild.json. no_snapshot lists BUs with a valuation date but no published snapshot:
+     nothing to rebuild there, run Refresh Recon in the app for the migrated settlement date.
+     Run: compare.ps1 with rules rules\mig-recon-01-check.xml and target-env postgres-dev (or postgres-uat). Override the tenant with the param option. -->
+<rules name="mig-recon-01-check">
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+  </parameters>
+
+  <sql id="snapshots" db="target" export="full" timeout="1800"><![CDATA[
+    WITH ptr AS (
+      SELECT p.business_unit, p.view_type, p.settlement_date, p.published_run_id
+      FROM opera.recon_snapshot_pointer p
+      WHERE p.tenant_id = :tenant
+        AND p.settlement_date = (SELECT max(p2.settlement_date) FROM opera.recon_snapshot_pointer p2
+                                 WHERE p2.tenant_id = p.tenant_id AND p2.business_unit = p.business_unit AND p2.view_type = p.view_type)
+    ), cnt AS (
+      SELECT 'SETTLE_PRICING' AS view_type, s.run_id, s.business_unit, count(*) AS n FROM opera.recon_settle_snapshot s
+      WHERE s.tenant_id = :tenant AND s.run_id IN (SELECT published_run_id FROM ptr WHERE view_type = 'SETTLE_PRICING') GROUP BY s.run_id, s.business_unit
+      UNION ALL
+      SELECT 'SETTLE_ACTUAL_PRICING', s.run_id, s.business_unit, count(*) FROM opera.recon_actual_snapshot s
+      WHERE s.tenant_id = :tenant AND s.run_id IN (SELECT published_run_id FROM ptr WHERE view_type = 'SETTLE_ACTUAL_PRICING') GROUP BY s.run_id, s.business_unit
+      UNION ALL
+      SELECT 'TRADERS_PRICING', s.run_id, s.business_unit, count(*) FROM opera.recon_traders_snapshot s
+      WHERE s.tenant_id = :tenant AND s.run_id IN (SELECT published_run_id FROM ptr WHERE view_type = 'TRADERS_PRICING') GROUP BY s.run_id, s.business_unit
+    ), fixed AS (
+      SELECT l.business_unit, max(l.run_at) AS last_fix FROM opera.latest_active_lot_reconcile_log l
+      WHERE l.tenant_id = :tenant AND l.repaired AND (l.missing + l.extra + l.different) > 0 GROUP BY l.business_unit
+    )
+    SELECT p.business_unit, p.view_type, p.settlement_date::text AS settlement_date, rr.status,
+           rr.row_count AS run_row_count, coalesce(c.n, 0) AS snapshot_rows,
+           CASE WHEN rr.row_count IS NOT DISTINCT FROM coalesce(c.n, 0) THEN 1 ELSE 0 END AS rows_match,
+           greatest(rr.completed_at, rr.updated_timestamp)::text AS built_at, f.last_fix::text AS last_cache_fix,
+           CASE WHEN f.last_fix > greatest(rr.completed_at, rr.updated_timestamp) THEN 1 ELSE 0 END AS fixed_after_run
+    FROM ptr p
+    JOIN opera.recon_refresh_run rr ON rr.uuid = p.published_run_id
+    LEFT JOIN cnt c ON c.run_id = p.published_run_id AND c.view_type = p.view_type AND c.business_unit = p.business_unit
+    LEFT JOIN fixed f ON f.business_unit = p.business_unit
+    ORDER BY p.business_unit, p.view_type
+  ]]></sql>
+  <expect ref="snapshots" column="rows_match" each="true" equals="1" reason="the stored rows equal the row count the run recorded"/>
+  <expect ref="snapshots" column="fixed_after_run" each="true" equals="0" reason="no snapshot is older than a latest_active_lot repair (rebuild with mig-recon-02-rebuild.json)"/>
+
+  <sql id="no_snapshot" db="target" export="full" timeout="600"><![CDATA[
+    SELECT v.business_unit, max(v.value_date)::text AS valuation_date
+    FROM opera.valuation_date_table v
+    WHERE v.tenant_id = :tenant
+      AND NOT EXISTS (SELECT 1 FROM opera.recon_snapshot_pointer p WHERE p.tenant_id = v.tenant_id AND p.business_unit = v.business_unit)
+    GROUP BY v.business_unit ORDER BY 1
+  ]]></sql>
+
+  <compress id="bundle" file="mig-recon-01-check.zip"><include ref="snapshots"/><include ref="no_snapshot"/></compress>
+</rules>

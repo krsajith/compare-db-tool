@@ -1,0 +1,44 @@
+{
+  "name": "mig-lal-02-fill",
+  "db": "target",
+  "backupSchema": "parity_work",
+  "ticket": "migration-lal-fill",
+  "confirm": "APPLY",
+  "description": "After a migration: fills / repairs latest_active_lot for every tenant and BU with the deployed fn_latest_active_lot_reconcile(NULL,NULL,true), then ANALYZE. Writes only rows that differ and logs each BU to latest_active_lot_reconcile_log (caller mig-lal-fill). One transaction: each BU scope lock is held until the commit, so run when users are idle. The step backs up the current cache for the undo rule. Run the check first (mig-lal-01-check.xml), preview, then apply and type APPLY. Session: statement_timeout=0.",
+  "steps": [
+    {
+      "id": "fill-all-bus",
+      "action": "sql",
+      "table": "opera.latest_active_lot",
+      "where": "tenant_id IS NOT NULL",
+      "key": [
+        "tenant_id",
+        "business_unit",
+        "trade_id"
+      ],
+      "sql": "DO $$ BEGIN PERFORM * FROM opera.fn_latest_active_lot_reconcile(NULL, NULL, true, 'mig-lal-fill'); EXECUTE 'ANALYZE opera.latest_active_lot'; END $$",
+      "preconditions": [
+        {
+          "sql": "SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'opera' AND p.proname IN ('fn_latest_active_lot_reconcile', 'fn_lock_active_lot_scope')",
+          "expect": "2",
+          "reason": "the PR 177 repair and lock functions are deployed"
+        },
+        {
+          "sql": "SELECT count(*) FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'opera' AND c.relname = 'deal_active_lots_table' AND t.tgname = 'trg_sync_latest_active_lot' AND t.tgenabled IN ('O', 'A')",
+          "expect": "1",
+          "reason": "the sync trigger is enabled (cutover done), so later writes keep the cache current"
+        }
+      ],
+      "expect": {
+        "targetBefore": ">=0",
+        "affected": "0",
+        "targetAfter": ">=1"
+      }
+    }
+  ],
+  "verify": [
+    {
+      "rule": "mig-lal-01-check.xml"
+    }
+  ]
+}
