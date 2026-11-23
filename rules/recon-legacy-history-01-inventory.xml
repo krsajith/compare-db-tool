@@ -1,0 +1,46 @@
+<rules name="recon-legacy-history-01-inventory">
+  <!-- Question: in the legacy MySQL, which recon cache tables exist, which hold rows and when were they last written?
+       Read only, legacy only. information_schema row counts are InnoDB estimates and update_time can be NULL after a restart, so
+       rule 02 counts exactly. A recon cache table is rewritten by TRUNCATE plus INSERT in sp_all_recon_refresh. -->
+
+  <sql id="tables" db="mysql-oprdb02" export="full"><![CDATA[
+    SELECT table_name,
+           CASE
+             WHEN table_name REGEXP '^previous_helper_settle_p_and_g' THEN 'previous_settle'
+             WHEN table_name REGEXP '^helper_actual_settle_p_and_g_view_cache' THEN 'actual_cache'
+             WHEN table_name REGEXP '^helper_settle_p_and_g_view_ws_cache' THEN 'ws_cache'
+             WHEN table_name REGEXP '^helper_settle_p_and_g_view_cache' THEN 'settle_cache'
+             WHEN table_name REGEXP '^helper_traders_p_and_g_view_cache' THEN 'traders_cache'
+             WHEN table_name REGEXP '^helper_settle_pricing_subportfoliovalues_view_cache' THEN 'settle_pricing_cache'
+             ELSE 'recon_other'
+           END AS family,
+           table_rows AS est_rows,
+           create_time, update_time
+    FROM information_schema.tables
+    WHERE table_schema = 'dbsystemuat' AND table_type = 'BASE TABLE'
+      AND table_name REGEXP '^(previous_helper_settle_p_and_g|helper_actual_settle_p_and_g_view_cache|helper_settle_p_and_g_view_ws_cache|helper_settle_p_and_g_view_cache|helper_traders_p_and_g_view_cache|helper_settle_pricing_subportfoliovalues_view_cache|recon)'
+    ORDER BY family, table_name
+  ]]></sql>
+
+  <sql id="family-summary" db="mysql-oprdb02" export="full"><![CDATA[
+    SELECT CASE
+             WHEN table_name REGEXP '^previous_helper_settle_p_and_g' THEN 'previous_settle'
+             WHEN table_name REGEXP '^helper_actual_settle_p_and_g_view_cache' THEN 'actual_cache'
+             WHEN table_name REGEXP '^helper_settle_p_and_g_view_ws_cache' THEN 'ws_cache'
+             WHEN table_name REGEXP '^helper_settle_p_and_g_view_cache' THEN 'settle_cache'
+             WHEN table_name REGEXP '^helper_traders_p_and_g_view_cache' THEN 'traders_cache'
+             WHEN table_name REGEXP '^helper_settle_pricing_subportfoliovalues_view_cache' THEN 'settle_pricing_cache'
+             ELSE 'recon_other'
+           END AS family,
+           count(*) AS tables, sum(table_rows) AS est_rows, min(update_time) AS oldest_update, max(update_time) AS newest_update
+    FROM information_schema.tables
+    WHERE table_schema = 'dbsystemuat' AND table_type = 'BASE TABLE'
+      AND table_name REGEXP '^(previous_helper_settle_p_and_g|helper_actual_settle_p_and_g_view_cache|helper_settle_p_and_g_view_ws_cache|helper_settle_p_and_g_view_cache|helper_traders_p_and_g_view_cache|helper_settle_pricing_subportfoliovalues_view_cache|recon)'
+    GROUP BY 1
+    ORDER BY 1
+  ]]></sql>
+
+  <expect ref="tables" rows="&gt;=1" reason="the legacy recon cache tables must exist"/>
+  <expect ref="family-summary" rows="&gt;=1"/>
+  <compress id="bundle" file="recon-legacy-history-01.zip"><include ref="tables"/><include ref="family-summary"/></compress>
+</rules>

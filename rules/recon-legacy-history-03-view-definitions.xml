@@ -1,0 +1,41 @@
+<rules name="recon-legacy-history-03-view-definitions">
+  <!-- Question: where does the legacy recon view take its date from, and does it read the cache or the previous_ table?
+       Read only, legacy only. Returns the definition text of the CFS recon views (about 100 KB at most each) and, for every
+       view that mentions previous_helper or a cache table, the name. Used to settle whether a backdated recon was possible. -->
+  <sql id="cfs-views" db="mysql-oprdb02" timeout="300" export="full"><![CDATA[
+    SELECT table_name AS view_name,
+           CHAR_LENGTH(view_definition) AS definition_chars,
+           LOCATE('valuation_date_table', view_definition) AS pos_valuation_date_table,
+           LOCATE('previous_helper', view_definition) AS pos_previous_helper,
+           LOCATE('cache_table', view_definition) AS pos_cache_table,
+           view_definition
+    FROM information_schema.views
+    WHERE table_schema = 'dbsystemuat'
+      AND table_name IN ('recon_view_data_cfs', 'helper_settle_p_and_g_view_cfs', 'helper_settle_pricing_subportfoliovalues_view_cfs')
+    ORDER BY table_name
+  ]]></sql>
+
+  <sql id="readers" db="mysql-oprdb02" timeout="600" export="full"><![CDATA[
+    SELECT table_name AS view_name,
+           LOCATE('previous_helper', view_definition) > 0 AS reads_previous,
+           LOCATE('helper_settle_p_and_g_view_cache_table', view_definition) > 0 AS reads_settle_cache,
+           LOCATE('valuation_date_table', view_definition) > 0 AS reads_valuation_date
+    FROM information_schema.views
+    WHERE table_schema = 'dbsystemuat'
+      AND (LOCATE('previous_helper', view_definition) > 0 OR LOCATE('helper_settle_p_and_g_view_cache_table', view_definition) > 0)
+    ORDER BY table_name
+  ]]></sql>
+
+  <sql id="routines" db="mysql-oprdb02" timeout="300" export="full"><![CDATA[
+    SELECT routine_name, routine_type, last_altered
+    FROM information_schema.routines
+    WHERE routine_schema = 'dbsystemuat'
+      AND (LOCATE('previous_helper', routine_definition) > 0 OR LOCATE('recon_refresh', routine_definition) > 0)
+    ORDER BY routine_name
+  ]]></sql>
+
+  <expect ref="cfs-views" rows="&gt;=1" reason="the CFS recon views must exist"/>
+  <expect ref="readers" rows="&gt;=0"/>
+  <expect ref="routines" rows="&gt;=1" reason="at least sp_all_recon_refresh mentions recon_refresh"/>
+  <compress id="bundle" file="recon-legacy-history-03.zip"><include ref="cfs-views"/><include ref="readers"/><include ref="routines"/></compress>
+</rules>
