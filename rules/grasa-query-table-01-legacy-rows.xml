@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Read-only. Pulls every row of the legacy query_grasa_rrr_table (SQL text per BU and query number) so the stored queries can be compared with the hardcoded lists in RrrPositionRules.java and selectGrasaRows. -->
+<rules name="grasa-query-table-01-legacy-rows">
+
+<sql id="legacy-query-rows" db="mysql-oprdb02" timeout="120" fetchSize="500" export="full"><![CDATA[
+SELECT bu_name, query_number, LENGTH(query_script) AS script_length, query_script
+  FROM dbsystemuat.query_grasa_rrr_table
+ ORDER BY query_number, bu_name
+]]></sql>
+
+<expect ref="legacy-query-rows" rows="57" reason="the 5 Nov gap scan counted 57 rows across 16 BUs"/>
+
+<compress id="bundle" file="grasa-query-table-01-legacy-rows.zip">
+<include ref="legacy-query-rows"/>
+</compress>
+</rules>
