@@ -1,0 +1,69 @@
+<rules name="xoga747-01-market-parser-runs-and-configs">
+  <!-- XOGA-747: Market parser Financial Options (blank output) and China Vol Options (extra sheet).
+       Question 1: which pipeline configs exist for the market parser, and how big are they.
+       Question 2: for the runs since :since, how many rows survive each step (chain of step counts). -->
+  <parameters>
+    <param name="since" type="timestamp" value="2026-11-23 00:00:00"/>
+  </parameters>
+
+  <sql id="configs" db="postgres-dev" export="full"><![CDATA[
+    SELECT code, template_type, template_name, length(rule_data::text) AS rule_chars,
+           created_timestamp, updated_timestamp, updated_by, tenant_id
+    FROM opera.oga_configservice_uploadrules
+    WHERE template_name ILIKE '%option%' OR template_name ILIKE '%market%' OR template_name ILIKE '%financial%'
+       OR template_name ILIKE '%china%' OR template_name ILIKE '%ice%' OR template_name ILIKE '%parser%'
+    ORDER BY template_name, created_timestamp DESC
+  ]]></sql>
+
+  <sql id="uploads" db="postgres-dev" export="full"><![CDATA[
+    SELECT original_file_name, status, upload_for, import_as, file_size, start_time, completion_time,
+           created_by, created_timestamp
+    FROM opera.oga_bulk_upload_history
+    WHERE created_timestamp >= :since
+    ORDER BY created_timestamp DESC
+    LIMIT 60
+  ]]></sql>
+
+  <sql id="runs" db="postgres-dev" export="full"><![CDATA[
+    SELECT execution_id, min(created_timestamp) AS first_step_at, count(*) AS steps,
+           max(output_row_count) AS max_rows_out, min(output_row_count) AS min_rows_out
+    FROM opera.pipeline_execution_step_log
+    WHERE created_timestamp >= :since
+    GROUP BY execution_id
+    ORDER BY min(created_timestamp) DESC
+    LIMIT 40
+  ]]></sql>
+
+  <sql id="steps" db="postgres-dev" uses="r=runs" export="full"><![CDATA[
+    SELECT execution_id, step_number, step_type, step_name, input_row_count, output_row_count,
+           rejected_row_count, warning_count, execution_duration, step_status, created_timestamp
+    FROM opera.pipeline_execution_step_log
+    WHERE execution_id IN (:r.execution_id[])
+    ORDER BY created_timestamp DESC, execution_id, step_number
+  ]]></sql>
+
+  <sql id="config-text" db="postgres-dev" export="full"><![CDATA[
+    SELECT template_name, template_type, created_timestamp, rule_data::text AS rule_text
+    FROM opera.oga_configservice_uploadrules
+    WHERE template_name ILIKE '%financial%' OR template_name ILIKE '%china%'
+    ORDER BY template_name, created_timestamp DESC
+    LIMIT 12
+  ]]></sql>
+
+  <sql id="mapping" db="postgres-dev" export="full"><![CDATA[
+    SELECT pm.bbg_product_code, pm.invenio_product_code, pm.asset_class, pm.status, pm.tenant_id,
+           (SELECT count(*) FROM opera.vol_id_table v WHERE v.product_code = pm.invenio_product_code) AS vol_id_rows,
+           (SELECT count(*) FROM opera.underlying_list_table u WHERE u.invenio_product_code = pm.invenio_product_code) AS underlying_rows
+    FROM opera.product_master_table pm
+    WHERE pm.bbg_product_code IN ('BJ','IR','JB','XM','YM','YPO','ZB',
+                                  'AC','AE','BDR','BP','KKP','KO','LMA','OMR','OR','PAL','RT','SH','SRB','VV','ZRO','ZRR')
+    ORDER BY pm.bbg_product_code
+  ]]></sql>
+
+  <expect ref="configs" rows=">=1" reason="market parser configs are rows of oga_configservice_uploadrules"/>
+  <expect ref="config-text" rows=">=2" reason="a Financial and a China pipeline config"/>
+  <expect ref="runs" rows=">=1" reason="the Financial and China runs of 24 Nov are in the step log"/>
+  <compress id="bundle" file="xoga747-01.zip">
+    <include ref="configs"/><include ref="config-text"/><include ref="mapping"/><include ref="uploads"/><include ref="runs"/><include ref="steps"/>
+  </compress>
+</rules>
