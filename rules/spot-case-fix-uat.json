@@ -3,8 +3,18 @@
   "db": "postgres-uat",
   "backupSchema": "parity_work",
   "ticket": "spot-case",
-  "description": "Sets currency_spot_mapping_table.spot and product_master_table.curr_mult_factor to the exact spelling used in underlying_settle_value_table (latest price date). MySQL matched text without case, PostgreSQL does not, so recon, statement and cash found no FX rate. Run with the session option search_path=opera,public (the product master clone trigger names its table without a schema). Counts are not fixed: the preview prints them.",
+  "description": "Sets currency_spot_mapping_table.spot and product_master_table.curr_mult_factor to the exact spelling used in underlying_settle_value_table (latest price date). MySQL matched text without case, PostgreSQL does not, so recon, statement and cash found no FX rate.  The first step sets search_path for this transaction (the product master clone trigger names its table without a schema). Counts are not fixed: the preview prints them.",
+  "confirm": "APPLY",
   "steps": [
+    {
+      "id": "session-search-path",
+      "action": "sql",
+      "note": "The deployed opera.product_master_clone_sync_fn (trigger on product_master_table) writes to cloned_product_master_table without a schema and has no search_path of its own. Transaction-local, ends with this change.",
+      "sql": "DO $sp$ BEGIN PERFORM set_config('search_path', 'opera, public', true); END $sp$",
+      "expect": {
+        "affected": "0"
+      }
+    },
     {
       "id": "spot-mapping",
       "action": "update",
