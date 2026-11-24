@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rules name="recon-fx-01-stored-vs-view">
+  <!--
+    Question: does the stored fx_nc_factor in the published settle snapshot equal the value of fx_nc_factor_view (the PG port of the
+    legacy MySQL fx_nc_factor_view_BU) for the same trade? Run it twice for one BU:
+      1. before the change: the stored factor comes from recon_materialize_settle stage 7 as on develop. Differences are expected
+         (recon-dup-10 found 152 ORM rows stored about 0.0297, legacy 1). This is the baseline.
+      2. after the draft stage 7 (fn_recon_fx_nc_factor_value and fn_recon_invenio_product_code) is installed and the settle snapshot
+         of that BU is refreshed: the same rule must give different = 0.
+    Why it matters: helper_settle_pricing_subportfoliovalues_view (v4, v6) shapes A B D E F multiply the stored fx_nc_factor into
+    premium_paid_usd and mkt_value_usd. Shape C (orm osg rmc) reads view_fx_nc_factor and is not affected by stage 7.
+
+    Method: left side is fx_nc_factor_view for one BU (the slow part: scope it by business_unit, the timeout is 900 s). Right side is
+    the published snapshot rows of that BU (helper_settle_p_and_g_view_cache_table, source_trade_id = the trade id without the BU
+    suffix, which is the view's trade_id). Key = trade_id. A trade with two view rows is reported as a duplicate by the comparison.
+    The columns derivative_type, product_code and is_fixing_done are only on the snapshot side: they are ignored in the comparison but
+    kept in the query so the extra files show which derivative types differ. BUs outside the 17 that the view covers are not in the
+    view at all: only-source stays 0 for them only if the snapshot has no rows for them either.
+    Read only. Parameters: tenant, bu (upper case BU code as stored, e.g. ORM, CFS, RBC, BKR, GRN). Run with the target-env flag.
+  -->
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+    <param name="bu" type="string" value="ORM"/>
+  </parameters>
+
+  <sql id="view" db="target" timeout="900"><![CDATA[
+    SELECT v.trade_id::text AS trade_id, v.fx_nc_factor::double precision AS fx_nc_factor
+    FROM opera.fx_nc_factor_view v
+    WHERE v.tenant_id = :tenant AND upper(v.business_unit) = upper(:bu)
+  ]]></sql>
+
+  <sql id="stored" db="target" timeout="300"><![CDATA[
+    SELECT h.source_trade_id::text AS trade_id, h.fx_nc_factor::double precision AS fx_nc_factor,
+           h.derivative_type AS derivative_type, h.product_code AS product_code, h.is_fixing_done AS is_fixing_done
+    FROM opera.helper_settle_p_and_g_view_cache_table h
+    WHERE h.tenant_id = :tenant AND upper(h.business_unit) = upper(:bu)
+  ]]></sql>
+
+  <compare id="fx" source="view" target="stored">
+    <key columns="trade_id"/>
+    <column name="fx_nc_factor" absTol="0.000001"/>
+    <column name="derivative_type" ignore="true"/>
+    <column name="product_code" ignore="true"/>
+    <column name="is_fixing_done" ignore="true"/>
+    <breakdown columns="derivative_type" top="10"/>
+  </compare>
+
+  <expect ref="fx" different="0" reason="the stored fx_nc_factor must equal fx_nc_factor_view for every trade of the BU"/>
+  <expect ref="fx" only-target="0" reason="every snapshot trade must exist in fx_nc_factor_view (a missing one means the stored factor has no legacy rule at all)"/>
+  <compress id="bundle" file="recon-fx-01-stored-vs-view.zip"><include ref="fx"/></compress>
+</rules>
