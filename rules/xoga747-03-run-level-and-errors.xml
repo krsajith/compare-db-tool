@@ -1,0 +1,26 @@
+<rules name="xoga747-03-run-level-and-errors">
+  <!-- XOGA-747: for the runs of 23-24 Nov: input rows, final output rows, and the error or warning log, so the reason rows were dropped is read from the database. -->
+  <parameters>
+    <param name="since" type="timestamp" value="2026-11-23 00:00:00"/>
+  </parameters>
+
+  <sql id="levels" db="postgres-dev" export="full"><![CDATA[
+    SELECT execution_id, workflow_id, business_unit, start_time, end_time, total_duration, total_input_rows, final_output_rows
+    FROM opera.pipeline_execution_level_log
+    WHERE created_timestamp >= :since
+    ORDER BY start_time DESC
+    LIMIT 40
+  ]]></sql>
+
+  <sql id="errors-by-run" db="postgres-dev" export="full"><![CDATA[
+    SELECT execution_id, step_number, error_code, count(*) AS n, min(error_message) AS sample_message, min(root_cause) AS sample_cause
+    FROM opera.pipeline_execution_error_log
+    WHERE created_timestamp >= :since
+    GROUP BY execution_id, step_number, error_code
+    ORDER BY execution_id, step_number
+    LIMIT 200
+  ]]></sql>
+
+  <expect ref="levels" rows=">=1" reason="the runs of 23-24 Nov are in the level log"/>
+  <compress id="bundle" file="xoga747-03.zip"><include ref="levels"/><include ref="errors-by-run"/></compress>
+</rules>
