@@ -1,0 +1,90 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Does the legacy family rule agree with deal_active_lots_table? PG, read-only, any environment (24 Nov 2026).
+     Legacy rule (update_lots_in_cloned_deal_ticket_bu, run by the trigger on every child ticket insert, update and delete):
+       family = latest-version tickets with the same parent_trade_id (the parent and its children: expiry, exercise, abandon)
+       signed lots = abs(original_lots) * sign of the market action (market_action_sign_mapping_table)
+       lots of a trade = sum(signed lots of the family) * is_initial_trade of that trade's market action
+     Only families that have at least one child are checked (a family of one is written by the ticket itself).
+     On UAT right after the migration this proves the rule on the data legacy produced: expect no difference, except trades changed later by netting.
+     On a database where child tickets were saved after the migration without the trigger, the differences are exactly the parents that were not recomputed.
+     summary    per role (parent or child): members, with no lots row, agreeing, differing.
+     differing  up to 500 members that differ, with the rule value and the row compared.
+     Run: compare.ps1 with rules rules\family-lots-01-check.xml and target-env postgres-uat (or postgres-dev). Parameters: tenant, bu. -->
+<rules name="family-lots-01-check">
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+    <param name="bu" type="string" value="CFS"/>
+  </parameters>
+
+  <sql id="summary" db="target" export="full" timeout="1800"><![CDATA[
+    WITH cut AS (
+      SELECT max(v.value_date) AS d FROM opera.valuation_date_table v WHERE v.tenant_id = :tenant AND v.business_unit = :bu
+    ), fam AS (
+      SELECT t.parent_trade_id, t.trade_id, abs(t.original_lots) * s.sign AS signed_lots, s.is_initial_trade
+      FROM opera.deal_ticket_table t
+      JOIN opera.market_action_sign_mapping_table s ON s.tenant_id = t.tenant_id AND s.market_action = t.market_action
+      WHERE t.tenant_id = :tenant AND t.business_unit = :bu AND t.is_latest_version = 1 AND t.parent_trade_id IS NOT NULL
+        AND EXISTS (SELECT 1 FROM opera.deal_ticket_table k
+                    WHERE k.tenant_id = t.tenant_id AND k.business_unit = t.business_unit AND k.parent_trade_id = t.parent_trade_id
+                      AND k.is_latest_version = 1 AND k.trade_id <> k.parent_trade_id)
+    ), tot AS (
+      SELECT parent_trade_id, sum(signed_lots) AS family_sum FROM fam GROUP BY parent_trade_id
+    ), exp AS (
+      SELECT f.parent_trade_id, f.trade_id, (f.trade_id = f.parent_trade_id) AS is_parent, t.family_sum * f.is_initial_trade AS expected_lots
+      FROM fam f JOIN tot t ON t.parent_trade_id = f.parent_trade_id
+    ), act AS (
+      SELECT DISTINCT ON (a.trade_id) a.trade_id, a.value_date, a.active_lots
+      FROM opera.deal_active_lots_table a, cut
+      WHERE a.tenant_id = :tenant AND a.business_unit = :bu AND a.value_date <= cut.d
+        AND a.trade_id IN (SELECT trade_id FROM exp)
+      ORDER BY a.trade_id, a.value_date DESC
+    )
+    SELECT CASE WHEN e.is_parent THEN 'parent' ELSE 'child' END AS role,
+           count(*) AS family_members,
+           count(*) FILTER (WHERE a.trade_id IS NULL) AS no_lots_row,
+           count(*) FILTER (WHERE a.trade_id IS NOT NULL AND abs(coalesce(a.active_lots, 0) - coalesce(e.expected_lots, 0)) < 0.000001) AS agree,
+           count(*) FILTER (WHERE a.trade_id IS NOT NULL AND abs(coalesce(a.active_lots, 0) - coalesce(e.expected_lots, 0)) >= 0.000001) AS differ
+    FROM exp e LEFT JOIN act a ON a.trade_id = e.trade_id
+    GROUP BY 1
+    ORDER BY 1
+  ]]></sql>
+
+  <sql id="differing" db="target" export="full" timeout="1800"><![CDATA[
+    WITH cut AS (
+      SELECT max(v.value_date) AS d FROM opera.valuation_date_table v WHERE v.tenant_id = :tenant AND v.business_unit = :bu
+    ), fam AS (
+      SELECT t.parent_trade_id, t.trade_id, t.market_action, abs(t.original_lots) * s.sign AS signed_lots, s.is_initial_trade
+      FROM opera.deal_ticket_table t
+      JOIN opera.market_action_sign_mapping_table s ON s.tenant_id = t.tenant_id AND s.market_action = t.market_action
+      WHERE t.tenant_id = :tenant AND t.business_unit = :bu AND t.is_latest_version = 1 AND t.parent_trade_id IS NOT NULL
+        AND EXISTS (SELECT 1 FROM opera.deal_ticket_table k
+                    WHERE k.tenant_id = t.tenant_id AND k.business_unit = t.business_unit AND k.parent_trade_id = t.parent_trade_id
+                      AND k.is_latest_version = 1 AND k.trade_id <> k.parent_trade_id)
+    ), tot AS (
+      SELECT parent_trade_id, sum(signed_lots) AS family_sum FROM fam GROUP BY parent_trade_id
+    ), exp AS (
+      SELECT f.parent_trade_id, f.trade_id, f.market_action, (f.trade_id = f.parent_trade_id) AS is_parent, t.family_sum, t.family_sum * f.is_initial_trade AS expected_lots
+      FROM fam f JOIN tot t ON t.parent_trade_id = f.parent_trade_id
+    ), act AS (
+      SELECT DISTINCT ON (a.trade_id) a.trade_id, a.value_date, a.active_lots
+      FROM opera.deal_active_lots_table a, cut
+      WHERE a.tenant_id = :tenant AND a.business_unit = :bu AND a.value_date <= cut.d
+        AND a.trade_id IN (SELECT trade_id FROM exp)
+      ORDER BY a.trade_id, a.value_date DESC
+    )
+    SELECT e.parent_trade_id, e.trade_id, e.market_action, e.is_parent, e.family_sum, e.expected_lots,
+           a.value_date AS lots_row_date, a.active_lots AS actual_lots
+    FROM exp e LEFT JOIN act a ON a.trade_id = e.trade_id
+    WHERE a.trade_id IS NULL OR abs(coalesce(a.active_lots, 0) - coalesce(e.expected_lots, 0)) >= 0.000001
+    ORDER BY e.parent_trade_id, e.is_parent DESC
+    LIMIT 500
+  ]]></sql>
+
+  <expect ref="summary" rows="&gt;=1" reason="the BU has families with child tickets"/>
+  <expect ref="summary" column="no_lots_row" each="true" equals="0" reason="every family member has a lots row"/>
+  <expect ref="summary" column="differ" each="true" equals="0" reason="lots agree with the family rule"/>
+
+  <compress id="bundle" file="family-lots-01-check.zip">
+    <include ref="summary"/><include ref="differing"/>
+  </compress>
+</rules>

@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- latest_active_lot against each BU valuation date, read-only, any environment (24 Nov 2026).
+     Rule: the cache holds, per trade, the newest deal_active_lots_table row with value_date up to the BU valuation date. So no cache row may be newer than
+     its BU valuation date, no trade may be missing, and the four sync triggers must exist on opera.
+     beyond_cutoff   per BU: cache rows newer than the valuation date (expect 0). Dev CFS had 85,951 on 24 Nov.
+     triggers        the four cache triggers on opera (expect 4, all enabled O). On dev they existed only in opera_221126.
+     drift           per BU: missing, extra, different against the rule (expect 0). extra = trades in the cache that have no row up to the valuation date.
+     first_row_after per BU: trades whose FIRST lots row is newer than the valuation date. They cannot be in a correct cache; for CFS this is the UAT versus dev
+                     gap (UAT 1,195,974 against 1,248,176 trades in cloned_deal_ticket_table) if the overshoot explanation is right.
+     Run: compare.ps1 with rules rules\lal-cutoff-01-check.xml and target-env postgres-dev (then postgres-uat). Fix on dev: analysis\parent-lots-2026-11-24\04_dev_cache_triggers_and_rederive.sql -->
+<rules name="lal-cutoff-01-check">
+  <sql id="beyond_cutoff" db="target" export="full" timeout="900"><![CDATA[
+    SELECT l.business_unit, max(v.value_date) AS valuation_date, count(*) AS cache_rows,
+           count(*) FILTER (WHERE l.value_date > v.value_date) AS rows_after_valuation_date,
+           max(l.value_date) AS newest_cache_value_date, max(l.updated_timestamp) AS newest_cache_update
+    FROM opera.latest_active_lot l
+    JOIN opera.valuation_date_table v ON v.tenant_id = l.tenant_id AND v.business_unit = l.business_unit
+    GROUP BY l.business_unit
+    ORDER BY 4 DESC, 1
+  ]]></sql>
+
+  <sql id="triggers" db="target" export="full" timeout="300"><![CDATA[
+    SELECT t.tgname AS trigger_name, c.relname AS table_name, t.tgenabled AS enabled
+    FROM pg_trigger t
+    JOIN pg_class c ON c.oid = t.tgrelid
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'opera' AND NOT t.tgisinternal
+      AND t.tgname IN ('trg_sync_latest_active_lot', 'trg_latest_active_lot_history_truncate',
+                       'trg_latest_active_lot_valuation_date', 'trg_latest_active_lot_valuation_truncate')
+    ORDER BY 1
+  ]]></sql>
+
+  <sql id="drift" db="target" export="full" timeout="1800"><![CDATA[
+    WITH cut AS (
+      SELECT v.tenant_id, v.business_unit, max(v.value_date) AS d
+      FROM opera.valuation_date_table v GROUP BY v.tenant_id, v.business_unit
+    ), expected AS (
+      SELECT DISTINCT ON (d.tenant_id, d.business_unit, d.trade_id) d.tenant_id, d.business_unit, d.trade_id, d.value_date, d.active_lots
+      FROM opera.deal_active_lots_table d
+      JOIN cut c ON c.tenant_id = d.tenant_id AND c.business_unit = d.business_unit AND d.value_date <= c.d
+      ORDER BY d.tenant_id, d.business_unit, d.trade_id, d.value_date DESC
+    ), actual AS (
+      SELECT l.tenant_id, l.business_unit, l.trade_id, l.value_date, l.active_lots FROM opera.latest_active_lot l
+    ), j AS (
+      SELECT coalesce(e.tenant_id, a.tenant_id) AS tenant_id, coalesce(e.business_unit, a.business_unit) AS business_unit,
+             e.trade_id AS e_trade, a.trade_id AS a_trade,
+             (e.value_date IS DISTINCT FROM a.value_date OR e.active_lots IS DISTINCT FROM a.active_lots) AS diff
+      FROM expected e
+      FULL JOIN actual a ON a.tenant_id = e.tenant_id AND a.business_unit = e.business_unit AND a.trade_id = e.trade_id
+    )
+    SELECT j.business_unit, count(j.e_trade) AS expected_rows, count(j.a_trade) AS cache_rows,
+           count(*) FILTER (WHERE j.a_trade IS NULL) AS missing,
+           count(*) FILTER (WHERE j.e_trade IS NULL) AS extra,
+           count(*) FILTER (WHERE j.e_trade IS NOT NULL AND j.a_trade IS NOT NULL AND j.diff) AS different
+    FROM j
+    GROUP BY j.business_unit
+    ORDER BY 5 DESC, 4 DESC, 1
+  ]]></sql>
+
+  <sql id="first_row_after" db="target" export="full" timeout="1800"><![CDATA[
+    SELECT d.business_unit, count(*) AS trades_first_row_after_valuation
+    FROM (SELECT a.tenant_id, a.business_unit, a.trade_id, min(a.value_date) AS first_d
+          FROM opera.deal_active_lots_table a GROUP BY a.tenant_id, a.business_unit, a.trade_id) d
+    JOIN (SELECT v.tenant_id, v.business_unit, max(v.value_date) AS cut
+          FROM opera.valuation_date_table v GROUP BY v.tenant_id, v.business_unit) c
+      ON c.tenant_id = d.tenant_id AND c.business_unit = d.business_unit
+    WHERE d.first_d > c.cut
+    GROUP BY d.business_unit
+    ORDER BY 2 DESC, 1
+  ]]></sql>
+
+  <expect ref="beyond_cutoff" rows="&gt;=1" reason="at least one BU has cache rows"/>
+  <expect ref="beyond_cutoff" column="rows_after_valuation_date" each="true" equals="0" reason="no cache row may be newer than its BU valuation date"/>
+  <expect ref="triggers" rows="4" reason="the four latest_active_lot triggers must exist on opera"/>
+  <expect ref="triggers" column="enabled" each="true" equals="O" reason="all four enabled"/>
+  <expect ref="drift" rows="&gt;=1" reason="at least one BU checked"/>
+  <expect ref="drift" column="missing" each="true" equals="0" reason="no trade missing from the cache"/>
+  <expect ref="drift" column="extra" each="true" equals="0" reason="no cache trade without a row up to the valuation date"/>
+  <expect ref="drift" column="different" each="true" equals="0" reason="no cache row with another date or lots"/>
+
+  <compress id="bundle" file="lal-cutoff-01-check.zip">
+    <include ref="beyond_cutoff"/><include ref="triggers"/><include ref="drift"/><include ref="first_row_after"/>
+  </compress>
+</rules>
