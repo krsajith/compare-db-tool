@@ -1,0 +1,30 @@
+<rules name="xoga747-07-ice-mapping-legacy-dev-uat">
+  <!-- XOGA-747 ICE Parser: extra records in the output. The ice_mktprice_mapping_table row of each dump file lists the product codes
+       that are processed; an extra or repeated product in dev or UAT gives extra rows. Compare legacy MySQL, dev and UAT, and show
+       the product list per file with its length so repeated products are visible. -->
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+  </parameters>
+
+  <sql id="map-legacy" db="mysql-oprdb02" export="full"><![CDATA[
+    SELECT filename, group_type, invenio_product,
+           LENGTH(invenio_product) - LENGTH(REPLACE(invenio_product, ',', '')) + 1 AS products_listed
+    FROM dbsystemuat.ice_mktprice_mapping_table
+  ]]></sql>
+  <sql id="map-dev" db="postgres-dev" export="full"><![CDATA[
+    SELECT filename, group_type, invenio_product,
+           length(invenio_product) - length(replace(invenio_product, ',', '')) + 1 AS products_listed
+    FROM opera.ice_mktprice_mapping_table WHERE tenant_id = :tenant
+  ]]></sql>
+  <sql id="map-uat" db="postgres-uat" export="full"><![CDATA[
+    SELECT filename, group_type, invenio_product,
+           length(invenio_product) - length(replace(invenio_product, ',', '')) + 1 AS products_listed
+    FROM opera.ice_mktprice_mapping_table WHERE tenant_id = :tenant
+  ]]></sql>
+  <compare id="dev-cmp" source="map-legacy" target="map-dev"><key columns="filename"/></compare>
+  <compare id="uat-cmp" source="map-legacy" target="map-uat"><key columns="filename"/></compare>
+
+  <expect ref="dev-cmp" different="0" only-source="0" only-target="0" reason="dev mapping equals legacy"/>
+  <expect ref="uat-cmp" different="0" only-source="0" only-target="0" reason="UAT mapping equals legacy"/>
+  <compress id="bundle" file="xoga747-07.zip"><include ref="map-legacy"/><include ref="map-dev"/><include ref="map-uat"/><include ref="dev-cmp"/><include ref="uat-cmp"/></compress>
+</rules>
