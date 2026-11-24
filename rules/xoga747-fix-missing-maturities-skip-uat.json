@@ -1,0 +1,30 @@
+{
+  "name": "xoga747-fix-missing-maturities-skip-uat",
+  "db": "postgres-uat",
+  "backupSchema": "parity_work",
+  "ticket": "XOGA-747",
+  "description": "Financial - Options and Normal - Options: the Missing_Option_Maturities output skips when nothing is missing (skipWhenFlag noMissingOptionCandidates) and writes a header when empty, as legacy MATLAB. Needs the bulk-uploader build with the flag (branch XOGA-747-missing-maturities-parity).",
+  "steps": [
+    {
+      "id": "missing-maturities-output",
+      "action": "update",
+      "table": "opera.oga_configservice_uploadrules",
+      "where": "code = 'PIPELINE CONFIG' AND template_name IN ('Financial - Options','Normal - Options') AND tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND rule_data::text LIKE '%intermediateSheets.MissingOptionMaturities%'",
+      "key": ["uuid"],
+      "set": {
+        "rule_data": "jsonb_set(rule_data, '{workflowConfig,additionalOutputs}', (SELECT jsonb_agg(CASE WHEN t.o->>'source' = 'intermediateSheets.MissingOptionMaturities' THEN jsonb_set(t.o || '{\"skipWhenFlag\":\"noMissingOptionCandidates\"}'::jsonb, '{options,headerWhenEmpty}', 'true'::jsonb, true) ELSE t.o END ORDER BY t.ord) FROM jsonb_array_elements(rule_data #> '{workflowConfig,additionalOutputs}') WITH ORDINALITY AS t(o, ord)))",
+        "updated_by": "'xoga747'",
+        "updated_timestamp": "now()"
+      },
+      "preconditions": [
+        {
+          "sql": "SELECT count(*) FROM opera.oga_configservice_uploadrules WHERE {{where}} AND rule_data::text NOT LIKE '%noMissingOptionCandidates%'",
+          "expect": "2",
+          "reason": "both configs carry the output and none has the flag yet"
+        }
+      ],
+      "expect": { "targetBefore": "2", "affected": "2", "targetAfter": "2" }
+    }
+  ],
+  "verify": [ { "rule": "verify-xoga747-missing-maturities-skip-uat.xml" } ]
+}

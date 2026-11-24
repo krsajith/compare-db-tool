@@ -1,0 +1,18 @@
+<rules name="verify-xoga747-missing-maturities-skip-uat">
+  <!-- After the change: in Financial - Options and Normal - Options the Missing_Option_Maturities output has skipWhenFlag and headerWhenEmpty, and the output count is unchanged. -->
+  <sql id="flag" db="postgres-uat" export="full"><![CDATA[
+    SELECT c.template_name,
+           (SELECT count(*) FROM jsonb_array_elements(c.rule_data #> '{workflowConfig,additionalOutputs}') o
+             WHERE o->>'source' = 'intermediateSheets.MissingOptionMaturities'
+               AND o->>'skipWhenFlag' = 'noMissingOptionCandidates'
+               AND o #>> '{options,headerWhenEmpty}' = 'true') AS outputs_with_flag,
+           jsonb_array_length(c.rule_data #> '{workflowConfig,additionalOutputs}') AS additional_outputs
+    FROM opera.oga_configservice_uploadrules c
+    WHERE c.code = 'PIPELINE CONFIG' AND c.template_name IN ('Financial - Options','Normal - Options')
+      AND c.tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113'
+    ORDER BY c.template_name
+  ]]></sql>
+  <expect ref="flag" rows="2" reason="both configs exist"/>
+  <expect ref="flag" column="outputs_with_flag" each="true" equals="1" reason="the missing maturities output has the flag and a header when empty"/>
+  <compress id="bundle" file="verify-xoga747-missing-maturities-uat.zip"><include ref="flag"/></compress>
+</rules>
