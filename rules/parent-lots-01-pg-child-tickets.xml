@@ -14,6 +14,18 @@
     <param name="from_date" type="date" value="2026-11-21"/>
   </parameters>
 
+  <sql id="activity" db="target" export="full" timeout="900"><![CDATA[
+    SELECT 'deal_ticket_table' AS source, count(*) AS rows_total, max(d.version_timestamp) AS newest_version_at, max(d.created_timestamp) AS newest_created_at,
+           count(*) FILTER (WHERE d.version_timestamp >= :from_date) AS rows_since_from_date
+    FROM opera.deal_ticket_table d WHERE d.tenant_id = :tenant AND d.business_unit = :bu
+    UNION ALL
+    SELECT 'deal_active_lots_table', count(*), max(a.updated_timestamp), max(a.created_timestamp), count(*) FILTER (WHERE a.value_date >= :from_date)
+    FROM opera.deal_active_lots_table a WHERE a.tenant_id = :tenant AND a.business_unit = :bu
+    UNION ALL
+    SELECT 'valuation_date_table', count(*), max(v.updated_timestamp), max(v.created_timestamp), count(*) FILTER (WHERE v.value_date >= :from_date)
+    FROM opera.valuation_date_table v WHERE v.tenant_id = :tenant AND v.business_unit = :bu
+  ]]></sql>
+
   <sql id="children_summary" db="target" export="full" timeout="900"><![CDATA[
     SELECT d.business_unit, d.version_created_by AS who, d.version_timestamp::date AS day, d.trade_source,
            d.market_action, d.deal_status, count(*) AS child_tickets, count(DISTINCT d.parent_trade_id) AS parents,
@@ -83,6 +95,6 @@
   ]]></sql>
 
   <compress id="bundle" file="parent-lots-01-pg-child-tickets.zip">
-    <include ref="children_summary"/><include ref="parents"/><include ref="children"/>
+    <include ref="activity"/><include ref="children_summary"/><include ref="parents"/><include ref="children"/>
   </compress>
 </rules>

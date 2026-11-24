@@ -11,9 +11,9 @@
 
   <sql id="dal_changes" db="mysql-oprdb02" export="full" timeout="900"><![CDATA[
     SELECT n.trade_id, n.value_date AS new_value_date, n.active_lots AS new_lots,
-           (SELECT p.value_date FROM deal_active_lots_table_cfs p WHERE p.trade_id = n.trade_id AND p.value_date < n.value_date ORDER BY p.value_date DESC LIMIT 1) AS prev_value_date,
-           (SELECT p.active_lots FROM deal_active_lots_table_cfs p WHERE p.trade_id = n.trade_id AND p.value_date < n.value_date ORDER BY p.value_date DESC LIMIT 1) AS prev_lots
-    FROM deal_active_lots_table_cfs n
+           (SELECT p.value_date FROM dbsystemuat.deal_active_lots_table_cfs p WHERE p.trade_id = n.trade_id AND p.value_date < n.value_date ORDER BY p.value_date DESC LIMIT 1) AS prev_value_date,
+           (SELECT p.active_lots FROM dbsystemuat.deal_active_lots_table_cfs p WHERE p.trade_id = n.trade_id AND p.value_date < n.value_date ORDER BY p.value_date DESC LIMIT 1) AS prev_lots
+    FROM dbsystemuat.deal_active_lots_table_cfs n
     WHERE n.value_date >= :from_date
     ORDER BY n.value_date, n.trade_id
   ]]></sql>
@@ -21,7 +21,7 @@
   <sql id="children" db="mysql-oprdb02" export="full" timeout="900"><![CDATA[
     SELECT d.parent_trade_id, d.trade_id, d.market_action, d.original_lots, d.lots_to_be_netted, d.deal_status, d.version_no,
            d.transaction_date, d.trade_source, d.version_created_by AS who, d.version_timestamp AS at
-    FROM deal_ticket_table_cfs d
+    FROM dbsystemuat.deal_ticket_table_cfs d
     WHERE d.trade_id <> d.parent_trade_id AND d.version_timestamp >= :from_date
     ORDER BY d.version_timestamp DESC
   ]]></sql>
