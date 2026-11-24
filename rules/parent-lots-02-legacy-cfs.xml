@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Parent active lots after child tickets, legacy MySQL CFS side, read-only. 24 Nov 2026.
+     Q1 deal_active_lots_table_cfs rows written on or after :from_date for a trade that has more than one row (an existing trade whose lots changed),
+        with the lots on the previous row. Who: that table has no user column, so Q2 shows the child tickets.
+     Q2 child tickets (trade_id different from parent_trade_id) with version_created_by and version_timestamp since :from_date.
+     Run: compare.ps1 with rules rules\parent-lots-02-legacy-cfs.xml (datasource mysql-oprdb02). -->
+<rules name="parent-lots-02-legacy-cfs">
+  <parameters>
+    <param name="from_date" type="date" value="2026-11-21"/>
+  </parameters>
+
+  <sql id="dal_changes" db="mysql-oprdb02" export="full" timeout="900"><![CDATA[
+    SELECT n.trade_id, n.value_date AS new_value_date, n.active_lots AS new_lots,
+           (SELECT p.value_date FROM deal_active_lots_table_cfs p WHERE p.trade_id = n.trade_id AND p.value_date < n.value_date ORDER BY p.value_date DESC LIMIT 1) AS prev_value_date,
+           (SELECT p.active_lots FROM deal_active_lots_table_cfs p WHERE p.trade_id = n.trade_id AND p.value_date < n.value_date ORDER BY p.value_date DESC LIMIT 1) AS prev_lots
+    FROM deal_active_lots_table_cfs n
+    WHERE n.value_date >= :from_date
+    ORDER BY n.value_date, n.trade_id
+  ]]></sql>
+
+  <sql id="children" db="mysql-oprdb02" export="full" timeout="900"><![CDATA[
+    SELECT d.parent_trade_id, d.trade_id, d.market_action, d.original_lots, d.lots_to_be_netted, d.deal_status, d.version_no,
+           d.transaction_date, d.trade_source, d.version_created_by AS who, d.version_timestamp AS at
+    FROM deal_ticket_table_cfs d
+    WHERE d.trade_id <> d.parent_trade_id AND d.version_timestamp >= :from_date
+    ORDER BY d.version_timestamp DESC
+  ]]></sql>
+</rules>

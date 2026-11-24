@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Parent active lots after child tickets (expiry, exercise, close), PG side, read-only. 24 Nov 2026.
+     Legacy: the AFTER INSERT / UPDATE / DELETE triggers on deal_ticket_table_<bu> call update_lots_in_cloned_deal_ticket_<bu>(parent) for a child ticket
+     (trade_id different from parent_trade_id). It sets the parent lots to sum(signed lots of the whole family) * is_initial_trade of the parent and upserts a
+     deal_active_lots_table row at the BU valuation date. PG saveDealTicket writes only the saved ticket's own row, so the parent is not recomputed.
+     Q1 summary of child tickets by BU, user, day and source (who did what, when).
+     Q2 one row per parent that has a child ticket since :from_date: expected lots (legacy rule) against the parent's newest deal_active_lots_table row and cloned row.
+     Q3 the child tickets themselves.
+     Run: compare.ps1 with rules rules\parent-lots-01-pg-child-tickets.xml and target-env postgres-uat (or postgres-dev). Change bu and from_date as needed. -->
+<rules name="parent-lots-01-pg-child-tickets">
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+    <param name="bu" type="string" value="CFS"/>
+    <param name="from_date" type="date" value="2026-11-21"/>
+  </parameters>
+
+  <sql id="children_summary" db="target" export="full" timeout="900"><![CDATA[
+    SELECT d.business_unit, d.version_created_by AS who, d.version_timestamp::date AS day, d.trade_source,
+           d.market_action, d.deal_status, count(*) AS child_tickets, count(DISTINCT d.parent_trade_id) AS parents,
+           min(d.version_timestamp) AS first_at, max(d.version_timestamp) AS last_at
+    FROM opera.deal_ticket_table d
+    WHERE d.tenant_id = :tenant AND d.business_unit = :bu
+      AND d.is_latest_version = 1 AND d.trade_id <> d.parent_trade_id
+      AND d.version_timestamp >= :from_date
+    GROUP BY 1, 2, 3, 4, 5, 6
+    ORDER BY 3, 2, 8 DESC
+  ]]></sql>
+
+  <sql id="parents" db="target" export="full" timeout="1800"><![CDATA[
+    WITH cut AS (
+      SELECT max(v.value_date) AS d FROM opera.valuation_date_table v WHERE v.tenant_id = :tenant AND v.business_unit = :bu
+    ), kids AS (
+      SELECT d.parent_trade_id, d.trade_id, d.version_created_by, d.version_timestamp, d.transaction_date, d.trade_source
+      FROM opera.deal_ticket_table d
+      WHERE d.tenant_id = :tenant AND d.business_unit = :bu
+        AND d.is_latest_version = 1 AND d.trade_id <> d.parent_trade_id
+        AND d.version_timestamp >= :from_date
+    ), fam AS (
+      SELECT t.parent_trade_id,
+             sum(abs(t.original_lots) * s.sign) AS family_lots,
+             max(CASE WHEN t.trade_id = t.parent_trade_id THEN s.is_initial_trade END) AS parent_is_initial,
+             count(*) AS family_size
+      FROM opera.deal_ticket_table t
+      JOIN opera.market_action_sign_mapping_table s ON s.tenant_id = t.tenant_id AND s.market_action = t.market_action
+      WHERE t.tenant_id = :tenant AND t.business_unit = :bu AND t.is_latest_version = 1
+        AND t.parent_trade_id IN (SELECT parent_trade_id FROM kids)
+      GROUP BY t.parent_trade_id
+    ), kid_agg AS (
+      SELECT k.parent_trade_id, count(*) AS child_tickets, min(k.version_timestamp) AS first_child_at, max(k.version_timestamp) AS last_child_at,
+             string_agg(DISTINCT k.version_created_by, ', ') AS child_users, string_agg(DISTINCT k.trade_source, ', ') AS child_sources
+      FROM kids k GROUP BY k.parent_trade_id
+    ), dal AS (
+      SELECT DISTINCT ON (a.trade_id) a.trade_id, a.value_date, a.active_lots, a.created_by, a.created_timestamp, a.updated_by, a.updated_timestamp
+      FROM opera.deal_active_lots_table a, cut
+      WHERE a.tenant_id = :tenant AND a.business_unit = :bu AND a.value_date <= cut.d
+        AND a.trade_id IN (SELECT parent_trade_id FROM kids)
+      ORDER BY a.trade_id, a.value_date DESC
+    )
+    SELECT f.parent_trade_id, f.family_size, ka.child_tickets,
+           round((f.family_lots * coalesce(f.parent_is_initial, 1))::numeric, 6) AS expected_lots_legacy_rule,
+           dal.active_lots AS dal_lots, dal.value_date AS dal_value_date,
+           c.active_lots AS cloned_lots, c.deal_status AS cloned_status,
+           CASE WHEN dal.trade_id IS NULL THEN 'NO_DAL_ROW'
+                WHEN abs(dal.active_lots - f.family_lots * coalesce(f.parent_is_initial, 1)) < 0.000001 THEN 'MATCH'
+                ELSE 'MISMATCH' END AS verdict,
+           ka.first_child_at, ka.last_child_at, ka.child_users, ka.child_sources,
+           dal.created_by AS dal_created_by, dal.created_timestamp AS dal_created_at, dal.updated_by AS dal_updated_by, dal.updated_timestamp AS dal_updated_at
+    FROM fam f
+    JOIN kid_agg ka ON ka.parent_trade_id = f.parent_trade_id
+    LEFT JOIN dal ON dal.trade_id = f.parent_trade_id
+    LEFT JOIN opera.cloned_deal_ticket_table c ON c.tenant_id = :tenant AND c.business_unit = :bu AND c.trade_id = f.parent_trade_id
+    ORDER BY (CASE WHEN dal.trade_id IS NULL OR abs(dal.active_lots - f.family_lots * coalesce(f.parent_is_initial, 1)) >= 0.000001 THEN 0 ELSE 1 END), ka.last_child_at DESC
+  ]]></sql>
+
+  <sql id="children" db="target" export="full" timeout="900"><![CDATA[
+    SELECT d.parent_trade_id, d.trade_id, d.market_action, d.original_lots, d.lots_to_be_netted, d.deal_status, d.version_no,
+           d.transaction_date, d.trade_source, d.version_created_by AS who, d.version_timestamp AS at, d.created_by, d.created_timestamp
+    FROM opera.deal_ticket_table d
+    WHERE d.tenant_id = :tenant AND d.business_unit = :bu
+      AND d.is_latest_version = 1 AND d.trade_id <> d.parent_trade_id
+      AND d.version_timestamp >= :from_date
+    ORDER BY d.version_timestamp DESC
+  ]]></sql>
+</rules>
