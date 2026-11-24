@@ -1,0 +1,73 @@
+<rules name="xoga747-04-mapping-legacy-dev-uat">
+  <!-- XOGA-747: is the market parser mapping data (vol ids, underlyings, product master) migrated the same in dev and UAT as in legacy MySQL?
+       Presence tells which vol ids or underlyings exist where; the compares tell whether values differ for keys present on both sides. -->
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+  </parameters>
+
+  <sql id="vol-legacy" db="mysql-oprdb02"><![CDATA[
+    SELECT vol_id, product_code, bbg_opt_ticker, LEFT(CAST(expiry_date AS CHAR), 10) AS expiry_date, underlying_id, updated_by
+    FROM dbsystemuat.vol_id_table
+  ]]></sql>
+  <sql id="vol-dev" db="postgres-dev"><![CDATA[
+    SELECT vol_id, product_code, bbg_opt_ticker, LEFT(expiry_date::text, 10) AS expiry_date, underlying_id, updated_by
+    FROM opera.vol_id_table WHERE tenant_id = :tenant
+  ]]></sql>
+  <sql id="vol-uat" db="postgres-uat"><![CDATA[
+    SELECT vol_id, product_code, bbg_opt_ticker, LEFT(expiry_date::text, 10) AS expiry_date, underlying_id, updated_by
+    FROM opera.vol_id_table WHERE tenant_id = :tenant
+  ]]></sql>
+  <presence id="vol-where" key="vol_id" sources="vol-legacy, vol-dev, vol-uat"/>
+  <compare id="vol-dev-cmp" source="vol-legacy" target="vol-dev"><key columns="vol_id"/><column name="updated_by" ignore="true"/></compare>
+  <compare id="vol-uat-cmp" source="vol-legacy" target="vol-uat"><key columns="vol_id"/><column name="updated_by" ignore="true"/></compare>
+
+  <sql id="und-legacy" db="mysql-oprdb02"><![CDATA[
+    SELECT underlying_id, invenio_product_code, bbg_underlying_id, LEFT(CAST(expiry_date AS CHAR), 10) AS expiry_date
+    FROM dbsystemuat.underlying_list_table
+  ]]></sql>
+  <sql id="und-dev" db="postgres-dev"><![CDATA[
+    SELECT underlying_id, invenio_product_code, bbg_underlying_id, LEFT(expiry_date::text, 10) AS expiry_date
+    FROM opera.underlying_list_table WHERE tenant_id = :tenant
+  ]]></sql>
+  <sql id="und-uat" db="postgres-uat"><![CDATA[
+    SELECT underlying_id, invenio_product_code, bbg_underlying_id, LEFT(expiry_date::text, 10) AS expiry_date
+    FROM opera.underlying_list_table WHERE tenant_id = :tenant
+  ]]></sql>
+  <presence id="und-where" key="underlying_id" sources="und-legacy, und-dev, und-uat"/>
+
+  <sql id="pm-legacy" db="mysql-oprdb02"><![CDATA[
+    SELECT invenio_product_code, bbg_product_code, asset_class, currency, strike_step, skew_step, tick_size, option_tick_size, lot_mult
+    FROM dbsystemuat.product_master_table
+  ]]></sql>
+  <sql id="pm-dev" db="postgres-dev"><![CDATA[
+    SELECT invenio_product_code, bbg_product_code, asset_class, currency, strike_step, skew_step, tick_size, option_tick_size, lot_mult
+    FROM opera.product_master_table WHERE tenant_id = :tenant
+  ]]></sql>
+  <sql id="pm-uat" db="postgres-uat"><![CDATA[
+    SELECT invenio_product_code, bbg_product_code, asset_class, currency, strike_step, skew_step, tick_size, option_tick_size, lot_mult
+    FROM opera.product_master_table WHERE tenant_id = :tenant
+  ]]></sql>
+  <presence id="pm-where" key="invenio_product_code" sources="pm-legacy, pm-dev, pm-uat"/>
+  <compare id="pm-dev-cmp" source="pm-legacy" target="pm-dev">
+    <key columns="invenio_product_code"/>
+    <column name="strike_step" absTol="0.0000001"/><column name="skew_step" absTol="0.0000001"/>
+    <column name="tick_size" absTol="0.0000001"/><column name="option_tick_size" absTol="0.0000001"/><column name="lot_mult" absTol="0.0000001"/>
+  </compare>
+  <compare id="pm-uat-cmp" source="pm-legacy" target="pm-uat">
+    <key columns="invenio_product_code"/>
+    <column name="strike_step" absTol="0.0000001"/><column name="skew_step" absTol="0.0000001"/>
+    <column name="tick_size" absTol="0.0000001"/><column name="option_tick_size" absTol="0.0000001"/><column name="lot_mult" absTol="0.0000001"/>
+  </compare>
+
+  <expect ref="vol-where" mismatched="0" reason="every vol id should exist in legacy, dev and UAT"/>
+  <expect ref="vol-dev-cmp" different="0" reason="vol id attributes equal in dev"/>
+  <expect ref="vol-uat-cmp" different="0" reason="vol id attributes equal in UAT"/>
+  <expect ref="und-where" mismatched="0" reason="every underlying id should exist in all three"/>
+  <expect ref="pm-where" mismatched="0" reason="every product should exist in all three"/>
+  <expect ref="pm-dev-cmp" different="0" reason="product master values equal in dev"/>
+  <expect ref="pm-uat-cmp" different="0" reason="product master values equal in UAT"/>
+  <compress id="bundle" file="xoga747-04.zip">
+    <include ref="vol-where"/><include ref="vol-dev-cmp"/><include ref="vol-uat-cmp"/><include ref="und-where"/>
+    <include ref="pm-where"/><include ref="pm-dev-cmp"/><include ref="pm-uat-cmp"/>
+  </compress>
+</rules>
