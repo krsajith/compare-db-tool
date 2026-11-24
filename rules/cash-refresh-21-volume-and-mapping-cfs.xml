@@ -1,0 +1,131 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rules name="cash-refresh-21-volume-and-mapping-cfs">
+<parameters><param name="tenant" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/><param name="bu" value="CFS"/><param name="valueDate" type="date" value="2026-10-02"/>
+<param name="cob" type="date" value="2026-10-01"/><param name="prevCob" type="date" value="2026-09-30"/><param name="clientFilter" value=""/><param name="currencyFilter" value=""/></parameters>
+<sql id="context" db="target" timeout="600" export="full"><![CDATA[
+SELECT value_date,settlement_date,
+ (value_date=:valueDate::date AND settlement_date=:cob::date) AS dates_match,
+ (:prevCob::date=coalesce((SELECT settlement_date FROM opera.vdate_sdate_table
+   WHERE tenant_id=:tenant AND value_date=:cob),
+   (SELECT max(cob_date) FROM opera.client_cash_account_balance_table
+    WHERE tenant_id=:tenant AND upper(trim(business_unit))=:bu AND cob_date<:cob))) AS previous_date_matches,
+ (SELECT count(*) FROM opera.client_cash_account_balance_table b WHERE b.tenant_id=:tenant
+   AND upper(trim(b.business_unit))=:bu AND b.cob_date=:prevCob) AS previous_balance_rows
+FROM opera.valuation_date_table WHERE tenant_id=:tenant AND upper(trim(business_unit))=:bu
+]]></sql>
+<sql id="volume" db="target" timeout="600" export="full" tempTables="true"><![CDATA[
+WITH cb_refresh_input AS MATERIALIZED (
+    SELECT r.tenant_id,
+       r.business_unit,
+       r.trade_id,
+       r.value_date,
+       r.settlement_date,
+       r.instrument,
+       r.subportfolio,
+       r.product_code,
+       r.derivative_type,
+       r.original_lots,
+       r.active_lots,
+       r.currency,
+       r.transaction_date,
+       r.maturity_date,
+       r.contract_month,
+       r.future_expiry,
+       r.counterparty_parent,
+       CASE WHEN upper(trim(r.counterparty_parent))='SIPH' AND lower(trim(r.derivative_type))='avg_swap_cc' THEN 'SIP' ELSE r.client_code END AS client_code,
+       r.contract_number,
+       r.original_premium,
+       r.lot_mult,
+       r.curr_mult,
+       r.mult_factor,
+       r.nc_factor,
+       r.fx_nc_factor,
+       r.netting_date,
+       r.netting_status,
+       r.opt_periodicity,
+       r.is_premium_paid,
+       r.fixing_date,
+       r.settle_price,
+       r.netted_lots FROM opera.fn_cash_balance_report_for_scope(:tenant, :bu) r
+    WHERE r.tenant_id=:tenant AND upper(trim(r.business_unit))=:bu
+      AND ((nullif(trim(r.client_code),'') IS NOT NULL AND lower(trim(r.client_code))<>'null')
+           OR (upper(trim(r.counterparty_parent))='SIPH' AND lower(trim(r.derivative_type))='avg_swap_cc'))
+)
+SELECT (SELECT count(*) FROM cb_refresh_input) AS bu_report_rows,
+       count(*) AS java_report_rows, count(DISTINCT client_code) AS client_sheet_count_upper,
+       (SELECT count(*) FROM opera.currency_spot_mapping_table WHERE tenant_id=:tenant) AS spot_mapping_rows,
+       coalesce(sum(octet_length(to_jsonb(r)::text)),0) AS json_payload_bytes,
+       coalesce(max(octet_length(to_jsonb(r)::text)),0) AS largest_json_row_bytes,
+       count(*)*30 AS raw_data_cells,
+       count(*)*60+30*(count(DISTINCT client_code)+1) AS workbook_cells_upper,
+       count(*)>1048575 AS exceeds_excel_sheet_limit,
+       count(*) FILTER(WHERE value_date IS DISTINCT FROM :valueDate::date OR settlement_date IS DISTINCT FROM :cob::date) AS date_mismatch_rows
+FROM cb_refresh_input r
+WHERE (:clientFilter='' OR upper(trim(r.client_code))=upper(trim(:clientFilter)))
+  AND (:currencyFilter='' OR upper(trim(r.currency))=upper(trim(:currencyFilter)))
+]]></sql>
+<sql id="mappings" db="target" timeout="600" export="full" tempTables="true"><![CDATA[
+WITH cb_refresh_input AS MATERIALIZED (
+    SELECT r.tenant_id,
+       r.business_unit,
+       r.trade_id,
+       r.value_date,
+       r.settlement_date,
+       r.instrument,
+       r.subportfolio,
+       r.product_code,
+       r.derivative_type,
+       r.original_lots,
+       r.active_lots,
+       r.currency,
+       r.transaction_date,
+       r.maturity_date,
+       r.contract_month,
+       r.future_expiry,
+       r.counterparty_parent,
+       CASE WHEN upper(trim(r.counterparty_parent))='SIPH' AND lower(trim(r.derivative_type))='avg_swap_cc' THEN 'SIP' ELSE r.client_code END AS client_code,
+       r.contract_number,
+       r.original_premium,
+       r.lot_mult,
+       r.curr_mult,
+       r.mult_factor,
+       r.nc_factor,
+       r.fx_nc_factor,
+       r.netting_date,
+       r.netting_status,
+       r.opt_periodicity,
+       r.is_premium_paid,
+       r.fixing_date,
+       r.settle_price,
+       r.netted_lots FROM opera.fn_cash_balance_report_for_scope(:tenant, :bu) r
+    WHERE r.tenant_id=:tenant AND upper(trim(r.business_unit))=:bu
+      AND ((nullif(trim(r.client_code),'') IS NOT NULL AND lower(trim(r.client_code))<>'null')
+           OR (upper(trim(r.counterparty_parent))='SIPH' AND lower(trim(r.derivative_type))='avg_swap_cc'))
+)
+, currencies AS (SELECT DISTINCT upper(trim(currency)) AS currency FROM cb_refresh_input
+                 UNION SELECT 'USD'), old_mapping AS (
+ SELECT upper(trim(currency)) AS currency, upper(trim(quantotype)) AS quantotype
+ FROM opera.cash_balance_currency_mapping_view WHERE tenant_id=:tenant AND upper(trim(business_unit))=:bu),
+new_mapping AS (SELECT upper(trim(currency)) AS currency,upper(trim(quantotype)) AS quantotype
+ FROM opera.currency_spot_mapping_table WHERE tenant_id=:tenant)
+SELECT c.currency, o.quantotype AS current_java_quantotype, n.quantotype AS candidate_quantotype,
+       (SELECT count(*) FROM old_mapping x WHERE x.currency=c.currency) AS current_mapping_rows,
+       (SELECT count(*) FROM new_mapping x WHERE x.currency=c.currency) AS spot_mapping_rows,
+       (o.quantotype IS DISTINCT FROM n.quantotype) AS differs,
+       CASE WHEN o.quantotype='DIVISION' THEN 'DIVISION' ELSE 'MULTIPLICATION' END AS current_effective_operation,
+       CASE WHEN n.quantotype='DIVISION' THEN 'DIVISION' ELSE 'MULTIPLICATION' END AS candidate_effective_operation,
+       ((o.quantotype='DIVISION') IS TRUE) IS DISTINCT FROM ((n.quantotype='DIVISION') IS TRUE) AS changes_operation
+FROM currencies c LEFT JOIN old_mapping o USING(currency) LEFT JOIN new_mapping n USING(currency)
+ORDER BY c.currency
+]]></sql>
+<expect ref="context" rows="1"/><expect ref="context" column="dates_match" equals="true" reason="pin the run to the actual valuation context"/>
+<expect ref="context" column="previous_date_matches" equals="true"/>
+<expect ref="volume" column="java_report_rows" min="1" reason="an empty run cannot prove report sizing"/>
+<expect ref="volume" column="spot_mapping_rows" min="1" reason="the new refresh requires a nonempty spot mapping"/>
+<expect ref="volume" column="date_mismatch_rows" equals="0"/>
+<expect ref="volume" column="exceeds_excel_sheet_limit" equals="false"/>
+<expect ref="mappings" column="changes_operation" equals="false" each="true" reason="investigate intentional mapping differences before accepting parity"/>
+<expect ref="mappings" column="current_mapping_rows" max="1" each="true"/>
+<expect ref="mappings" column="spot_mapping_rows" max="1" each="true"/>
+<compress id="bundle" file="cash-refresh-21.zip"><include ref="context"/><include ref="volume"/><include ref="mappings"/></compress>
+</rules>

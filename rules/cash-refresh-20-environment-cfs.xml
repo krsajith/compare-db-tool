@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rules name="cash-refresh-20-environment-cfs">
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+    <param name="bu" type="string" value="CFS"/>
+  </parameters>
+  <sql id="valuation" db="target" export="full"><![CDATA[
+    SELECT tenant_id, business_unit, value_date, settlement_date
+    FROM opera.valuation_date_table WHERE tenant_id=:tenant AND upper(trim(business_unit))=upper(:bu)
+  ]]></sql>
+  <sql id="functions" db="target" export="full"><![CDATA[
+    SELECT p.oid::regprocedure::text AS signature, md5(p.prosrc) AS body_hash,
+           position('pg_try_advisory_xact_lock' in p.prosrc)>0 AS uses_try_lock,
+           position('ANALYZE pg_temp.cb_refresh_input' in p.prosrc)>0 AS analyzes_refresh_input
+    FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname='opera' AND p.proname IN ('fn_cash_balance_report_for_scope','refresh_client_cash_balances')
+  ]]></sql>
+  <sql id="scope" db="target" export="full"><![CDATA[
+    SELECT 'spot_mapping' AS source, count(*) AS rows FROM opera.currency_spot_mapping_table WHERE tenant_id=:tenant
+    UNION ALL SELECT 'threshold_mapping', count(*) FROM opera.client_threshold_master
+      WHERE tenant_id=:tenant AND upper(trim(business_unit))=upper(:bu)
+    UNION ALL SELECT 'fixings', count(*) FROM opera.client_account_cash_balance_fixing_table
+      WHERE tenant_id=:tenant AND upper(trim(business_unit))=upper(:bu)
+    UNION ALL SELECT 'balances', count(*) FROM opera.client_cash_account_balance_table
+      WHERE tenant_id=:tenant AND upper(trim(business_unit))=upper(:bu)
+  ]]></sql>
+  <expect ref="valuation" rows="1" reason="one valuation context per tenant and BU"/>
+  <expect ref="functions" rows=">=1" reason="input function must exist before volume/parity checks"/>
+  <compress id="bundle" file="cash-refresh-20-environment.zip">
+    <include ref="valuation"/><include ref="functions"/><include ref="scope"/>
+  </compress>
+</rules>

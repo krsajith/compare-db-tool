@@ -1,0 +1,273 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rules name="cash-refresh-22-output-preview-cfs">
+<parameters><param name="tenant" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/><param name="bu" value="CFS"/><param name="valueDate" type="date" value="2026-10-02"/>
+<param name="cob" type="date" value="2026-10-01"/><param name="prevCob" type="date" value="2026-09-30"/><param name="clientFilter" value=""/><param name="currencyFilter" value=""/></parameters>
+<sql id="context" db="target" timeout="600" export="full"><![CDATA[
+SELECT value_date,settlement_date,
+ (value_date=:valueDate::date AND settlement_date=:cob::date) AS dates_match,
+ (:prevCob::date=coalesce((SELECT settlement_date FROM opera.vdate_sdate_table
+   WHERE tenant_id=:tenant AND value_date=:cob),
+   (SELECT max(cob_date) FROM opera.client_cash_account_balance_table
+    WHERE tenant_id=:tenant AND upper(trim(business_unit))=:bu AND cob_date<:cob))) AS previous_date_matches,
+ (SELECT count(*) FROM opera.client_cash_account_balance_table b WHERE b.tenant_id=:tenant
+   AND upper(trim(b.business_unit))=:bu AND b.cob_date=:prevCob) AS previous_balance_rows
+FROM opera.valuation_date_table WHERE tenant_id=:tenant AND upper(trim(business_unit))=:bu
+]]></sql>
+<sql id="persisted" db="target" timeout="600" export="full"><![CDATA[
+SELECT 'fixing'::text AS kind, upper(trim(b.client_code)) AS client_code, upper(trim(b.currency)) AS currency, upper(trim(b.derivative_type)) AS derivative_type, upper(trim(b.product_code)) AS product_code, ''::text AS contract_number, :cob::date AS cob_date, b.expired_amount::numeric AS expired_amount, b.premium_amount::numeric AS premium_amount, b.expired_fixing::numeric AS expired_fixing, b.premium_fixing::numeric AS premium_fixing, b.total_expiry::numeric AS total_expiry, b.total_premium::numeric AS total_premium, NULL::numeric AS opening_balance, NULL::numeric AS commission, NULL::numeric AS transfers_in, NULL::numeric AS transfers_out, NULL::numeric AS interest_charges, NULL::numeric AS closing_balance, NULL::text AS comments FROM opera.client_account_cash_balance_fixing_table b WHERE b.tenant_id=:tenant AND upper(trim(b.business_unit))=:bu AND b.cob_date=:cob
+UNION ALL
+SELECT 'balance'::text AS kind, upper(trim(b.client_code)) AS client_code, upper(trim(b.currency)) AS currency, ''::text AS derivative_type, ''::text AS product_code, ''::text AS contract_number, :cob::date AS cob_date, NULL::numeric AS expired_amount, NULL::numeric AS premium_amount, NULL::numeric AS expired_fixing, NULL::numeric AS premium_fixing, b.expired_or_liquidated_cash::numeric AS total_expiry, b.premium_paid_or_recd::numeric AS total_premium, b.opening_balance::numeric AS opening_balance, b.commission::numeric AS commission, b.transfers_in::numeric AS transfers_in, b.transfers_out::numeric AS transfers_out, b.interest_charges::numeric AS interest_charges, b.closing_balance::numeric AS closing_balance, b.comments AS comments FROM opera.client_cash_account_balance_table b WHERE b.tenant_id=:tenant AND upper(trim(b.business_unit))=:bu AND b.cob_date=:cob
+UNION ALL
+SELECT 'contract'::text AS kind, upper(trim(b.client_code)) AS client_code, upper(trim(b.currency)) AS currency, ''::text AS derivative_type, ''::text AS product_code, upper(trim(b.contract_number)) AS contract_number, :cob::date AS cob_date, NULL::numeric AS expired_amount, NULL::numeric AS premium_amount, NULL::numeric AS expired_fixing, NULL::numeric AS premium_fixing, b.expired_or_liquidated_cash::numeric AS total_expiry, b.premium_paid_or_recd::numeric AS total_premium, NULL::numeric AS opening_balance, NULL::numeric AS commission, NULL::numeric AS transfers_in, NULL::numeric AS transfers_out, NULL::numeric AS interest_charges, NULL::numeric AS closing_balance, NULL::text AS comments FROM opera.client_cash_balance_contractwise_table b WHERE b.tenant_id=:tenant AND upper(trim(b.business_unit))=:bu AND b.cob_date=:cob
+]]></sql>
+<sql id="candidate" db="target" timeout="600" export="full" tempTables="true"><![CDATA[
+WITH cb_refresh_input AS MATERIALIZED (
+    SELECT r.tenant_id,
+       r.business_unit,
+       r.trade_id,
+       r.value_date,
+       r.settlement_date,
+       r.instrument,
+       r.subportfolio,
+       r.product_code,
+       r.derivative_type,
+       r.original_lots,
+       r.active_lots,
+       r.currency,
+       r.transaction_date,
+       r.maturity_date,
+       r.contract_month,
+       r.future_expiry,
+       r.counterparty_parent,
+       CASE WHEN upper(trim(r.counterparty_parent))='SIPH' AND lower(trim(r.derivative_type))='avg_swap_cc' THEN 'SIP' ELSE r.client_code END AS client_code,
+       r.contract_number,
+       r.original_premium,
+       r.lot_mult,
+       r.curr_mult,
+       r.mult_factor,
+       r.nc_factor,
+       r.fx_nc_factor,
+       r.netting_date,
+       r.netting_status,
+       r.opt_periodicity,
+       r.is_premium_paid,
+       r.fixing_date,
+       r.settle_price,
+       r.netted_lots FROM opera.fn_cash_balance_report_for_scope(:tenant, :bu) r
+    WHERE r.tenant_id=:tenant AND upper(trim(r.business_unit))=:bu
+      AND ((nullif(trim(r.client_code),'') IS NOT NULL AND lower(trim(r.client_code))<>'null')
+           OR (upper(trim(r.counterparty_parent))='SIPH' AND lower(trim(r.derivative_type))='avg_swap_cc'))
+),
+cb_refresh_previous AS MATERIALIZED (
+ SELECT upper(trim(client_code)) AS client_code, upper(trim(currency)) AS currency,
+        opening_balance, expired_or_liquidated_cash, premium_paid_or_recd, commission,
+        transfers_in, transfers_out, interest_charges, closing_balance, comments, client_name
+ FROM opera.client_cash_account_balance_table
+ WHERE tenant_id=:tenant AND upper(trim(business_unit))=:bu AND cob_date=:prevCob),
+cb_refresh_today AS MATERIALIZED (
+ SELECT upper(trim(client_code)) AS client_code, upper(trim(currency)) AS currency,
+        opening_balance, expired_or_liquidated_cash, premium_paid_or_recd, commission,
+        transfers_in, transfers_out, interest_charges, closing_balance, comments, client_name
+ FROM opera.client_cash_account_balance_table
+ WHERE tenant_id=:tenant AND upper(trim(business_unit))=:bu AND cob_date=:cob),
+cb_refresh_threshold AS MATERIALIZED (
+SELECT upper(btrim(t.client_code)) AS client_code,
+           coalesce(nullif(upper(btrim(t.currency)), ''), 'USD') AS currency
+    FROM opera.client_threshold_master t
+    WHERE t.tenant_id = :tenant AND upper(btrim(t.business_unit)) = :bu
+),
+cb_refresh_spot AS MATERIALIZED (
+SELECT upper(btrim(m.currency)) AS currency, upper(btrim(m.quantotype)) AS quantotype
+    FROM opera.currency_spot_mapping_table m WHERE m.tenant_id = :tenant
+),
+cb_refresh_fixings AS MATERIALIZED (
+SELECT upper(btrim(f.client_code)) AS client_code, upper(btrim(f.derivative_type)) AS derivative_type,
+           upper(btrim(f.product_code)) AS product_code, upper(btrim(f.currency)) AS currency,
+           f.expired_fixing, f.premium_fixing
+    FROM opera.client_account_cash_balance_fixing_table f
+    WHERE f.tenant_id = :tenant AND upper(btrim(f.business_unit)) = :bu AND f.cob_date = :cob
+),
+cb_refresh_movements AS MATERIALIZED (
+WITH inputs AS (
+        SELECT upper(btrim(r.client_code)) AS client_code,
+               upper(coalesce(btrim(r.contract_number), '')) AS contract_number,
+               upper(coalesce(btrim(r.derivative_type), '')) AS derivative_type,
+               upper(coalesce(btrim(r.product_code), '')) AS product_code,
+               upper(coalesce(btrim(r.currency), '')) AS currency,
+               coalesce(r.original_premium::float8, 0) AS original_premium,
+               coalesce(r.original_lots::float8, 0) AS original_lots,
+               coalesce(r.active_lots, 0) AS active_lots,
+               coalesce(r.netted_lots, 0) AS netted_lots,
+               coalesce(r.mult_factor, 0) AS multiplier,
+               r.settle_price IS NOT NULL AND r.settle_price <> 'NaN'::float8 AS has_price,
+               coalesce(nullif(r.settle_price, 'NaN'::float8), 0) AS settle_price,
+               coalesce(r.nc_factor, 0) AS nc_factor, coalesce(r.fx_nc_factor, 0) AS fx_nc_factor,
+               coalesce(left(lower(btrim(r.derivative_type)), 10) = 'fx_vanilla', false) AS fx_option,
+               coalesce(left(lower(btrim(r.derivative_type)), 10) = 'fx_forward', false) AS fx_forward,
+               coalesce(left(lower(btrim(r.derivative_type)), 8) = 'avg_swap', false) AS avg_swap,
+               coalesce(lower(btrim(r.derivative_type)) = 'future', false) AS future,
+               coalesce(lower(btrim(r.netting_status)), '') <> 'not_netted' AS netted,
+               coalesce(r.is_premium_paid = 1, false) AS paid,
+               r.maturity_date, r.transaction_date, r.netting_date
+        FROM cb_refresh_input r
+    ), events AS (
+        SELECT i.*,
+               coalesce(fx_option AND paid AND transaction_date = :cob, false) AS fx_premium,
+               coalesce(fx_option AND paid AND maturity_date = :cob, false) AS fx_cash,
+               coalesce(fx_option AND NOT paid AND maturity_date = :cob, false) AS fx_realised,
+               coalesce(fx_option AND NOT paid AND netting_date = :valueDate, false) AS fx_netted
+        FROM inputs i
+    ), amounts AS (
+        SELECT e.*,
+               CASE WHEN fx_cash OR fx_realised THEN CASE WHEN has_price THEN -settle_price * active_lots * multiplier ELSE 0 END
+                    WHEN fx_option OR NOT has_price THEN 0
+                    ELSE (settle_price - original_premium) * active_lots * multiplier * -1 END AS m2m_nc,
+               CASE WHEN paid AND netting_date = :valueDate
+                          AND transaction_date IS DISTINCT FROM :cob
+                          AND derivative_type IN ('VANILLA_CALL','VANILLA_PUT','AMER_UP_IN_CALL','AMER_UP_IN_PUT',
+                              'AMER_DOWN_IN_CALL','AMER_DOWN_IN_PUT','AMER_UP_OUT_CALL','AMER_UP_OUT_PUT',
+                              'AMER_DOWN_OUT_CALL','AMER_DOWN_OUT_PUT','EURO_UP_OUT_CALL','EURO_DOWN_OUT_PUT',
+                              'EURO_UP_IN_CALL','EURO_DOWN_IN_PUT','CS_SPREAD_CALL','CS_SPREAD_PUT') THEN 0
+                    WHEN fx_netted THEN original_premium * netted_lots * multiplier
+                    WHEN fx_realised THEN original_premium * active_lots * multiplier
+                    WHEN fx_premium THEN original_premium * original_lots * multiplier
+                    WHEN fx_option THEN 0
+                    WHEN netted AND maturity_date = :cob THEN original_premium * active_lots * multiplier
+                    WHEN netted THEN original_premium * netted_lots * multiplier
+                    ELSE original_premium * original_lots * multiplier END AS premium
+        FROM events e
+    )
+    SELECT client_code, contract_number, derivative_type, product_code,
+           CASE WHEN fx_forward THEN 'USD' ELSE currency END AS currency,
+           CASE WHEN future OR fx_option OR avg_swap THEN m2m_nc
+                WHEN fx_forward THEN m2m_nc * nc_factor * fx_nc_factor ELSE 0 END AS expired,
+           CASE WHEN NOT (future OR fx_forward OR fx_option OR avg_swap)
+                          OR fx_premium OR fx_realised OR fx_netted THEN premium ELSE 0 END AS premium
+    FROM amounts
+),
+cb_refresh_groups AS MATERIALIZED (
+SELECT grouping(contract_number) = 0 AS is_contract, contract_number,
+           client_code, derivative_type, product_code, currency,
+           coalesce(sum(nullif(expired, 'NaN'::float8)), 0) AS expired,
+           coalesce(sum(nullif(premium, 'NaN'::float8)), 0) AS premium
+    FROM cb_refresh_movements
+    GROUP BY GROUPING SETS ((client_code, derivative_type, product_code, currency),
+        (contract_number, client_code, derivative_type, product_code, currency))
+),
+cb_refresh_converted AS MATERIALIZED (
+WITH rates AS (
+        SELECT g.*, coalesce(f.expired_fixing, 1) AS expired_fixing,
+               coalesce(f.premium_fixing, 1) AS premium_fixing,
+               upper(btrim(m.quantotype)) = 'DIVISION' AS division
+        FROM cb_refresh_groups g
+        LEFT JOIN cb_refresh_groups retained ON NOT retained.is_contract
+          AND retained.client_code = g.client_code AND retained.derivative_type = g.derivative_type
+          AND retained.product_code = g.product_code AND retained.currency = g.currency
+          AND (abs(retained.expired) > 1e-10 OR abs(retained.premium) > 1e-10)
+        LEFT JOIN cb_refresh_fixings f
+          ON f.client_code = g.client_code AND f.derivative_type = g.derivative_type
+          AND f.product_code = g.product_code AND f.currency = g.currency
+          AND (NOT g.is_contract OR retained.client_code IS NOT NULL)
+        LEFT JOIN cb_refresh_spot m ON m.currency = g.currency
+    ), converted AS (
+        SELECT r.*, x.kind,
+               CASE WHEN NOT coalesce(division, false) THEN x.amount * x.rate
+                    WHEN x.amount = 'NaN'::float8 OR x.rate = 'NaN'::float8 THEN 'NaN'::float8
+                    WHEN x.rate = 0 THEN
+                        CASE WHEN x.amount = 0 THEN 'NaN'::float8
+                             WHEN (x.amount < 0) <> ((get_byte(float8send(x.rate), 0) & 128) <> 0)
+                                  THEN '-Infinity'::float8 ELSE 'Infinity'::float8 END
+                    ELSE x.amount / x.rate END AS total
+        FROM rates r CROSS JOIN LATERAL (VALUES ('E', r.expired, r.expired_fixing),
+            ('P', r.premium, r.premium_fixing)) x(kind, amount, rate)
+    )
+    SELECT is_contract, contract_number, client_code, derivative_type, product_code, currency,
+           expired, premium, expired_fixing, premium_fixing,
+           max(total) FILTER (WHERE kind = 'E') AS total_expiry,
+           max(total) FILTER (WHERE kind = 'P') AS total_premium
+    FROM converted GROUP BY is_contract, contract_number, client_code, derivative_type, product_code,
+        currency, expired, premium, expired_fixing, premium_fixing
+),
+cb_refresh_daily AS MATERIALIZED (
+SELECT client_code, currency, coalesce(sum(nullif(total_expiry, 'NaN'::float8)), 0) AS expired,
+           coalesce(sum(nullif(total_premium, 'NaN'::float8)), 0) AS premium
+    FROM cb_refresh_converted WHERE NOT is_contract
+      AND (abs(expired) > 1e-10 OR abs(premium) > 1e-10)
+    GROUP BY client_code, currency
+),
+cb_refresh_missing AS MATERIALIZED (
+SELECT DISTINCT d.client_code FROM cb_refresh_daily d
+    WHERE NOT EXISTS (SELECT FROM cb_refresh_previous p WHERE p.client_code = d.client_code AND p.currency = d.currency)
+      AND NOT EXISTS (SELECT FROM opera.client_master_data c WHERE c.tenant_id = :tenant
+          AND upper(btrim(c.business_unit)) = :bu AND upper(btrim(c.client_code)) = d.client_code
+          AND lower(btrim(c.client_status)) = 'completed')
+),
+eligible AS (
+ SELECT coalesce(p.client_code,d.client_code) AS client_code, coalesce(p.currency,d.currency) AS currency,
+        coalesce(p.closing_balance,0) AS opening_balance,
+        coalesce(nullif(d.expired,'NaN'::float8),0) AS expired,
+        coalesce(nullif(d.premium,'NaN'::float8),0) AS premium
+ FROM cb_refresh_previous p FULL JOIN cb_refresh_daily d
+   ON p.client_code=d.client_code AND p.currency=d.currency
+ WHERE p.client_code IS NOT NULL OR EXISTS (SELECT 1 FROM opera.client_master_data c
+   WHERE c.tenant_id=:tenant AND upper(trim(c.business_unit))=:bu
+     AND upper(trim(c.client_code))=d.client_code AND lower(trim(c.client_status))='completed')),
+totals AS (
+ SELECT client_code, coalesce(sum(nullif(opening_balance,'NaN'::float8)),0) AS opening_balance,
+        coalesce(sum(nullif(expired,'NaN'::float8)),0) AS expired,
+        coalesce(sum(nullif(premium,'NaN'::float8)),0) AS premium
+ FROM eligible GROUP BY client_code),
+manual AS (
+ SELECT client_code, coalesce(sum(commission),0) AS commission, coalesce(sum(transfers_in),0) AS transfers_in,
+        coalesce(sum(transfers_out),0) AS transfers_out, coalesce(sum(interest_charges),0) AS interest_charges
+ FROM cb_refresh_today GROUP BY client_code),
+nonempty_balances AS (
+ SELECT a.client_code, coalesce(t.currency,'USD') AS currency, a.opening_balance,
+        a.expired AS expired_or_liquidated_cash, a.premium AS premium_paid_or_recd,
+        coalesce(m.commission,0) AS commission, coalesce(m.transfers_in,0) AS transfers_in,
+        coalesce(m.transfers_out,0) AS transfers_out, coalesce(m.interest_charges,0) AS interest_charges,
+        coalesce(chosen.comments,' ') AS comments
+ FROM totals a LEFT JOIN cb_refresh_threshold t USING(client_code) LEFT JOIN manual m USING(client_code)
+ LEFT JOIN LATERAL (SELECT x.comments FROM cb_refresh_today x WHERE x.client_code=a.client_code
+   ORDER BY (x.currency=coalesce(t.currency,'USD')) DESC,x.currency LIMIT 1) chosen ON true),
+balance_rows AS (
+ SELECT b.client_code,b.currency,b.opening_balance,b.expired_or_liquidated_cash,b.premium_paid_or_recd,
+        b.commission,b.transfers_in,b.transfers_out,b.interest_charges,b.comments,
+        b.opening_balance+b.expired_or_liquidated_cash+b.premium_paid_or_recd+b.commission
+          +b.transfers_in+b.transfers_out+b.interest_charges AS closing_balance
+ FROM nonempty_balances b WHERE EXISTS(SELECT 1 FROM cb_refresh_input)
+ UNION ALL
+ SELECT p.client_code,p.currency,coalesce(p.closing_balance,0),0,0,coalesce(t.commission,0),
+        coalesce(t.transfers_in,0),coalesce(t.transfers_out,0),coalesce(t.interest_charges,0),
+        CASE WHEN t.client_code IS NULL THEN ' ' ELSE t.comments END,
+        coalesce(p.closing_balance,0)+coalesce(t.commission,0)
+          +coalesce(t.transfers_in,0)+coalesce(t.transfers_out,0)+coalesce(t.interest_charges,0)
+ FROM cb_refresh_previous p LEFT JOIN cb_refresh_today t USING(client_code,currency)
+ WHERE NOT EXISTS(SELECT 1 FROM cb_refresh_input)
+ UNION ALL
+ SELECT t.client_code,t.currency,t.opening_balance,t.expired_or_liquidated_cash,t.premium_paid_or_recd,
+        t.commission,t.transfers_in,t.transfers_out,t.interest_charges,t.comments,t.closing_balance
+ FROM cb_refresh_today t WHERE
+   (EXISTS(SELECT 1 FROM cb_refresh_input) AND NOT EXISTS(SELECT 1 FROM nonempty_balances b WHERE b.client_code=t.client_code))
+   OR (NOT EXISTS(SELECT 1 FROM cb_refresh_input) AND NOT EXISTS(SELECT 1 FROM cb_refresh_previous p
+      WHERE p.client_code=t.client_code AND p.currency=t.currency))),
+contract_rows AS (
+ SELECT c.client_code,c.contract_number,coalesce(t.currency,'USD') AS currency,
+   coalesce(sum(nullif(CASE WHEN abs(c.expired)<=1e-10 AND abs(c.premium)<=1e-10 THEN 0 ELSE c.total_expiry END,'NaN'::float8)),0) AS expired,
+   coalesce(sum(nullif(CASE WHEN abs(c.expired)<=1e-10 AND abs(c.premium)<=1e-10 THEN 0 ELSE c.total_premium END,'NaN'::float8)),0) AS premium
+ FROM cb_refresh_converted c LEFT JOIN cb_refresh_threshold t USING(client_code)
+ WHERE c.is_contract GROUP BY c.client_code,c.contract_number,t.currency)
+SELECT 'fixing'::text AS kind, upper(trim(b.client_code)) AS client_code, upper(trim(b.currency)) AS currency, upper(trim(b.derivative_type)) AS derivative_type, upper(trim(b.product_code)) AS product_code, ''::text AS contract_number, :cob::date AS cob_date, b.expired::numeric AS expired_amount, b.premium::numeric AS premium_amount, b.expired_fixing::numeric AS expired_fixing, b.premium_fixing::numeric AS premium_fixing, b.total_expiry::numeric AS total_expiry, b.total_premium::numeric AS total_premium, NULL::numeric AS opening_balance, NULL::numeric AS commission, NULL::numeric AS transfers_in, NULL::numeric AS transfers_out, NULL::numeric AS interest_charges, NULL::numeric AS closing_balance, NULL::text AS comments FROM cb_refresh_converted b WHERE NOT b.is_contract AND (abs(b.expired)>1e-10 OR abs(b.premium)>1e-10)
+UNION ALL
+SELECT 'balance'::text AS kind, upper(trim(b.client_code)) AS client_code, upper(trim(b.currency)) AS currency, ''::text AS derivative_type, ''::text AS product_code, ''::text AS contract_number, :cob::date AS cob_date, NULL::numeric AS expired_amount, NULL::numeric AS premium_amount, NULL::numeric AS expired_fixing, NULL::numeric AS premium_fixing, b.expired_or_liquidated_cash::numeric AS total_expiry, b.premium_paid_or_recd::numeric AS total_premium, b.opening_balance::numeric AS opening_balance, b.commission::numeric AS commission, b.transfers_in::numeric AS transfers_in, b.transfers_out::numeric AS transfers_out, b.interest_charges::numeric AS interest_charges, b.closing_balance::numeric AS closing_balance, b.comments AS comments FROM balance_rows b
+UNION ALL
+SELECT 'contract'::text AS kind, upper(trim(b.client_code)) AS client_code, upper(trim(b.currency)) AS currency, ''::text AS derivative_type, ''::text AS product_code, upper(trim(b.contract_number)) AS contract_number, :cob::date AS cob_date, NULL::numeric AS expired_amount, NULL::numeric AS premium_amount, NULL::numeric AS expired_fixing, NULL::numeric AS premium_fixing, b.expired::numeric AS total_expiry, b.premium::numeric AS total_premium, NULL::numeric AS opening_balance, NULL::numeric AS commission, NULL::numeric AS transfers_in, NULL::numeric AS transfers_out, NULL::numeric AS interest_charges, NULL::numeric AS closing_balance, NULL::text AS comments FROM contract_rows b
+]]></sql>
+<compare id="outputs" source="persisted" target="candidate" export="sample"><key columns="kind,client_code,currency,derivative_type,product_code,contract_number,cob_date"/><column name="expired_amount" absTol="0.000001"/><column name="premium_amount" absTol="0.000001"/><column name="expired_fixing" absTol="0.000001"/><column name="premium_fixing" absTol="0.000001"/><column name="total_expiry" absTol="0.000001"/><column name="total_premium" absTol="0.000001"/><column name="opening_balance" absTol="0.000001"/><column name="commission" absTol="0.000001"/><column name="transfers_in" absTol="0.000001"/><column name="transfers_out" absTol="0.000001"/><column name="interest_charges" absTol="0.000001"/><column name="closing_balance" absTol="0.000001"/><breakdown columns="kind,client_code" top="20"/></compare>
+<expect ref="context" rows="1"/><expect ref="context" column="dates_match" equals="true"/>
+<expect ref="context" column="previous_date_matches" equals="true"/>
+<expect ref="context" column="previous_balance_rows" min="1"/>
+<expect ref="persisted" rows=">=1" reason="capture the old refresh outputs first on the isolated copy"/>
+<expect ref="outputs" different="0" only-source="0" only-target="0" duplicates="0" reason="same snapshot, all three output types"/>
+<compress id="bundle" file="cash-refresh-22.zip"><include ref="context"/><include ref="outputs"/></compress>
+</rules>
