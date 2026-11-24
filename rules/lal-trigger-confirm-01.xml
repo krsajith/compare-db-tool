@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Confirm the cache trigger finding on dev or UAT, read-only, 24 Nov 2026.
+     Claim: trg_sync_latest_active_lot and trg_latest_active_lot_valuation_date exist only in the opera_221126 schema, not on opera.deal_active_lots_table
+     and opera.valuation_date_table. If so nothing keeps latest_active_lot in step after the copy, and the cache needs a fill after every load.
+     Q1 every non-internal trigger on those two tables in any schema, with enabled flag (O = enabled, D = disabled, R = replica only, A = always).
+     Q2 the cache functions in every schema, so a missing set in opera shows.
+     Q3 latest_active_lot_reconcile_log, newest first: run_at, BU, cutoff, counts, repaired, caller. The caller is free text; 'simple check' and 'simple fix'
+        are the labels of the DBeaver DO block in analysis/handoff-compare-tool-simple-migration-check.md, so that block was run (by whom is not recorded).
+     Q4 valuation_date_table rows per BU with created and updated timestamps (the cutoff the reconcile used is max(value_date)).
+     Q5 cache rows newer than the BU valuation date, per BU (rows the repair should not have written if the cutoff was the valuation date).
+     Run: compare.ps1 with rules rules\lal-trigger-confirm-01.xml and target-env postgres-uat (or postgres-dev). -->
+<rules name="lal-trigger-confirm-01">
+  <sql id="triggers" db="target" export="full" timeout="300"><![CDATA[
+    SELECT n.nspname AS schema_name, c.relname AS table_name, t.tgname AS trigger_name, t.tgenabled AS enabled, p.proname AS function_name
+    FROM pg_trigger t
+    JOIN pg_class c ON c.oid = t.tgrelid
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    JOIN pg_proc p ON p.oid = t.tgfoid
+    WHERE NOT t.tgisinternal AND c.relname IN ('deal_active_lots_table', 'valuation_date_table')
+    ORDER BY n.nspname, c.relname, t.tgname
+  ]]></sql>
+
+  <sql id="functions" db="target" export="full" timeout="300"><![CDATA[
+    SELECT n.nspname AS schema_name, p.proname AS function_name
+    FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+    WHERE p.proname IN ('fn_sync_latest_active_lot', 'fn_latest_active_lot_on_valuation_date', 'fn_latest_active_lot_reconcile', 'fn_rebuild_latest_active_lot_trade')
+    ORDER BY p.proname, n.nspname
+  ]]></sql>
+
+  <sql id="reconcile_log" db="target" export="full" timeout="300"><![CDATA[
+    SELECT l.id, l.run_at, l.business_unit, l.cutoff, l.missing, l.extra, l.different, l.repaired, l.caller
+    FROM opera.latest_active_lot_reconcile_log l
+    WHERE l.run_at >= now() - interval '30 days'
+    ORDER BY l.run_at DESC
+    LIMIT 500
+  ]]></sql>
+
+  <sql id="valuation_rows" db="target" export="full" timeout="300"><![CDATA[
+    SELECT v.business_unit, v.value_date, v.settlement_date, v.created_timestamp, v.updated_timestamp
+    FROM opera.valuation_date_table v
+    ORDER BY v.business_unit
+  ]]></sql>
+
+  <sql id="cache_beyond_cutoff" db="target" export="full" timeout="900"><![CDATA[
+    SELECT l.business_unit, max(v.value_date) AS valuation_date, count(*) AS cache_rows,
+           count(*) FILTER (WHERE l.value_date > v.value_date) AS rows_after_valuation_date,
+           max(l.value_date) AS newest_cache_value_date, max(l.updated_timestamp) AS newest_cache_update
+    FROM opera.latest_active_lot l
+    JOIN opera.valuation_date_table v ON v.tenant_id = l.tenant_id AND v.business_unit = l.business_unit
+    GROUP BY l.business_unit
+    ORDER BY 4 DESC
+  ]]></sql>
+
+  <compress id="bundle" file="lal-trigger-confirm-01.zip">
+    <include ref="triggers"/><include ref="functions"/><include ref="reconcile_log"/><include ref="valuation_rows"/><include ref="cache_beyond_cutoff"/>
+  </compress>
+</rules>
