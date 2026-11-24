@@ -1,0 +1,89 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- How did legacy MySQL write the 23 Nov zero row in deal_active_lots_table_cfs? Read-only, 24 Nov 2026.
+     Part A, live objects (the dump may be old):
+       writers_triggers   every trigger in dbsystemuat whose body touches deal_active_lots_table_cfs or calls update_lots_in_cloned_deal_ticket_cfs
+       writers_routines   every procedure or function whose body touches deal_active_lots_table_cfs (the netting and lots procedures show here)
+       proc_cfs_body      the body of update_lots_in_cloned_deal_ticket_cfs (missing from the dump)
+       events             every MySQL scheduled event (answers: is there a scheduler)
+     Part B, one trade (default TR-FY-2026-9647), full history:
+       trade_tickets      all deal_ticket_table_cfs versions of the trade and its children, with user and time
+       trade_lots         its deal_active_lots_table_cfs rows
+       trade_cloned       its cloned_deal_ticket_table_cfs row (lots, netting status, netting id and date)
+       trade_netting      its netting_id_table_cfs rows
+       trade_expiry       its option_expiry_deals_table_cfs rows
+     Run: compare.ps1 with rules rules\parent-lots-03-legacy-how-cfs.xml (datasource mysql-oprdb02). -->
+<rules name="parent-lots-03-legacy-how-cfs">
+  <parameters>
+    <param name="trade_id" type="string" value="TR-FY-2026-9647"/>
+  </parameters>
+
+  <sql id="writers_triggers" db="mysql-oprdb02" export="full" timeout="300"><![CDATA[
+    SELECT t.trigger_name, t.event_object_table, t.action_timing, t.event_manipulation,
+           (t.action_statement LIKE '%update_lots_in_cloned_deal_ticket_cfs%') AS calls_update_lots,
+           (t.action_statement LIKE '%deal_active_lots_table_cfs%') AS writes_dal_directly
+    FROM information_schema.triggers t
+    WHERE t.trigger_schema = 'dbsystemuat'
+      AND (t.action_statement LIKE '%deal_active_lots_table_cfs%' OR t.action_statement LIKE '%update_lots_in_cloned_deal_ticket_cfs%')
+    ORDER BY t.event_object_table, t.trigger_name
+  ]]></sql>
+
+  <sql id="writers_routines" db="mysql-oprdb02" export="full" timeout="300"><![CDATA[
+    SELECT r.routine_type, r.routine_name, r.created, r.last_altered, r.definer
+    FROM information_schema.routines r
+    WHERE r.routine_schema = 'dbsystemuat' AND r.routine_definition LIKE '%deal_active_lots_table_cfs%'
+    ORDER BY r.routine_name
+  ]]></sql>
+
+  <sql id="proc_cfs_body" db="mysql-oprdb02" export="full" timeout="300"><![CDATA[
+    SELECT r.routine_name, r.created, r.last_altered, r.definer, r.routine_definition
+    FROM information_schema.routines r
+    WHERE r.routine_schema = 'dbsystemuat' AND r.routine_name = 'update_lots_in_cloned_deal_ticket_cfs'
+  ]]></sql>
+
+  <sql id="events" db="mysql-oprdb02" export="full" timeout="300"><![CDATA[
+    SELECT e.event_schema, e.event_name, e.status, e.event_type, e.execute_at, e.interval_value, e.interval_field,
+           e.last_executed, e.definer, e.event_definition
+    FROM information_schema.events e
+    ORDER BY e.event_schema, e.event_name
+  ]]></sql>
+
+  <sql id="trade_tickets" db="mysql-oprdb02" export="full" timeout="300"><![CDATA[
+    SELECT d.parent_trade_id, d.trade_id, d.version_no, d.market_action, d.original_lots, d.lots_to_be_netted, d.deal_status,
+           d.transaction_date, d.trade_source, d.version_created_by AS who, d.version_timestamp AS at, d.version_comments
+    FROM dbsystemuat.deal_ticket_table_cfs d
+    WHERE d.trade_id = :trade_id OR d.parent_trade_id = :trade_id
+    ORDER BY d.version_timestamp, d.trade_id, d.version_no
+  ]]></sql>
+
+  <sql id="trade_lots" db="mysql-oprdb02" export="full" timeout="300"><![CDATA[
+    SELECT a.trade_id, a.value_date, a.active_lots
+    FROM dbsystemuat.deal_active_lots_table_cfs a
+    WHERE a.trade_id = :trade_id OR a.trade_id IN (SELECT c.trade_id FROM dbsystemuat.deal_ticket_table_cfs c WHERE c.parent_trade_id = :trade_id)
+    ORDER BY a.trade_id, a.value_date
+  ]]></sql>
+
+  <sql id="trade_cloned" db="mysql-oprdb02" export="full" timeout="300"><![CDATA[
+    SELECT c.trade_id, c.parent_trade_id, c.original_lots, c.active_lots, c.netting_status, c.netted_lots, c.netting_id, c.netting_date, c.deal_status
+    FROM dbsystemuat.cloned_deal_ticket_table_cfs c
+    WHERE c.trade_id = :trade_id OR c.parent_trade_id = :trade_id
+  ]]></sql>
+
+  <sql id="trade_netting" db="mysql-oprdb02" export="full" timeout="300"><![CDATA[
+    SELECT n.*
+    FROM dbsystemuat.netting_id_table_cfs n
+    WHERE n.trade_id = :trade_id
+    ORDER BY n.netting_date
+  ]]></sql>
+
+  <sql id="trade_expiry" db="mysql-oprdb02" export="full" timeout="300"><![CDATA[
+    SELECT x.parent_trade_id, x.trade_id, x.market_action, x.original_lots, x.transaction_date, x.trade_source
+    FROM dbsystemuat.option_expiry_deals_table_cfs x
+    WHERE x.trade_id = :trade_id OR x.parent_trade_id = :trade_id
+    ORDER BY x.transaction_date
+  ]]></sql>
+
+  <compress id="bundle" file="parent-lots-03-legacy-how-cfs.zip">
+    <include ref="writers_triggers"/><include ref="writers_routines"/><include ref="proc_cfs_body"/><include ref="events"/>
+    <include ref="trade_tickets"/><include ref="trade_lots"/><include ref="trade_cloned"/><include ref="trade_netting"/><include ref="trade_expiry"/>
+  </compress>
+</rules>
