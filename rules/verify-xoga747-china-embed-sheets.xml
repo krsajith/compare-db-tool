@@ -1,0 +1,15 @@
+<rules name="verify-xoga747-china-embed-sheets">
+  <!-- After the change: the China Vol - Options pipeline config carries embedIntermediateSheets false and is still single-output. -->
+  <sql id="flag" db="postgres-dev" export="full"><![CDATA[
+    SELECT template_name, updated_by, updated_timestamp,
+           rule_data #>> '{workflowConfig,output,options,embedIntermediateSheets}' AS embed_flag,
+           jsonb_array_length(coalesce(rule_data #> '{workflowConfig,additionalOutputs}', '[]'::jsonb)) AS additional_outputs
+    FROM opera.oga_configservice_uploadrules
+    WHERE code = 'PIPELINE CONFIG' AND template_name = 'China Vol - Options'
+      AND tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113'
+  ]]></sql>
+  <expect ref="flag" rows="1" reason="one China Vol - Options pipeline config"/>
+  <expect ref="flag" column="embed_flag" equals="false" reason="the output opts out of embedding intermediate sheets"/>
+  <expect ref="flag" column="additional_outputs" equals="0" reason="still a single-output workflow"/>
+  <compress id="bundle" file="verify-xoga747-china.zip"><include ref="flag"/></compress>
+</rules>

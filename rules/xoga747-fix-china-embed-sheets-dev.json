@@ -1,0 +1,30 @@
+{
+  "name": "xoga747-fix-china-embed-sheets-dev",
+  "db": "postgres-dev",
+  "backupSchema": "parity_work",
+  "ticket": "XOGA-747",
+  "description": "China Vol - Options pipeline config: set workflowConfig.output.options.embedIntermediateSheets to false so the Actual Vol workbook has one sheet, as legacy MATLAB. Needs the bulk-uploader build with the SinkManager option (branch XOGA-747-china-extra-sheet).",
+  "steps": [
+    {
+      "id": "china-config",
+      "action": "update",
+      "table": "opera.oga_configservice_uploadrules",
+      "where": "code = 'PIPELINE CONFIG' AND template_name = 'China Vol - Options' AND tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113'",
+      "key": ["uuid"],
+      "set": {
+        "rule_data": "jsonb_set(rule_data, '{workflowConfig,output,options,embedIntermediateSheets}', 'false'::jsonb, true)",
+        "updated_by": "'xoga747'",
+        "updated_timestamp": "now()"
+      },
+      "preconditions": [
+        {
+          "sql": "SELECT count(*) FROM opera.oga_configservice_uploadrules WHERE {{where}} AND rule_data #>> '{workflowConfig,output,options,embedIntermediateSheets}' IS NULL AND jsonb_array_length(coalesce(rule_data #> '{workflowConfig,additionalOutputs}', '[]'::jsonb)) = 0",
+          "expect": "1",
+          "reason": "the config is still single-output and the flag is not set yet"
+        }
+      ],
+      "expect": { "targetBefore": "1", "affected": "1", "targetAfter": "1" }
+    }
+  ],
+  "verify": [ { "rule": "verify-xoga747-china-embed-sheets.xml" } ]
+}
