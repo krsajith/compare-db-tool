@@ -1,0 +1,23 @@
+<rules name="xoga747-06-ice-and-normal-configs">
+  <!-- XOGA-747 follow-up: export the ICE Parser and Normal - Options pipeline configs (output layout) and the recent ICE runs,
+       to compare the workbooks and sheets with the legacy generate_icemktprice_web.m. -->
+  <parameters>
+    <param name="since" type="timestamp" value="2026-11-01 00:00:00"/>
+  </parameters>
+  <sql id="config-text" db="postgres-dev" export="full"><![CDATA[
+    SELECT template_name, template_type, created_timestamp, rule_data::text AS rule_text
+    FROM opera.oga_configservice_uploadrules
+    WHERE template_name IN ('ICE Parser', 'Normal - Options')
+    ORDER BY template_name, template_type, created_timestamp DESC
+    LIMIT 8
+  ]]></sql>
+  <sql id="ice-runs" db="postgres-dev" export="full"><![CDATA[
+    SELECT execution_id, workflow_id, start_time, end_time, total_input_rows, final_output_rows
+    FROM opera.pipeline_execution_level_log
+    WHERE created_timestamp >= :since AND workflow_id ILIKE '%ice%'
+    ORDER BY start_time DESC
+    LIMIT 20
+  ]]></sql>
+  <expect ref="config-text" rows=">=2" reason="the ICE Parser and Normal - Options configs exist"/>
+  <compress id="bundle" file="xoga747-06.zip"><include ref="config-text"/><include ref="ice-runs"/></compress>
+</rules>
