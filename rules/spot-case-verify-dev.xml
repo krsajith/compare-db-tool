@@ -1,0 +1,27 @@
+<rules name="spot-case-verify-dev">
+  <!-- Question: is any spot id in the config written in a different letter case than the price table (latest price date)?
+       Read only. Both counts must be 0. A mismatch means recon, statement and cash find no FX rate for that currency. -->
+  <sql id="mapping" db="postgres-dev" export="full"><![CDATA[
+    SELECT m.spot AS config_spot, min(u.underlying_id) AS price_spot, count(*) AS rows_affected
+    FROM opera.currency_spot_mapping_table m
+    JOIN opera.underlying_settle_value_table u
+      ON u.tenant_id = m.tenant_id AND lower(u.underlying_id) = lower(m.spot) AND u.underlying_id <> m.spot
+    WHERE m.tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113'
+      AND u.value_date = (SELECT max(value_date) FROM opera.underlying_settle_value_table WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113')
+    GROUP BY m.spot
+    ORDER BY m.spot
+  ]]></sql>
+  <sql id="products" db="postgres-dev" export="full"><![CDATA[
+    SELECT p.curr_mult_factor AS config_spot, min(u.underlying_id) AS price_spot, count(*) AS products
+    FROM opera.product_master_table p
+    JOIN opera.underlying_settle_value_table u
+      ON u.tenant_id = p.tenant_id AND lower(u.underlying_id) = lower(p.curr_mult_factor) AND u.underlying_id <> p.curr_mult_factor
+    WHERE p.tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113'
+      AND u.value_date = (SELECT max(value_date) FROM opera.underlying_settle_value_table WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113')
+    GROUP BY p.curr_mult_factor
+    ORDER BY p.curr_mult_factor
+  ]]></sql>
+  <expect ref="mapping" rows="0" reason="every mapping spot has the price table spelling"/>
+  <expect ref="products" rows="0" reason="every product curr_mult_factor has the price table spelling"/>
+  <compress id="bundle" file="spot-case-verify-dev.zip"><include ref="mapping"/><include ref="products"/></compress>
+</rules>
