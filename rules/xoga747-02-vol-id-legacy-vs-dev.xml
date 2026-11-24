@@ -1,0 +1,44 @@
+<rules name="xoga747-02-vol-id-legacy-vs-dev">
+  <!-- XOGA-747: the Financial Options parser keeps 3,668 rows of 7 financial products (BJ IR JB XM YM YPO ZB) but dev has no vol_id_table rows for them.
+       Question: does legacy MySQL have vol ids for those products (migration gap) or not (nothing to map in legacy either)?
+       Compare vol_id_table per product code, legacy against dev, and show the product master rows of the 7 roots on both sides. -->
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+  </parameters>
+
+  <sql id="legacy-vol" db="mysql-oprdb02"><![CDATA[
+    SELECT product_code, COUNT(*) AS vol_ids, COUNT(DISTINCT bbg_opt_ticker) AS bbg_tickers,
+           LEFT(CAST(MAX(expiry_date) AS CHAR), 10) AS max_expiry
+    FROM dbsystemuat.vol_id_table
+    GROUP BY product_code
+  ]]></sql>
+  <sql id="dev-vol" db="postgres-dev"><![CDATA[
+    SELECT product_code, COUNT(*) AS vol_ids, COUNT(DISTINCT bbg_opt_ticker) AS bbg_tickers,
+           LEFT(MAX(expiry_date)::text, 10) AS max_expiry
+    FROM opera.vol_id_table
+    WHERE tenant_id = :tenant
+    GROUP BY product_code
+  ]]></sql>
+  <compare id="vol" source="legacy-vol" target="dev-vol">
+    <key columns="product_code"/>
+  </compare>
+
+  <sql id="legacy-pm" db="mysql-oprdb02" export="full"><![CDATA[
+    SELECT pm.bbg_product_code, pm.invenio_product_code, pm.asset_class,
+           (SELECT COUNT(*) FROM dbsystemuat.vol_id_table v WHERE v.product_code = pm.invenio_product_code) AS vol_id_rows,
+           (SELECT COUNT(*) FROM dbsystemuat.underlying_list_table u WHERE u.invenio_product_code = pm.invenio_product_code) AS underlying_rows
+    FROM dbsystemuat.product_master_table pm
+    WHERE pm.bbg_product_code IN ('BJ','IR','JB','XM','YM','YPO','ZB')
+    ORDER BY pm.bbg_product_code
+  ]]></sql>
+  <sql id="legacy-security" db="mysql-oprdb02" export="full"><![CDATA[
+    SELECT product_code, COUNT(*) AS vol_ids_with_ticker
+    FROM dbsystemuat.vol_id_table
+    WHERE product_code IN ('BN BJ','MM IR','BN JB','BN XM','BN YM','BN YPO','MM ZB')
+    GROUP BY product_code
+  ]]></sql>
+
+  <expect ref="vol" only-source="0" different="0" reason="legacy and dev should hold the same vol ids per product (a gap means a migration issue)"/>
+  <expect ref="legacy-pm" rows=">=1" reason="the financial roots exist in the legacy product master"/>
+  <compress id="bundle" file="xoga747-02.zip"><include ref="vol"/><include ref="legacy-pm"/><include ref="legacy-security"/></compress>
+</rules>
