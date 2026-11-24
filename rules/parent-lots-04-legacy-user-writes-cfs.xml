@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Which legacy CFS tables were changed by the expiry run of one user (default sharan.somaiah), read-only, 24 Nov 2026.
+     Only deal_ticket_table_cfs keeps the user (version_created_by) and time (version_timestamp). The other tables are written by the triggers on it,
+     so their rows are joined back to that user's tickets:
+       deal_ticket_table_cfs          the user inserts the expiry child tickets
+       BEFORE INSERT trigger          checks only (version number, bought or sold sign, transaction date against maturity)
+       cloned_deal_ticket_table_cfs   AFTER INSERT trigger: child cloned row, and the parent cloned row recalculated by update_lots_in_cloned_deal_ticket_cfs
+       deal_active_lots_table_cfs     the same procedure: row at the valuation date for the parent and the child
+       premium_fy_table_cfs           AFTER INSERT trigger: update_premium_fy_table_cfs
+       fxoption_maturity_date_table_cfs  only for FX_OPT and FX_OTC trades
+     Q1 tickets by day and market action. Q2 rows per table caused by those tickets. Q3 one row per parent: ticket, who, when, parent lots in the cloned and lots table.
+     Run: compare.ps1 with rules rules\parent-lots-04-legacy-user-writes-cfs.xml (datasource mysql-oprdb02). -->
+<rules name="parent-lots-04-legacy-user-writes-cfs">
+  <parameters>
+    <param name="who" type="string" value="sharan.somaiah"/>
+    <param name="from_date" type="date" value="2026-11-23"/>
+  </parameters>
+
+  <sql id="tickets_by_day" db="mysql-oprdb02" export="full" timeout="600"><![CDATA[
+    SELECT DATE(d.version_timestamp) AS day, d.market_action, d.version_comments, count(*) AS tickets,
+           count(DISTINCT d.parent_trade_id) AS parents, min(d.version_timestamp) AS first_at, max(d.version_timestamp) AS last_at
+    FROM dbsystemuat.deal_ticket_table_cfs d
+    WHERE d.version_created_by = :who AND d.version_timestamp >= :from_date
+    GROUP BY DATE(d.version_timestamp), d.market_action, d.version_comments
+    ORDER BY 1, 2
+  ]]></sql>
+
+  <sql id="table_effects" db="mysql-oprdb02" export="full" timeout="1800"><![CDATA[
+    SELECT 'deal_ticket_table_cfs (inserted by the user)' AS table_changed, count(*) AS rows_found, 0 AS rows_with_zero_lots
+    FROM dbsystemuat.deal_ticket_table_cfs d WHERE d.version_created_by = :who AND d.version_timestamp >= :from_date
+    UNION ALL
+    SELECT 'cloned_deal_ticket_table_cfs (child rows)', count(*), sum(c.active_lots = 0)
+    FROM dbsystemuat.deal_ticket_table_cfs d JOIN dbsystemuat.cloned_deal_ticket_table_cfs c ON c.trade_id = d.trade_id
+    WHERE d.version_created_by = :who AND d.version_timestamp >= :from_date
+    UNION ALL
+    SELECT 'cloned_deal_ticket_table_cfs (parent rows recalculated)', count(DISTINCT c.trade_id), count(DISTINCT CASE WHEN c.active_lots = 0 THEN c.trade_id END)
+    FROM dbsystemuat.deal_ticket_table_cfs d JOIN dbsystemuat.cloned_deal_ticket_table_cfs c ON c.trade_id = d.parent_trade_id
+    WHERE d.version_created_by = :who AND d.version_timestamp >= :from_date AND d.trade_id <> d.parent_trade_id
+    UNION ALL
+    SELECT 'deal_active_lots_table_cfs (child rows at or after the date)', count(*), sum(a.active_lots = 0)
+    FROM dbsystemuat.deal_ticket_table_cfs d JOIN dbsystemuat.deal_active_lots_table_cfs a ON a.trade_id = d.trade_id AND a.value_date >= :from_date
+    WHERE d.version_created_by = :who AND d.version_timestamp >= :from_date
+    UNION ALL
+    SELECT 'deal_active_lots_table_cfs (parent rows at or after the date)', count(*), sum(a.active_lots = 0)
+    FROM (SELECT DISTINCT parent_trade_id FROM dbsystemuat.deal_ticket_table_cfs
+          WHERE version_created_by = :who AND version_timestamp >= :from_date AND trade_id <> parent_trade_id) p
+    JOIN dbsystemuat.deal_active_lots_table_cfs a ON a.trade_id = p.parent_trade_id AND a.value_date >= :from_date
+    UNION ALL
+    SELECT 'premium_fy_table_cfs (child rows)', count(*), 0
+    FROM dbsystemuat.deal_ticket_table_cfs d JOIN dbsystemuat.premium_fy_table_cfs p ON p.trade_id = d.trade_id
+    WHERE d.version_created_by = :who AND d.version_timestamp >= :from_date
+  ]]></sql>
+
+  <sql id="per_parent" db="mysql-oprdb02" export="full" timeout="1800"><![CDATA[
+    SELECT d.parent_trade_id, d.trade_id AS child_trade_id, d.market_action, d.original_lots AS child_lots, d.version_created_by AS who, d.version_timestamp AS at,
+           c.active_lots AS parent_cloned_lots,
+           (SELECT a.value_date FROM dbsystemuat.deal_active_lots_table_cfs a WHERE a.trade_id = d.parent_trade_id ORDER BY a.value_date DESC LIMIT 1) AS parent_dal_value_date,
+           (SELECT a.active_lots FROM dbsystemuat.deal_active_lots_table_cfs a WHERE a.trade_id = d.parent_trade_id ORDER BY a.value_date DESC LIMIT 1) AS parent_dal_lots
+    FROM dbsystemuat.deal_ticket_table_cfs d
+    LEFT JOIN dbsystemuat.cloned_deal_ticket_table_cfs c ON c.trade_id = d.parent_trade_id
+    WHERE d.version_created_by = :who AND d.version_timestamp >= :from_date AND d.trade_id <> d.parent_trade_id
+    ORDER BY d.version_timestamp, d.parent_trade_id
+  ]]></sql>
+
+  <compress id="bundle" file="parent-lots-04-legacy-user-writes-cfs.zip">
+    <include ref="tickets_by_day"/><include ref="table_effects"/><include ref="per_parent"/>
+  </compress>
+</rules>
