@@ -25,4 +25,8 @@
     WHERE d.trade_id <> d.parent_trade_id AND d.version_timestamp >= :from_date
     ORDER BY d.version_timestamp DESC
   ]]></sql>
+
+  <compress id="bundle" file="parent-lots-02-legacy-cfs.zip">
+    <include ref="dal_changes"/><include ref="children"/>
+  </compress>
 </rules>

@@ -81,4 +81,8 @@
       AND d.version_timestamp >= :from_date
     ORDER BY d.version_timestamp DESC
   ]]></sql>
+
+  <compress id="bundle" file="parent-lots-01-pg-child-tickets.zip">
+    <include ref="children_summary"/><include ref="parents"/><include ref="children"/>
+  </compress>
 </rules>
