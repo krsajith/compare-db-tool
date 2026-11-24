@@ -1,0 +1,47 @@
+<rules name="xoga747-05-pipeline-configs-dev-vs-uat">
+  <!-- XOGA-747: pipeline configs are rows, created per environment and not in source control.
+       Question 1: which configs are single-output (they get every intermediate sheet embedded) and which rely on it.
+       Question 2: are dev and UAT copies of each config the same (md5 of the JSON), so a dev only fix would not reach UAT. -->
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+  </parameters>
+
+  <sql id="cfg-dev" db="postgres-dev" export="full"><![CDATA[
+    SELECT template_name,
+           md5(rule_data::text) AS rule_md5,
+           rule_data #>> '{workflowConfig,workflowId}' AS workflow_id,
+           rule_data #>> '{workflowConfig,output,mode}' AS output_mode,
+           jsonb_array_length(coalesce(rule_data #> '{workflowConfig,additionalOutputs}', '[]'::jsonb)) AS additional_outputs,
+           jsonb_array_length(coalesce(rule_data #> '{workflowConfig,output,options,extraSheets}', '[]'::jsonb)) AS extra_sheets,
+           rule_data #>> '{workflowConfig,output,options,intermediateSheetsFirst}' AS intermediate_first,
+           rule_data #>> '{workflowConfig,output,options,embedIntermediateSheets}' AS embed_flag,
+           rule_data #>> '{workflowConfig,messageExport,enabled}' AS message_export,
+           updated_by, left(updated_timestamp::text, 19) AS updated_at
+    FROM opera.oga_configservice_uploadrules
+    WHERE code = 'PIPELINE CONFIG' AND tenant_id = :tenant
+  ]]></sql>
+  <sql id="cfg-uat" db="postgres-uat" export="full"><![CDATA[
+    SELECT template_name,
+           md5(rule_data::text) AS rule_md5,
+           rule_data #>> '{workflowConfig,workflowId}' AS workflow_id,
+           rule_data #>> '{workflowConfig,output,mode}' AS output_mode,
+           jsonb_array_length(coalesce(rule_data #> '{workflowConfig,additionalOutputs}', '[]'::jsonb)) AS additional_outputs,
+           jsonb_array_length(coalesce(rule_data #> '{workflowConfig,output,options,extraSheets}', '[]'::jsonb)) AS extra_sheets,
+           rule_data #>> '{workflowConfig,output,options,intermediateSheetsFirst}' AS intermediate_first,
+           rule_data #>> '{workflowConfig,output,options,embedIntermediateSheets}' AS embed_flag,
+           rule_data #>> '{workflowConfig,messageExport,enabled}' AS message_export,
+           updated_by, left(updated_timestamp::text, 19) AS updated_at
+    FROM opera.oga_configservice_uploadrules
+    WHERE code = 'PIPELINE CONFIG' AND tenant_id = :tenant
+  ]]></sql>
+  <compare id="dev-vs-uat" source="cfg-dev" target="cfg-uat">
+    <key columns="template_name"/>
+    <column name="updated_by" ignore="true"/>
+    <column name="updated_at" ignore="true"/>
+  </compare>
+
+  <expect ref="cfg-dev" rows=">=1" reason="pipeline configs exist in dev"/>
+  <expect ref="cfg-uat" rows=">=1" reason="pipeline configs exist in UAT"/>
+  <expect ref="dev-vs-uat" different="0" only-source="0" only-target="0" reason="dev and UAT carry the same pipeline configs"/>
+  <compress id="bundle" file="xoga747-05.zip"><include ref="cfg-dev"/><include ref="cfg-uat"/><include ref="dev-vs-uat"/></compress>
+</rules>
