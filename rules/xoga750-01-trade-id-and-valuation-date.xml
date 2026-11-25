@@ -53,7 +53,7 @@
   ]]></sql>
 
   <sql id="valdate-gpc-old" db="mysql-oprdb02" timeout="60" export="full"><![CDATA[
-    SELECT date_id, value_date, settlement_date FROM valuation_date_table_gpc
+    SELECT date_id, value_date, settlement_date FROM dbsystemuat.valuation_date_table_gpc
   ]]></sql>
 
   <sql id="format-master" db="target" timeout="60" export="full"><![CDATA[
@@ -80,7 +80,7 @@
   ]]></sql>
 
   <sql id="prefix-old" db="mysql-oprdb02" timeout="60" export="full"><![CDATA[
-    SELECT trade_id_prefix FROM helper_fetch_tradeid_prefix_view_gpc
+    SELECT trade_id_prefix FROM dbsystemuat.helper_fetch_tradeid_prefix_view_gpc
   ]]></sql>
 
   <sql id="sequence-new" db="target" timeout="60" export="full"><![CDATA[
@@ -128,12 +128,12 @@
 
   <sql id="max-suffix-old" db="mysql-oprdb02" when="#deep" timeout="600" export="full"><![CDATA[
     SELECT count(*) AS numeric_ids, max(cast(mid(trade_id, 12) AS unsigned)) AS max_suffix
-    FROM cloned_deal_ticket_table_gpc
+    FROM dbsystemuat.cloned_deal_ticket_table_gpc
     WHERE trade_id LIKE 'TR-FY-2026-%' AND mid(trade_id, 12) REGEXP '^[0-9]+$'
   ]]></sql>
 
   <expect ref="valdate-new" rows=">=1" reason="the date reference reads this table; it must have the BUs"/>
-  <expect ref="format-master" rows="1" reason="the service takes the newest tradeId format row; one row is the clean state"/>
+  <expect ref="format-master" rows=">=1" reason="dev holds one tradeId format row per BU that has a sequence row (9 seen on 25 Nov); the service takes the newest one"/>
   <expect ref="prefix-old" rows="1" reason="legacy gives one prefix for gpc"/>
   <expect expr="#size(#rows('resolver-new').?[#lower(business_unit) == 'gpc']) == 1" reason="gpc must be a BU in the valuation date table, else the GPC run has no date for it"/>
   <expect expr="#size(#rows('resolver-new').?[#lower(business_unit) == 'gpc' and sequence_rows_via_tenant == 1]) == 1" reason="reserveTradeIds needs exactly one sequence row for gpc; 0 gives the fallback TRN000001"/>
