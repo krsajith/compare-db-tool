@@ -1,0 +1,30 @@
+{
+  "name": "xoga750-fix3-gpc-counter-reset-dev",
+  "db": "postgres-dev",
+  "backupSchema": "parity_work",
+  "ticket": "XOGA-750",
+  "description": "DEV ONLY. Puts the GPC trade id counter back to 54983 so the next GPC Trade run starts again at TR-FY-2026-54984, the first id of the old Opera dump. Use it before each repeat of the GPC retest: every run moves the counter up by the number of rows (319 for the test files). Only the GPC counter row created by rule xoga750-fix2 is changed; the precondition stops the rule if that row is missing or is someone else's row.",
+  "steps": [
+    {
+      "id": "gpc-counter-reset",
+      "action": "update",
+      "table": "opera.oga_transaction_id_sequence_criteria",
+      "where": "tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND sequence_criteria ->> 'businessUnit' = 'GPC'",
+      "key": ["uuid"],
+      "set": {
+        "last_sequence_id": "54983",
+        "updated_by": "'xoga750-gpc'",
+        "updated_timestamp": "now()"
+      },
+      "preconditions": [
+        {
+          "sql": "SELECT count(*) FROM opera.oga_transaction_id_sequence_criteria WHERE {{where}} AND created_by = 'xoga750-gpc'",
+          "expect": "1",
+          "reason": "exactly one GPC counter row and it is the one created by fix 2"
+        }
+      ],
+      "expect": { "targetBefore": "1", "affected": "1", "targetAfter": "1" }
+    }
+  ],
+  "verify": [ { "rule": "verify-xoga750-fix2-gpc-trade-id-counter-dev.xml" } ]
+}
