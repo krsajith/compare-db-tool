@@ -1,0 +1,114 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rules name="xoga750-05-trade-id-counter-vs-data">
+  <!--
+    XOGA-750, check 5. For every business unit: is the trade id counter in line with the trade ids already used?
+
+    How the trade id works in the new code (read: trade-id-service.js, trade-id-guard.js, assign-trade-ids.js):
+      id = prefix + String(number).padStart(numberOfDigits, '0')
+      prefix          from helper_fetch_tradeid_prefix_view (tenant plus BU): financial year of the BU settlement date
+                      mapped in financial_year_trade_id_mapping_table, for example TR-FY-2026-
+      numberOfDigits  number_of_digits of the NEWEST tradeId format row of the tenant, empty means 3 (so 7 becomes 007)
+      number          last_sequence_id plus 1 of the counter row of the BU (oga_transaction_id_sequence_criteria,
+                      sequence_criteria businessUnit), between start_value and end_value
+      A reserved number whose id already exists in deal_ticket_table is skipped; after more than 100000 skipped ids
+      the reservation throws ("skipped more than 100000 used IDs ... check the trade-ID counter").
+      reset_value is Yearly in the format rows but nothing in the code resets the counter: a new financial year gets a
+      new prefix and the SAME running number continues. Legacy getLastTradeId.m took the maximum numeric suffix of the
+      current prefix in the BU deal tickets plus 1, so legacy restarts at 1 for a new prefix and never pads.
+
+    What this rule measures per BU (tenant first in every filter, one pass over the 2026 prefix range):
+      counter_last_id   last_sequence_id (blank when the BU has no counter row)
+      ids_rows          deal ticket rows whose trade_id starts with the prefix (versions count as rows)
+      max_suffix        highest purely numeric suffix, numeric_ids how many, non_numeric_ids the others (clones, suffixes)
+      leading_zero_ids  suffixes like 007 (the padded shape; legacy never padded)
+      gap               counter minus max_suffix: negative means the counter is BEHIND the data
+      status            NO_COUNTER_ROW (BU has data or a valuation date but no counter), BEHIND_OVER_GUARD (gap below
+                        minus 100000: reservation fails), BEHIND (gap negative: ids are skipped one by one),
+                        OK (counter at or above the highest id), NO_DATA (counter row, no ids with this prefix)
+    Run it on dev and on UAT. Read only. It scans the prefix range of deal_ticket_table once: use dev or UAT, not prod.
+  -->
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+    <param name="fy" type="string" value="TR-FY-2026-"/>
+    <param name="fyEnd" type="string" value="TR-FY-2026."/>
+    <param name="guard" type="integer" value="100000"/>
+  </parameters>
+
+  <sql id="measure" db="target" timeout="900" export="full"><![CDATA[
+    WITH used AS (
+      SELECT upper(x.business_unit) AS bu,
+             count(*) AS ids_rows,
+             count(*) FILTER (WHERE x.suffix ~ '^[0-9]{1,15}$') AS numeric_ids,
+             count(*) FILTER (WHERE x.suffix !~ '^[0-9]{1,15}$') AS non_numeric_ids,
+             count(*) FILTER (WHERE x.suffix ~ '^0[0-9]+$') AS leading_zero_ids,
+             max(CASE WHEN x.suffix ~ '^[0-9]{1,15}$' THEN x.suffix::bigint END) AS max_suffix,
+             max(length(x.suffix)) AS longest_suffix
+      FROM (SELECT d.business_unit, substr(d.trade_id, length(:fy) + 1) AS suffix
+              FROM opera.deal_ticket_table d
+             WHERE d.tenant_id = :tenant AND d.trade_id >= :fy AND d.trade_id < :fyEnd) x
+      GROUP BY upper(x.business_unit)
+    ),
+    seq AS (
+      SELECT upper(s.sequence_criteria ->> 'businessUnit') AS bu, s.last_sequence_id, s.start_value, s.end_value, s.updated_by, s.updated_timestamp
+        FROM opera.oga_transaction_id_sequence_criteria s
+       WHERE s.tenant_id = :tenant
+    ),
+    val AS (
+      SELECT upper(v.business_unit) AS bu, v.settlement_date
+        FROM opera.valuation_date_table v
+       WHERE v.tenant_id = :tenant
+    ),
+    pref AS (
+      SELECT upper(p.business_unit) AS bu, min(p.trade_id_prefix) AS prefix
+        FROM opera.helper_fetch_tradeid_prefix_view p
+       WHERE p.tenant_id = :tenant
+       GROUP BY upper(p.business_unit)
+    ),
+    allbu AS (SELECT bu FROM used UNION SELECT bu FROM seq UNION SELECT bu FROM val)
+    SELECT a.bu AS business_unit, pref.prefix AS view_prefix, val.settlement_date,
+           seq.last_sequence_id AS counter_last_id, seq.start_value, seq.end_value, seq.updated_by AS counter_updated_by, seq.updated_timestamp AS counter_updated,
+           coalesce(used.ids_rows, 0) AS ids_rows, coalesce(used.numeric_ids, 0) AS numeric_ids, coalesce(used.non_numeric_ids, 0) AS non_numeric_ids,
+           coalesce(used.leading_zero_ids, 0) AS leading_zero_ids, used.max_suffix, used.longest_suffix,
+           seq.last_sequence_id - used.max_suffix AS gap,
+           CASE
+             WHEN seq.bu IS NULL AND coalesce(used.ids_rows, 0) > 0 THEN 'NO_COUNTER_ROW'
+             WHEN seq.bu IS NULL THEN 'NO_COUNTER_ROW_NO_DATA'
+             WHEN used.max_suffix IS NULL THEN 'NO_DATA'
+             WHEN seq.last_sequence_id - used.max_suffix < -(:guard) THEN 'BEHIND_OVER_GUARD'
+             WHEN seq.last_sequence_id < used.max_suffix THEN 'BEHIND'
+             ELSE 'OK'
+           END AS status
+      FROM allbu a
+      LEFT JOIN used ON used.bu = a.bu
+      LEFT JOIN seq ON seq.bu = a.bu
+      LEFT JOIN val ON val.bu = a.bu
+      LEFT JOIN pref ON pref.bu = a.bu
+     ORDER BY CASE WHEN seq.bu IS NULL AND coalesce(used.ids_rows, 0) > 0 THEN 0 ELSE 1 END, a.bu
+  ]]></sql>
+
+  <sql id="format-rows" db="target" timeout="60" export="full"><![CDATA[
+    SELECT f.uuid, f.name, f.transaction_type, f.reference_format, f.number_of_digits, f.reset_value, f.periodicity, f.split_sequence,
+           f.transaction_sequence_criteria::text AS criteria_json, f.created_by, f.created_timestamp
+      FROM opera.oga_configservice_transactionidformatmaster f
+     WHERE f.tenant_id = :tenant AND f.transaction_type = 'tradeId'
+     ORDER BY f.created_timestamp DESC
+  ]]></sql>
+
+  <sql id="prefix-by-year" db="target" timeout="60" export="full"><![CDATA[
+    SELECT m.financial_year, m.trade_id_prefix, f.start_date, f.end_date
+      FROM opera.financial_year_trade_id_mapping_table m
+      LEFT JOIN opera.financial_year_table f ON f.tenant_id = m.tenant_id AND f.financial_year = m.financial_year
+     WHERE m.tenant_id = :tenant
+     ORDER BY f.start_date NULLS LAST, m.financial_year
+  ]]></sql>
+
+  <expect ref="measure" rows=">=1" reason="at least one business unit"/>
+  <expect expr="#size(#rows('measure').?[status == 'BEHIND_OVER_GUARD']) == 0" reason="a counter more than the guard behind its data makes every reservation of that BU fail (seen for CFS on dev at 05:12 UTC on 25 Nov)"/>
+  <expect expr="#size(#rows('measure').?[status == 'NO_COUNTER_ROW']) == 0" reason="a BU with trade ids but no counter row cannot reserve ids; GPC had none"/>
+  <expect expr="#size(#rows('measure').?[status == 'BEHIND']) == 0" reason="a counter behind its data works but skips used ids one by one on every run"/>
+  <expect ref="format-rows" rows=">=1" reason="the service reads the newest tradeId format row"/>
+
+  <compress id="bundle" file="xoga750-05-trade-id-counter-vs-data.zip">
+    <include ref="measure"/><include ref="format-rows"/><include ref="prefix-by-year"/>
+  </compress>
+</rules>
