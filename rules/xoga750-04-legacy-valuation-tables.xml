@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rules name="xoga750-04-legacy-valuation-tables">
+  <!--
+    XOGA-750, check 4. Which legacy valuation date did the old GPC Trade run read?
+
+    Why: run_GPC_Trade_Parcer_web.m line 910 reads the Transaction Date of a fill run with
+    "select settlement_date from valuation_date_table", the table WITHOUT a business unit suffix.
+    Legacy has one such plain table and eight suffixed tables (bkr ebo gpc rbc rmc rov stg tsy); other
+    MATLAB reports read valuation_date_table_gpc for GPC (Combined VaR, line 541). The legacy GPC table
+    holds 2026-11-25 on 25 Nov (rule 01 output), yet the old GPC dump has 2026-11-05 on every row. If the plain
+    table holds 2026-11-05, the old run took the date from the plain table, not from the GPC row, and the new
+    code (which reads the GPC row of the run BU) differs by design.
+    Read only, legacy MySQL only. date_id is a text key (value date in the single row).
+  -->
+  <sql id="plain" db="mysql-oprdb02" timeout="60" export="full"><![CDATA[
+    SELECT 'plain' AS table_name, date_id, value_date, settlement_date FROM dbsystemuat.valuation_date_table
+  ]]></sql>
+  <sql id="suffixed" db="mysql-oprdb02" timeout="60" export="full"><![CDATA[
+    SELECT 'bkr' AS table_name, date_id, value_date, settlement_date FROM dbsystemuat.valuation_date_table_bkr
+    UNION ALL SELECT 'ebo', date_id, value_date, settlement_date FROM dbsystemuat.valuation_date_table_ebo
+    UNION ALL SELECT 'gpc', date_id, value_date, settlement_date FROM dbsystemuat.valuation_date_table_gpc
+    UNION ALL SELECT 'rbc', date_id, value_date, settlement_date FROM dbsystemuat.valuation_date_table_rbc
+    UNION ALL SELECT 'rmc', date_id, value_date, settlement_date FROM dbsystemuat.valuation_date_table_rmc
+    UNION ALL SELECT 'rov', date_id, value_date, settlement_date FROM dbsystemuat.valuation_date_table_rov
+    UNION ALL SELECT 'stg', date_id, value_date, settlement_date FROM dbsystemuat.valuation_date_table_stg
+    UNION ALL SELECT 'tsy', date_id, value_date, settlement_date FROM dbsystemuat.valuation_date_table_tsy
+  ]]></sql>
+  <sql id="gpc-prefix" db="mysql-oprdb02" timeout="60" export="full"><![CDATA[
+    SELECT trade_id_prefix FROM dbsystemuat.helper_fetch_tradeid_prefix_view_gpc
+  ]]></sql>
+  <expect ref="plain" rows="1" reason="the plain legacy table has one row"/>
+  <expect ref="suffixed" rows="8" reason="eight suffixed tables, one row each"/>
+  <expect ref="gpc-prefix" rows="1" reason="one prefix for gpc (rule 01 could not read it: statement needed re-preparing)"/>
+  <compress id="bundle" file="xoga750-04-legacy-valuation-tables.zip"><include ref="plain"/><include ref="suffixed"/><include ref="gpc-prefix"/></compress>
+</rules>
