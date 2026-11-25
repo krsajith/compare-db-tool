@@ -74,7 +74,7 @@
              WHEN seq.bu IS NULL AND coalesce(used.ids_rows, 0) > 0 THEN 'NO_COUNTER_ROW'
              WHEN seq.bu IS NULL THEN 'NO_COUNTER_ROW_NO_DATA'
              WHEN used.max_suffix IS NULL THEN 'NO_DATA'
-             WHEN seq.last_sequence_id - used.max_suffix < -(:guard) THEN 'BEHIND_OVER_GUARD'
+             WHEN used.max_suffix - seq.last_sequence_id > CAST(:guard AS bigint) THEN 'BEHIND_OVER_GUARD'
              WHEN seq.last_sequence_id < used.max_suffix THEN 'BEHIND'
              ELSE 'OK'
            END AS status
