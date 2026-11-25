@@ -1,0 +1,85 @@
+<rules name="schema-02-structure-dev-vs-uat">
+  <!--
+    Question: do dev and UAT hold the same database objects? One row per object (table columns, view, function, trigger,
+    index, constraint) with a hash of its definition, compared by kind and name. Catalog reads only, no table data.
+    Found on 25 Nov 2026 on restored copies: dev lacks 26 triggers and 98 indexes that UAT has.
+    The hash is taken from the catalog (pg_get_*def), so the same object gives the same hash on both sides.
+    Use: compare.ps1 with the rules flag pointing at this file and the export flag set to none.
+  -->
+  <parameters>
+    <param name="schema" type="string" value="opera"/>
+  </parameters>
+
+  <sql id="dev" db="postgres-dev" timeout="300"><![CDATA[
+    SELECT 'table' AS kind, c.relname AS name,
+           md5(string_agg(a.attname || ':' || format_type(a.atttypid, a.atttypmod) || ':' || a.attnotnull::text || ':' || coalesce(pg_get_expr(ad.adbin, ad.adrelid), ''), ',' ORDER BY a.attnum)) AS def_hash
+    FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
+    LEFT JOIN pg_attrdef ad ON ad.adrelid = c.oid AND ad.adnum = a.attnum
+    WHERE n.nspname = :schema AND c.relkind IN ('r', 'p') AND NOT c.relispartition
+    GROUP BY c.relname
+    UNION ALL
+    SELECT 'view', c.relname, md5(pg_get_viewdef(c.oid))
+    FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = :schema AND c.relkind IN ('v', 'm')
+    UNION ALL
+    SELECT 'function', p.proname || '(' || pg_get_function_identity_arguments(p.oid) || ')', md5(pg_get_functiondef(p.oid))
+    FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+    WHERE n.nspname = :schema AND p.prokind IN ('f', 'p')
+    UNION ALL
+    SELECT 'trigger', c.relname || '.' || t.tgname, md5(pg_get_triggerdef(t.oid))
+    FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = :schema AND NOT t.tgisinternal AND NOT c.relispartition
+    UNION ALL
+    SELECT 'index', ic.relname, md5(pg_get_indexdef(i.indexrelid))
+    FROM pg_index i JOIN pg_class ic ON ic.oid = i.indexrelid JOIN pg_class c ON c.oid = i.indrelid JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = :schema AND NOT c.relispartition
+    UNION ALL
+    SELECT 'constraint', c.relname || '.' || k.conname, md5(pg_get_constraintdef(k.oid))
+    FROM pg_constraint k JOIN pg_class c ON c.oid = k.conrelid JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = :schema AND NOT c.relispartition AND k.contype <> 't'
+  ]]></sql>
+
+  <sql id="uat" db="postgres-uat" timeout="300"><![CDATA[
+    SELECT 'table' AS kind, c.relname AS name,
+           md5(string_agg(a.attname || ':' || format_type(a.atttypid, a.atttypmod) || ':' || a.attnotnull::text || ':' || coalesce(pg_get_expr(ad.adbin, ad.adrelid), ''), ',' ORDER BY a.attnum)) AS def_hash
+    FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
+    LEFT JOIN pg_attrdef ad ON ad.adrelid = c.oid AND ad.adnum = a.attnum
+    WHERE n.nspname = :schema AND c.relkind IN ('r', 'p') AND NOT c.relispartition
+    GROUP BY c.relname
+    UNION ALL
+    SELECT 'view', c.relname, md5(pg_get_viewdef(c.oid))
+    FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = :schema AND c.relkind IN ('v', 'm')
+    UNION ALL
+    SELECT 'function', p.proname || '(' || pg_get_function_identity_arguments(p.oid) || ')', md5(pg_get_functiondef(p.oid))
+    FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+    WHERE n.nspname = :schema AND p.prokind IN ('f', 'p')
+    UNION ALL
+    SELECT 'trigger', c.relname || '.' || t.tgname, md5(pg_get_triggerdef(t.oid))
+    FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = :schema AND NOT t.tgisinternal AND NOT c.relispartition
+    UNION ALL
+    SELECT 'index', ic.relname, md5(pg_get_indexdef(i.indexrelid))
+    FROM pg_index i JOIN pg_class ic ON ic.oid = i.indexrelid JOIN pg_class c ON c.oid = i.indrelid JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = :schema AND NOT c.relispartition
+    UNION ALL
+    SELECT 'constraint', c.relname || '.' || k.conname, md5(pg_get_constraintdef(k.oid))
+    FROM pg_constraint k JOIN pg_class c ON c.oid = k.conrelid JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = :schema AND NOT c.relispartition AND k.contype <> 't'
+  ]]></sql>
+
+  <compare id="structure" source="dev" target="uat" export="full">
+    <key columns="kind,name"/>
+    <breakdown columns="kind" top="10"/>
+  </compare>
+
+  <expect ref="structure" only-source="0" reason="every object in dev should also be in UAT (dev and UAT are supposed to be the same)"/>
+  <expect ref="structure" only-target="0" reason="every object in UAT should also be in dev (dev lost triggers and indexes in the last migration)"/>
+  <expect ref="structure" different="0" reason="same object, same definition"/>
+
+  <compress id="bundle" file="schema-02-structure-dev-vs-uat.zip"><include ref="structure"/></compress>
+</rules>
