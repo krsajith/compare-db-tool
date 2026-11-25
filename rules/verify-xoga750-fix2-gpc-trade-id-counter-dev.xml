@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rules name="verify-xoga750-fix2-gpc-trade-id-counter-dev">
+  <!-- After fix 2 on dev: GPC has one format row and one sequence row linked to it, counter 54983, and the lookups of reserveTradeIds
+       find exactly one row for gpc. The next GPC run must start at prefix plus 54984. -->
+  <sql id="gpc-sequence" db="postgres-dev" timeout="60" export="full"><![CDATA[
+    SELECT s.sequence_criteria ->> 'businessUnit' AS business_unit, s.last_sequence_id, s.start_value, s.end_value, s.sequence_type,
+           s.parent_uuid, s.sequence_criteria::text AS sequence_criteria_json,
+           (SELECT count(*) FROM opera.oga_configservice_transactionidformatmaster f
+             WHERE f.tenant_id = s.tenant_id AND f.uuid::text = s.parent_uuid AND f.transaction_type = 'tradeId') AS parent_is_tradeid_format
+    FROM opera.oga_transaction_id_sequence_criteria s
+    WHERE s.tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND s.sequence_criteria ->> 'businessUnit' ILIKE 'gpc'
+  ]]></sql>
+  <sql id="gpc-format" db="postgres-dev" timeout="60" export="full"><![CDATA[
+    SELECT f.uuid, f.name, f.transaction_type, f.reference_format, f.number_of_digits, f.reset_value, f.transaction_sequence_criteria::text AS criteria_json, f.created_timestamp
+    FROM opera.oga_configservice_transactionidformatmaster f
+    WHERE f.tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND f.created_by = 'xoga750-gpc'
+  ]]></sql>
+  <sql id="newest-format" db="postgres-dev" timeout="60" export="full"><![CDATA[
+    SELECT f.uuid, f.created_by, f.created_timestamp
+    FROM opera.oga_configservice_transactionidformatmaster f
+    WHERE f.tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND f.transaction_type = 'tradeId'
+    ORDER BY f.created_timestamp DESC LIMIT 1
+  ]]></sql>
+  <sql id="counters-others" db="postgres-dev" timeout="60" export="full"><![CDATA[
+    SELECT s.sequence_criteria ->> 'businessUnit' AS business_unit, s.last_sequence_id, s.updated_by, s.updated_timestamp
+    FROM opera.oga_transaction_id_sequence_criteria s
+    WHERE s.tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND s.sequence_criteria ->> 'businessUnit' NOT ILIKE 'gpc'
+    ORDER BY 1
+  ]]></sql>
+  <expect ref="gpc-sequence" rows="1" reason="reserveTradeIds needs exactly one sequence row for gpc"/>
+  <expect ref="gpc-sequence" column="last_sequence_id" equals="54983" reason="the next id is 54984, the first id old Opera gave"/>
+  <expect ref="gpc-sequence" column="parent_is_tradeid_format" equals="1" reason="the parent is a tradeId format row, as for the other business units"/>
+  <expect ref="gpc-format" rows="1" reason="one format row was added"/>
+  <expect expr="#q('newest-format').first.created_by != 'xoga750-gpc'" reason="the added GPC format row must not become the newest one (the service takes the newest format row for its digit count)"/>
+  <compress id="bundle" file="verify-xoga750-fix2-gpc-trade-id-counter-dev.zip">
+    <include ref="gpc-sequence"/><include ref="gpc-format"/><include ref="newest-format"/><include ref="counters-others"/>
+  </compress>
+</rules>
