@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rules name="xoga750-03-run-history-and-steps">
+  <!--
+    XOGA-750, check 3 of 3. What did the tester's new Opera runs actually do, step by step?
+
+    Why: the old Web XTR output is a subset of the new one and 25 HGill, 3 PPatil and 2 ASharma extra rows have users
+    that are in both outputs, so the alias master alone does not explain them. One explanation to prove or drop: the old
+    run read an earlier export of the fills file. The upload history shows which file names and dates the new runs
+    received; the step log shows the row count after each step (input, output, rejected) so the first step that
+    adds rows can be named instead of guessed. The error log can hold the reason the trade id reservation failed.
+
+    Reads (tenant_id first, time window from :since):
+      runs     upload history rows whose processing type, position or import name mentions xtr, gpc or neovest:
+               who, when, status, original file name, data date
+      steps    every step of the executions that contain a step with xtr, gpc, alias, trade, consolidat or resolve in
+               its name: execution id, step number and name, rows in and out, rejected, warnings, duration
+      errors   error log rows in the window that mention sequence, trade, prefix, master, alias, gpc or xtr
+    Read steps by execution id, newest first. The Web XTR run to look at has the 05 Nov fills file as its input.
+    The processing type texts are not known to me, so runs uses a broad text match; narrow it after the first run.
+  -->
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+    <param name="since" type="date" value="2026-11-20"/>
+  </parameters>
+
+  <sql id="runs" db="target" timeout="120" export="full"><![CDATA[
+    SELECT h.processing_type, h.position, h.import_as, h.status, h.username, h.uploaded_by, h.start_time, h.completion_time,
+           h.upload_data_date, h.upload_for, h.original_file_name, h.file_name, h.file_size
+    FROM opera.oga_bulk_upload_history h
+    WHERE h.tenant_id = :tenant AND h.start_time >= :since
+      AND lower(coalesce(h.processing_type, '') || ' ' || coalesce(h.position, '') || ' ' || coalesce(h.import_as, ''))
+          LIKE ANY (ARRAY['%xtr%', '%gpc%', '%neovest%'])
+    ORDER BY h.start_time DESC
+    LIMIT 200
+  ]]></sql>
+
+  <sql id="steps" db="target" timeout="180" export="full"><![CDATA[
+    WITH ex AS (
+      SELECT DISTINCT l.execution_id
+      FROM opera.pipeline_execution_step_log l
+      WHERE l.tenant_id = :tenant AND l.created_timestamp >= :since
+        AND lower(l.step_name) LIKE ANY (ARRAY['%xtr%', '%gpc%', '%alias%', '%trade%', '%consolidat%', '%resolve%'])
+    )
+    SELECT l.execution_id, l.created_timestamp, l.step_number, l.step_type, l.step_name, l.input_row_count, l.output_row_count,
+           l.rejected_row_count, l.warning_count, l.execution_duration, l.step_status
+    FROM opera.pipeline_execution_step_log l
+    JOIN ex ON ex.execution_id = l.execution_id
+    WHERE l.tenant_id = :tenant
+    ORDER BY l.created_timestamp DESC, l.execution_id, l.step_number
+    LIMIT 1500
+  ]]></sql>
+
+  <sql id="errors" db="target" timeout="120" export="full"><![CDATA[
+    SELECT e.execution_id, e.created_timestamp, e.step_number, e.row_number, e.error_code, e.error_message, e.root_cause, e.suggested_action
+    FROM opera.pipeline_execution_error_log e
+    WHERE e.tenant_id = :tenant AND e.created_timestamp >= :since
+      AND lower(coalesce(e.error_message, '') || ' ' || coalesce(e.root_cause, ''))
+          LIKE ANY (ARRAY['%sequence%', '%trade%', '%prefix%', '%master%', '%alias%', '%gpc%', '%xtr%'])
+    ORDER BY e.created_timestamp DESC
+    LIMIT 200
+  ]]></sql>
+
+  <expect ref="runs" rows=">=1" reason="the tester ran Web XTR and GPC Trade after :since"/>
+  <expect ref="steps" rows=">=1" reason="each run writes step log rows"/>
+
+  <compress id="bundle" file="xoga750-03-run-history-and-steps.zip">
+    <include ref="runs"/><include ref="steps"/><include ref="errors"/>
+  </compress>
+</rules>

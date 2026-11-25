@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rules name="xoga750-02-masters-and-config">
+  <!--
+    XOGA-750, check 2 of 3. Which master files and which reference config does the new Web XTR and GPC Trade run use,
+    and are they the files old Opera used?
+
+    Evidence so far (measured from the attachments and the legacy folder, 25 Nov 2026):
+      Web XTR: the new output has CFS rows for CurrentUser SSundaram (123 rows) and ig (6 rows); the old output has none.
+        filter-by-alias.js keeps a fill when CurrentUser starts with an alias of the BU in the alias master
+        (legacy generate_Future_XTR_Fills.m lines 71-90, same rule: strncmpi). The only legacy copy we hold
+        (Web XTR master folder, 13 Nov) lists SSundaram for CFS but not ASharma or PPatil, yet the old output
+        has ASharma and PPatil rows. So the legacy server master of 6 Nov is a third version we have not seen,
+        and the new master is a fourth. This rule fetches the new one exactly.
+      GPC Trade: 8 rows (AG-PAL-DCE, GTJA 86801008, lots +1 or -1) have Portfolio blank in old and
+        PALM CHINA-SHANGHAI 5-HEDGE in new. Legacy master sheet Portfolio_Mapping says PALM CHINA-SHANGHAI 5
+        for account Jimmy08GTJA. The new document may hold other names.
+
+    What it returns (read only, tenant_id first):
+      config-refs    the pipeline configs that use gpcTrade or aliasMaster: BU, and the referenceRegistry text
+                     (which document, which sheet, which query the run reads)
+      master-docs    the candidate master documents in the document repository: name, application, date, size,
+                     storage type, md5 (compare the md5 with the legacy file md5 to see whether it is the same file)
+      master-content the newest copy of each key master as base64 text in one column. Decode it to the xlsx
+                     with a small script on the output csv; if storage_type is not database the column is empty and the
+                     object_key shows where the file lives.
+    Run it for postgres-dev and postgres-uat (target-env flag) and compare the md5 and sizes between the two.
+    Legacy copies on this machine: Web XTR master folder and GPC master folder under the OneDrive MATLAB-Files tree.
+  -->
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+    <param name="maxDocBytes" type="integer" value="3000000"/>
+  </parameters>
+
+  <sql id="config-refs" db="target" timeout="120" export="full"><![CDATA[
+    SELECT c.template_name, c.template_type, c.status, c.created_timestamp,
+           c.rule_data #>> '{workflowConfig,buName}' AS config_bu_name,
+           jsonb_pretty(c.rule_data -> 'referenceRegistry') AS reference_registry
+    FROM opera.oga_configservice_uploadrules c
+    WHERE c.tenant_id = :tenant AND c.code = 'PIPELINE CONFIG'
+      AND (c.rule_data::text ILIKE '%gpcTrade%' OR c.rule_data::text ILIKE '%aliasMaster%'
+           OR c.rule_data::text ILIKE '%valuationDate%' OR c.rule_data::text ILIKE '%assignTradeIds%')
+    ORDER BY c.template_name, c.created_timestamp DESC
+  ]]></sql>
+
+  <sql id="master-docs" db="target" timeout="180" export="full"><![CDATA[
+    SELECT d.document_name, d.business_application_name, d.created_timestamp, d.updated_timestamp, d.storage_type,
+           d.object_key, d.size_bytes, length(d.document) AS db_bytes, md5(d.document) AS db_md5, d.mime_type
+    FROM opera.oga_document_repository d
+    WHERE d.tenant_id = :tenant
+      AND (lower(d.document_name) LIKE '%currentuser%' OR lower(d.document_name) LIKE '%alias%master%'
+           OR lower(d.document_name) LIKE '%missingdeals%' OR lower(d.document_name) LIKE '%missing deals%'
+           OR lower(d.document_name) LIKE '%gpc%' OR lower(d.document_name) LIKE '%xtrfills%'
+           OR lower(d.document_name) LIKE '%rov%missing%')
+    ORDER BY lower(d.document_name), d.created_timestamp DESC
+  ]]></sql>
+
+  <sql id="master-content" db="target" timeout="300" export="full"><![CDATA[
+    SELECT DISTINCT ON (lower(d.document_name))
+           d.document_name, d.business_application_name, d.created_timestamp, d.storage_type, d.object_key,
+           length(d.document) AS db_bytes, md5(d.document) AS db_md5,
+           CASE WHEN length(d.document) <= :maxDocBytes THEN replace(encode(d.document, 'base64'), chr(10), '') END AS content_base64
+    FROM opera.oga_document_repository d
+    WHERE d.tenant_id = :tenant
+      AND (lower(d.document_name) LIKE '%currentuser%' OR lower(d.document_name) LIKE '%missingdeals%'
+           OR lower(d.document_name) LIKE '%missing deals%' OR lower(d.document_name) LIKE '%gpc%'
+           OR lower(d.document_name) LIKE '%xtrfills%')
+    ORDER BY lower(d.document_name), d.created_timestamp DESC
+  ]]></sql>
+
+  <expect ref="config-refs" rows=">=2" reason="at least the Web XTR and the GPC Trade config exist"/>
+  <expect ref="master-docs" rows=">=3" reason="the alias master, a missing deals master and the GPC master should be in the repository"/>
+  <expect ref="master-content" rows=">=3" reason="one newest copy per master name"/>
+
+  <compress id="bundle" file="xoga750-02-masters-and-config.zip">
+    <include ref="config-refs"/><include ref="master-docs"/><include ref="master-content"/>
+  </compress>
+</rules>

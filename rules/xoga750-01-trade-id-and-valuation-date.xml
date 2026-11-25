@@ -1,0 +1,149 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rules name="xoga750-01-trade-id-and-valuation-date">
+  <!--
+    XOGA-750, checks 1 of 3. Two symptoms in the GPC Trade output of the new Opera:
+      (a) Transaction Date is 2026-11-20, old Opera gave 2026-11-05;
+      (b) TRN and Parent TRN are TRN000001 and up, old Opera gave TR-FY-2026-54984 and up.
+
+    Code facts (read, oga-opera-bulk-uploader-service, web-xtr capability folder):
+      gpc-trade.js line 583 and 622: with a fill file the date is settlement_date of the valuation date reference
+        (legacy run_GPC_Trade_Parcer_web.m lines 908-913: select settlement_date from valuation_date_table).
+      assign-trade-ids.js line 26: TRN000001 is the fallback used only when reserveTradeIds throws.
+      trade-id-service.js: reads the format master (transaction type tradeId), the prefix from
+        helper_fetch_tradeid_prefix_view (tenant plus BU, then unfiltered, then public), then locks the row of
+        oga_transaction_id_sequence_criteria with parent_uuid = format uuid and sequence_criteria businessUnit ILIKE the BU;
+        if none, the same by tenant; if none, it throws "No sequence row found" and the fallback ids are used.
+      The BU is the buName of the request, default cfs (etl-pipeline-service.js line 1354) unless the config names one.
+      Legacy getLastTradeId.m: prefix from helper_fetch_tradeid_prefix_view_<bu>, last id = max numeric suffix of
+        trade_id like prefix in cloned_deal_ticket_table_<bu>; new ids start at that max plus 1. No counter table.
+
+    Questions answered here (read only, tenant_id first in every PostgreSQL filter):
+      valdate-new      valuation and settlement date per BU on the target (what the date reference reads)
+      valdate-gpc-old  the same for gpc in legacy
+      format-master    the tradeId format row(s): digits, reset value
+      prefix-new       prefix per BU from the view the service reads, and the mapping rows behind it
+      sequence-new     every sequence criteria row, and whether its parent_uuid points at a tradeId format row
+      resolver-new     per BU: how many rows each lookup path of the service finds (it needs exactly one)
+      probe-ids-new    do the old Opera ids already exist as trades on the target
+      prefix-old       legacy prefix for gpc
+      Deep checks, off by default (:deep=true), because trade tables hold tens of millions of rows:
+      max-suffix-new   highest numeric suffix per BU on the target
+      max-suffix-old   the same for gpc in legacy (cloned_deal_ticket_table_gpc)
+
+    Run: compare.ps1 with the rules file, and the target-env flag set to postgres-uat or postgres-dev
+    Deep: add the param flag deep=true
+    Legacy queries use mysql-oprdb02. The tenant is the dev and UAT tenant. Use :gpcBu for the BU spelling you want to test.
+  -->
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+    <param name="gpcBu" type="string" value="gpc"/>
+    <param name="cfsBu" type="string" value="cfs"/>
+    <param name="fy" type="string" value="TR-FY-2026-"/>
+    <param name="oldFirstGpc" type="string" value="TR-FY-2026-54984"/>
+    <param name="oldLastGpc" type="string" value="TR-FY-2026-55302"/>
+    <param name="oldFirstCfs" type="string" value="TR-FY-2026-951622"/>
+    <param name="deep" type="boolean" value="false"/>
+  </parameters>
+
+  <sql id="valdate-new" db="target" timeout="60" export="full"><![CDATA[
+    SELECT business_unit, value_date, settlement_date, date_id, updated_by, updated_timestamp, created_timestamp
+    FROM opera.valuation_date_table
+    WHERE tenant_id = :tenant
+    ORDER BY business_unit
+  ]]></sql>
+
+  <sql id="valdate-gpc-old" db="mysql-oprdb02" timeout="60" export="full"><![CDATA[
+    SELECT date_id, value_date, settlement_date FROM valuation_date_table_gpc
+  ]]></sql>
+
+  <sql id="format-master" db="target" timeout="60" export="full"><![CDATA[
+    SELECT uuid, name, transaction_type, reference_format, number_of_digits, reset_value, transaction_status, created_timestamp
+    FROM opera.oga_configservice_transactionidformatmaster
+    WHERE tenant_id = :tenant AND transaction_type = 'tradeId'
+    ORDER BY created_timestamp DESC
+  ]]></sql>
+
+  <sql id="prefix-new" db="target" timeout="60" export="full"><![CDATA[
+    SELECT 'view' AS source, v.business_unit, v.trade_id_prefix, NULL AS financial_year
+    FROM opera.helper_fetch_tradeid_prefix_view v
+    WHERE v.tenant_id = :tenant
+    UNION ALL
+    SELECT 'mapping' AS source, NULL AS business_unit, m.trade_id_prefix, m.financial_year
+    FROM opera.financial_year_trade_id_mapping_table m
+    WHERE m.tenant_id = :tenant
+    UNION ALL
+    SELECT 'financial_year' AS source, NULL AS business_unit, NULL AS trade_id_prefix,
+           f.financial_year || ' ' || f.start_date::text || ' to ' || f.end_date::text AS financial_year
+    FROM opera.financial_year_table f
+    WHERE f.tenant_id = :tenant
+    ORDER BY 1, 2, 4
+  ]]></sql>
+
+  <sql id="prefix-old" db="mysql-oprdb02" timeout="60" export="full"><![CDATA[
+    SELECT trade_id_prefix FROM helper_fetch_tradeid_prefix_view_gpc
+  ]]></sql>
+
+  <sql id="sequence-new" db="target" timeout="60" export="full"><![CDATA[
+    SELECT s.sequence_criteria ->> 'businessUnit' AS business_unit, s.last_sequence_id, s.start_value, s.end_value,
+           s.sequence_type, s.parent_uuid,
+           (SELECT count(*) FROM opera.oga_configservice_transactionidformatmaster f
+             WHERE f.tenant_id = s.tenant_id AND f.uuid::text = s.parent_uuid AND f.transaction_type = 'tradeId') AS parent_is_tradeid_format,
+           s.updated_by, s.updated_timestamp, s.created_timestamp, s.uuid
+    FROM opera.oga_transaction_id_sequence_criteria s
+    WHERE s.tenant_id = :tenant
+    ORDER BY 1, s.created_timestamp DESC
+  ]]></sql>
+
+  <sql id="resolver-new" db="target" timeout="60" export="full"><![CDATA[
+    SELECT b.business_unit,
+           (SELECT count(*) FROM opera.helper_fetch_tradeid_prefix_view p
+             WHERE p.tenant_id = :tenant AND upper(p.business_unit) = upper(b.business_unit)) AS prefix_rows,
+           (SELECT count(*) FROM opera.oga_transaction_id_sequence_criteria s
+             JOIN opera.oga_configservice_transactionidformatmaster f
+               ON f.uuid::text = s.parent_uuid AND f.tenant_id = s.tenant_id AND f.transaction_type = 'tradeId'
+             WHERE s.tenant_id = :tenant AND s.sequence_criteria ->> 'businessUnit' ILIKE b.business_unit) AS sequence_rows_via_format,
+           (SELECT count(*) FROM opera.oga_transaction_id_sequence_criteria s
+             WHERE s.tenant_id = :tenant AND s.sequence_criteria ->> 'businessUnit' ILIKE b.business_unit) AS sequence_rows_via_tenant
+    FROM (SELECT DISTINCT business_unit FROM opera.valuation_date_table WHERE tenant_id = :tenant) b
+    ORDER BY b.business_unit
+  ]]></sql>
+
+  <sql id="probe-ids-new" db="target" timeout="120" export="full"><![CDATA[
+    SELECT trade_id, business_unit, count(*) AS rows_found, max(version_no) AS max_version
+    FROM opera.deal_ticket_table
+    WHERE tenant_id = :tenant AND trade_id IN (:oldFirstGpc, :oldLastGpc, :oldFirstCfs)
+    GROUP BY trade_id, business_unit
+    ORDER BY trade_id, business_unit
+  ]]></sql>
+
+  <sql id="max-suffix-new" db="target" when="#deep" timeout="600" export="full"><![CDATA[
+    SELECT upper(business_unit) AS business_unit, count(*) AS numeric_ids,
+           max(substr(trade_id, length(:fy) + 1)::bigint) AS max_suffix
+    FROM opera.deal_ticket_table
+    WHERE tenant_id = :tenant AND upper(business_unit) IN (upper(:gpcBu), upper(:cfsBu))
+      AND trade_id ~ '^TR-FY-2026-[0-9]+$'
+    GROUP BY upper(business_unit)
+    ORDER BY 1
+  ]]></sql>
+
+  <sql id="max-suffix-old" db="mysql-oprdb02" when="#deep" timeout="600" export="full"><![CDATA[
+    SELECT count(*) AS numeric_ids, max(cast(mid(trade_id, 12) AS unsigned)) AS max_suffix
+    FROM cloned_deal_ticket_table_gpc
+    WHERE trade_id LIKE 'TR-FY-2026-%' AND mid(trade_id, 12) REGEXP '^[0-9]+$'
+  ]]></sql>
+
+  <expect ref="valdate-new" rows=">=1" reason="the date reference reads this table; it must have the BUs"/>
+  <expect ref="format-master" rows="1" reason="the service takes the newest tradeId format row; one row is the clean state"/>
+  <expect ref="prefix-old" rows="1" reason="legacy gives one prefix for gpc"/>
+  <expect expr="#size(#rows('resolver-new').?[#lower(business_unit) == 'gpc']) == 1" reason="gpc must be a BU in the valuation date table, else the GPC run has no date for it"/>
+  <expect expr="#size(#rows('resolver-new').?[#lower(business_unit) == 'gpc' and sequence_rows_via_tenant == 1]) == 1" reason="reserveTradeIds needs exactly one sequence row for gpc; 0 gives the fallback TRN000001"/>
+  <expect expr="#size(#rows('resolver-new').?[#lower(business_unit) == 'cfs' and sequence_rows_via_tenant == 1]) == 1" reason="the CFS dump also shows TRN000001, so cfs is checked the same way"/>
+  <expect expr="#size(#rows('resolver-new').?[#lower(business_unit) == 'gpc' and prefix_rows == 1]) == 1" reason="one prefix row for gpc in the view the service reads"/>
+
+  <compress id="bundle" file="xoga750-01-trade-id-and-valuation-date.zip">
+    <include ref="valdate-new"/><include ref="valdate-gpc-old"/><include ref="format-master"/>
+    <include ref="prefix-new"/><include ref="prefix-old"/><include ref="sequence-new"/>
+    <include ref="resolver-new"/><include ref="probe-ids-new"/>
+    <include ref="max-suffix-new"/><include ref="max-suffix-old"/>
+  </compress>
+</rules>
