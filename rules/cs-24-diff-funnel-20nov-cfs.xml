@@ -1,0 +1,115 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 20-Nov-2026 comparison_report: 12 clients differ out of 165. Non-template groups only:
+       B  FX swap price 4th decimal   GBS, SOR, ORM  (old 5.8430 / 6.0096, new 5.8429 / 6.0097)
+       C  cent in GRAND TOTAL         BUE            (old 1,475,936.97, new 1,475,936.96)
+       D  SMH_OU_056/057/060 product printed OU (old) vs OR (new)
+     Reads the NEW side only (legacy cache holds one date, today, so it cannot show 20-Nov).
+     Step 1 is a freshness check: if the cache is not on the value date, every later number is
+     of another date and the rule FAILS on purpose.
+     Client rounding workbook: swap and FX MTM rounded per trade (2 dp), FX prices per trade (4 dp),
+     then consolidate (8 dp), totals = sum of rounded values. Query C shows which order gives .97. -->
+<rules name="cs-24-diff-funnel-20nov-cfs">
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+    <param name="valueDate" type="date" value="2026-11-20"/>
+    <param name="fxClients" type="string" value="GBS,SOR,ORM"/>
+    <param name="totalClient" type="string" value="BUE"/>
+    <param name="smhClient" type="string" value="SMH"/>
+  </parameters>
+
+  <!-- 1. freshness: cache date and valuation date of the CFS BU -->
+  <sql id="fresh" db="target" timeout="120" export="full"><![CDATA[
+SELECT c.rows_in_cache, c.min_value_date, c.max_value_date,
+       v.valuation_value_date,
+       CASE WHEN c.min_value_date = :valueDate AND c.max_value_date = :valueDate THEN 1 ELSE 0 END AS cache_on_value_date
+FROM (SELECT count(*) AS rows_in_cache, min(value_date) AS min_value_date, max(value_date) AS max_value_date
+      FROM opera.helper_client_statement_report_view_cache_table
+      WHERE tenant_id = :tenant AND upper(business_unit) = 'CFS') c
+CROSS JOIN (SELECT max(value_date) AS valuation_value_date
+            FROM opera.valuation_date_table
+            WHERE tenant_id = :tenant AND upper(business_unit) = 'CFS') v
+  ]]></sql>
+
+  <!-- 2. group B: every FX leg of the three clients, price at full precision and the 4 dp results of each method -->
+  <sql id="fxlegs" db="target" timeout="300" export="full" after="fresh"><![CDATA[
+SELECT upper(split_part(c.contract_number, '_', 1)) AS client,
+       c.contract_number, c.trade_id, c.derivative_type, c.instrument, c.market_action,
+       c.active_lots, c.settlement_date, c.fixing_date,
+       c.traded_price::text                                  AS cache_price_text,
+       dp.premium::text                                      AS deal_ticket_price_text,
+       cd.premium::text                                      AS clone_price_text,
+       round(c.traded_price::numeric, 4)                     AS r4_half_away_decimal,
+       (floor(c.traded_price * 10000 + 0.5) / 10000)::numeric(18,4) AS r4_matlab_product,
+       round(c.traded_price::numeric, 4) <> (floor(c.traded_price * 10000 + 0.5) / 10000)::numeric(18,4) AS methods_differ,
+       c.settle_price, c.mtm_nc, c.mtm_usd, c.fx_nc_factor
+FROM opera.helper_client_statement_report_view_cache_table c
+LEFT JOIN (SELECT trade_id, max(premium) AS premium, count(DISTINCT premium) AS n
+           FROM opera.deal_ticket_table
+           WHERE tenant_id = :tenant AND is_latest_version = 1 AND premium IS NOT NULL
+           GROUP BY trade_id) dp ON dp.trade_id = c.trade_id
+LEFT JOIN (SELECT trade_id, max(premium) AS premium
+           FROM opera.cloned_deal_ticket_table
+           WHERE tenant_id = :tenant AND is_latest_version = 1
+           GROUP BY trade_id) cd ON cd.trade_id = c.trade_id
+WHERE c.tenant_id = :tenant AND upper(c.business_unit) = 'CFS'
+  AND c.derivative_type LIKE 'fx_forward%'
+  AND upper(split_part(c.contract_number, '_', 1)) = ANY (string_to_array(:fxClients, ','))
+ORDER BY client, c.contract_number, c.trade_id
+  ]]></sql>
+
+  <!-- 3. group C: BUE by derivative type: exact sum, sum of per-leg 2 dp (workbook), rounded exact sum (legacy main source) -->
+  <sql id="buetotals" db="target" timeout="300" export="full" after="fresh"><![CDATA[
+SELECT c.derivative_type, count(*) AS legs,
+       sum(c.mtm_usd)                              AS sum_exact,
+       round(sum(c.mtm_usd)::numeric, 2)           AS rounded_sum,
+       sum(round(c.mtm_usd::numeric, 2))           AS sum_of_leg_rounded,
+       sum(round(c.mtm_usd::numeric, 2)) - round(sum(c.mtm_usd)::numeric, 2) AS diff_leg_vs_sum,
+       sum(c.mkt_value_usd)                        AS sum_mkt_value_usd,
+       sum(c.premium_paid_usd)                     AS sum_premium_paid_usd
+FROM opera.helper_client_statement_report_view_cache_table c
+WHERE c.tenant_id = :tenant AND upper(c.business_unit) = 'CFS'
+  AND upper(split_part(c.contract_number, '_', 1)) = upper(:totalClient)
+GROUP BY c.derivative_type
+ORDER BY c.derivative_type
+  ]]></sql>
+  <sql id="buegrand" db="target" timeout="300" export="full" after="fresh"><![CDATA[
+SELECT count(*) AS legs,
+       sum(c.mtm_usd)                              AS sum_exact,
+       round(sum(c.mtm_usd)::numeric, 2)           AS rounded_sum,
+       sum(round(c.mtm_usd::numeric, 2))           AS sum_of_leg_rounded
+FROM opera.helper_client_statement_report_view_cache_table c
+WHERE c.tenant_id = :tenant AND upper(c.business_unit) = 'CFS'
+  AND upper(split_part(c.contract_number, '_', 1)) = upper(:totalClient)
+  ]]></sql>
+
+  <!-- 4. group D: SMH legs, which field carries OU / OR -->
+  <sql id="smhlegs" db="target" timeout="300" export="full" after="fresh"><![CDATA[
+SELECT c.contract_number, c.trade_id, c.derivative_type, c.product_code, c.instrument,
+       c.subportfolio, c.contract_month, c.underlying1_id, c.underlying2_id, c.active_lots,
+       s.product_code AS security_product_code, s.underlying1_id AS security_underlying1,
+       p.invenio_product_code, p.bbg_product_code, p.product_name, p.lot_mult, p.murex_mult
+FROM opera.helper_client_statement_report_view_cache_table c
+LEFT JOIN opera.cloned_security_info_table s
+       ON s.tenant_id = c.tenant_id AND s.business_unit = c.business_unit AND s.security_id = c.instrument
+LEFT JOIN opera.product_master_table p
+       ON p.tenant_id = c.tenant_id AND lower(p.invenio_product_code) = lower(c.product_code)
+WHERE c.tenant_id = :tenant AND upper(c.business_unit) = 'CFS'
+  AND upper(split_part(c.contract_number, '_', 1)) = upper(:smhClient)
+  AND c.contract_number IN ('SMH_OU_056', 'SMH_OU_057', 'SMH_OU_060')
+ORDER BY c.contract_number, c.trade_id
+  ]]></sql>
+
+  <expect ref="fresh" rows="1" reason="One cache summary row"/>
+  <expect ref="fresh" column="cache_on_value_date" equals="1" reason="Cache must be on the value date, otherwise the rest describes another day and proves nothing"/>
+  <expect ref="fxlegs" rows=">=1" reason="FX legs of GBS/SOR/ORM exist"/>
+  <expect ref="buetotals" rows=">=1" reason="BUE has legs"/>
+  <expect ref="smhlegs" rows=">=1" reason="SMH_OU legs exist"/>
+
+  <compress id="bundle" file="cs-24-diff-funnel-20nov-cfs.zip">
+    <include ref="fresh"/>
+    <include ref="fxlegs"/>
+    <include ref="buetotals"/>
+    <include ref="buegrand"/>
+    <include ref="smhlegs"/>
+  </compress>
+</rules>
