@@ -1,0 +1,108 @@
+<rules name="migration-checks-02-detail-dev-uat">
+  <!--
+    Follow-up of migration-checks-01-dev-uat: the rows behind the four FAIL results on 26 Nov 2026 (same on dev and UAT).
+    bu: per business unit in valuation_date_table, what exists (I04, I20).
+    status: status_table rows without business_unit, by tablename (I15).
+    spot: letter-case differences of spot ids against the price table (I23).
+    spellings: ids that exist in the price table in more than one spelling (I23).
+    Read only, small result sets. Use: compare.ps1 with the rules flag pointing at this file and the export flag set to none.
+  -->
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+  </parameters>
+  <sql id="bu-dev" db="postgres-dev" timeout="300" export="full"><![CDATA[
+    SELECT v.business_unit,
+           (SELECT count(*) FROM opera.valuation_date_table x WHERE x.tenant_id = :tenant AND x.business_unit = v.business_unit) AS valuation_rows,
+           EXISTS (SELECT 1 FROM opera.security_info_table s WHERE s.business_unit = v.business_unit) AS has_security_info,
+           EXISTS (SELECT 1 FROM opera.client_master_data m WHERE m.tenant_id = :tenant AND m.business_unit = v.business_unit) AS has_clients,
+           EXISTS (SELECT 1 FROM opera.latest_active_lot l WHERE l.tenant_id = :tenant AND l.business_unit = v.business_unit) AS has_active_lots,
+           EXISTS (SELECT 1 FROM opera.deal_active_lots_table d WHERE d.tenant_id = :tenant AND d.business_unit = v.business_unit) AS has_deal_lots
+    FROM (SELECT DISTINCT business_unit FROM opera.valuation_date_table WHERE tenant_id = :tenant AND business_unit IS NOT NULL) v
+    ORDER BY v.business_unit
+  ]]></sql>
+  <sql id="bu-uat" db="postgres-uat" timeout="300" export="full"><![CDATA[
+    SELECT v.business_unit,
+           (SELECT count(*) FROM opera.valuation_date_table x WHERE x.tenant_id = :tenant AND x.business_unit = v.business_unit) AS valuation_rows,
+           EXISTS (SELECT 1 FROM opera.security_info_table s WHERE s.business_unit = v.business_unit) AS has_security_info,
+           EXISTS (SELECT 1 FROM opera.client_master_data m WHERE m.tenant_id = :tenant AND m.business_unit = v.business_unit) AS has_clients,
+           EXISTS (SELECT 1 FROM opera.latest_active_lot l WHERE l.tenant_id = :tenant AND l.business_unit = v.business_unit) AS has_active_lots,
+           EXISTS (SELECT 1 FROM opera.deal_active_lots_table d WHERE d.tenant_id = :tenant AND d.business_unit = v.business_unit) AS has_deal_lots
+    FROM (SELECT DISTINCT business_unit FROM opera.valuation_date_table WHERE tenant_id = :tenant AND business_unit IS NOT NULL) v
+    ORDER BY v.business_unit
+  ]]></sql>
+  <sql id="status-dev" db="postgres-dev" timeout="300" export="full"><![CDATA[
+    SELECT tablename, status_type, status, count(*) AS rows_without_bu, min(valuation_date) AS first_value_date, max(valuation_date) AS last_value_date
+    FROM opera.status_table
+    WHERE tenant_id = :tenant AND business_unit IS NULL
+    GROUP BY tablename, status_type, status
+    ORDER BY count(*) DESC
+    LIMIT 100
+  ]]></sql>
+  <sql id="status-uat" db="postgres-uat" timeout="300" export="full"><![CDATA[
+    SELECT tablename, status_type, status, count(*) AS rows_without_bu, min(valuation_date) AS first_value_date, max(valuation_date) AS last_value_date
+    FROM opera.status_table
+    WHERE tenant_id = :tenant AND business_unit IS NULL
+    GROUP BY tablename, status_type, status
+    ORDER BY count(*) DESC
+    LIMIT 100
+  ]]></sql>
+  <sql id="spot-dev" db="postgres-dev" timeout="300" export="full"><![CDATA[
+    WITH RECURSIVE price AS (
+      SELECT (SELECT min(u.underlying_id) FROM opera.underlying_settle_value_table u WHERE u.tenant_id = :tenant) AS underlying_id
+      UNION ALL
+      SELECT (SELECT min(u.underlying_id) FROM opera.underlying_settle_value_table u WHERE u.tenant_id = :tenant AND u.underlying_id > price.underlying_id)
+      FROM price WHERE price.underlying_id IS NOT NULL)
+    SELECT 'currency_spot_mapping_table.spot' AS source, m.spot AS stored_value, p.underlying_id AS price_table_spelling, count(*) AS rows
+    FROM opera.currency_spot_mapping_table m JOIN price p ON lower(p.underlying_id) = lower(m.spot) AND p.underlying_id <> m.spot
+    WHERE m.tenant_id = :tenant GROUP BY m.spot, p.underlying_id
+    UNION ALL
+    SELECT 'product_master_table.curr_mult_factor', m.curr_mult_factor, p.underlying_id, count(*)
+    FROM opera.product_master_table m JOIN price p ON lower(p.underlying_id) = lower(m.curr_mult_factor) AND p.underlying_id <> m.curr_mult_factor
+    WHERE m.tenant_id = :tenant GROUP BY m.curr_mult_factor, p.underlying_id
+    ORDER BY 1, 2
+  ]]></sql>
+  <sql id="spot-uat" db="postgres-uat" timeout="300" export="full"><![CDATA[
+    WITH RECURSIVE price AS (
+      SELECT (SELECT min(u.underlying_id) FROM opera.underlying_settle_value_table u WHERE u.tenant_id = :tenant) AS underlying_id
+      UNION ALL
+      SELECT (SELECT min(u.underlying_id) FROM opera.underlying_settle_value_table u WHERE u.tenant_id = :tenant AND u.underlying_id > price.underlying_id)
+      FROM price WHERE price.underlying_id IS NOT NULL)
+    SELECT 'currency_spot_mapping_table.spot' AS source, m.spot AS stored_value, p.underlying_id AS price_table_spelling, count(*) AS rows
+    FROM opera.currency_spot_mapping_table m JOIN price p ON lower(p.underlying_id) = lower(m.spot) AND p.underlying_id <> m.spot
+    WHERE m.tenant_id = :tenant GROUP BY m.spot, p.underlying_id
+    UNION ALL
+    SELECT 'product_master_table.curr_mult_factor', m.curr_mult_factor, p.underlying_id, count(*)
+    FROM opera.product_master_table m JOIN price p ON lower(p.underlying_id) = lower(m.curr_mult_factor) AND p.underlying_id <> m.curr_mult_factor
+    WHERE m.tenant_id = :tenant GROUP BY m.curr_mult_factor, p.underlying_id
+    ORDER BY 1, 2
+  ]]></sql>
+  <sql id="spellings-dev" db="postgres-dev" timeout="300" export="full"><![CDATA[
+    SELECT underlying_id, count(*) AS price_rows, max(value_date) AS last_value_date
+    FROM opera.underlying_settle_value_table
+    WHERE tenant_id = :tenant AND lower(underlying_id) IN (
+      SELECT lower(spot) FROM opera.currency_spot_mapping_table WHERE tenant_id = :tenant
+      UNION SELECT lower(curr_mult_factor) FROM opera.product_master_table WHERE tenant_id = :tenant)
+    GROUP BY underlying_id HAVING lower(underlying_id) IN (
+      SELECT lower(underlying_id) FROM opera.underlying_settle_value_table WHERE tenant_id = :tenant GROUP BY lower(underlying_id) HAVING count(DISTINCT underlying_id) > 1)
+    ORDER BY lower(underlying_id), underlying_id
+  ]]></sql>
+  <sql id="spellings-uat" db="postgres-uat" timeout="300" export="full"><![CDATA[
+    SELECT underlying_id, count(*) AS price_rows, max(value_date) AS last_value_date
+    FROM opera.underlying_settle_value_table
+    WHERE tenant_id = :tenant AND lower(underlying_id) IN (
+      SELECT lower(spot) FROM opera.currency_spot_mapping_table WHERE tenant_id = :tenant
+      UNION SELECT lower(curr_mult_factor) FROM opera.product_master_table WHERE tenant_id = :tenant)
+    GROUP BY underlying_id HAVING lower(underlying_id) IN (
+      SELECT lower(underlying_id) FROM opera.underlying_settle_value_table WHERE tenant_id = :tenant GROUP BY lower(underlying_id) HAVING count(DISTINCT underlying_id) > 1)
+    ORDER BY lower(underlying_id), underlying_id
+  ]]></sql>
+  <expect ref="bu-dev" rows=">=0" reason="rows behind the check, read them"/>
+  <expect ref="bu-uat" rows=">=0" reason="rows behind the check, read them"/>
+  <expect ref="status-dev" rows=">=0" reason="rows behind the check, read them"/>
+  <expect ref="status-uat" rows=">=0" reason="rows behind the check, read them"/>
+  <expect ref="spot-dev" rows=">=0" reason="rows behind the check, read them"/>
+  <expect ref="spot-uat" rows=">=0" reason="rows behind the check, read them"/>
+  <expect ref="spellings-dev" rows=">=0" reason="rows behind the check, read them"/>
+  <expect ref="spellings-uat" rows=">=0" reason="rows behind the check, read them"/>
+  <compress id="bundle" file="migration-checks-02-detail-dev-uat.zip"><include ref="bu-dev"/><include ref="bu-uat"/><include ref="status-dev"/><include ref="status-uat"/><include ref="spot-dev"/><include ref="spot-uat"/><include ref="spellings-dev"/><include ref="spellings-uat"/></compress>
+</rules>
