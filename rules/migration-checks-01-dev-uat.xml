@@ -1,0 +1,242 @@
+<rules name="migration-checks-01-dev-uat">
+  <!--
+    Question: after a migration, does the database still show any of the problems found since September 2026?
+    One row per check (issue number from knowledge-base/migration-issues-history.md, what is checked, number of
+    offending rows, PASS or FAIL). Same query on dev and on UAT. Read only, cheap (index lookups, small tables,
+    catalog reads; the one wide scan is security_info_table, a few hundred thousand rows).
+    The catalogue with every issue, where it is checked and what is not in this rule:
+    analysis/liquibase-ref/MIGRATION_CHECK_CATALOGUE.md
+    A FAIL on I20 (latest_active_lot BU heuristic) can be a BU that really has no active lots: look at the row.
+    Use: compare.ps1 with the rules flag pointing at this file and the export flag set to none.
+  -->
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+  </parameters>
+
+  <sql id="checks-dev" db="postgres-dev" timeout="300" export="full"><![CDATA[
+    WITH RECURSIVE
+    price AS (
+      SELECT (SELECT min(u.underlying_id) FROM opera.underlying_settle_value_table u WHERE u.tenant_id = :tenant) AS underlying_id
+      UNION ALL
+      SELECT (SELECT min(u.underlying_id) FROM opera.underlying_settle_value_table u WHERE u.tenant_id = :tenant AND u.underlying_id > price.underlying_id)
+      FROM price WHERE price.underlying_id IS NOT NULL
+    ),
+    req_trig(trigger_name) AS (VALUES
+      ('deal_active_lots_table.trg_sync_latest_active_lot'),
+      ('deal_active_lots_table.trg_latest_active_lot_history_truncate'),
+      ('valuation_date_table.trg_latest_active_lot_valuation_date'),
+      ('valuation_date_table.trg_latest_active_lot_valuation_truncate'),
+      ('security_info_table.trg_populate_security_info_strikes'),
+      ('cloned_security_info_table.trg_populate_cloned_security_info_strikes'),
+      ('security_info_table.security_info_barrier_monitoring_aiu'),
+      ('deal_ticket_table.trg_deal_ticket_fxoption_maturity_date_ains'),
+      ('deal_ticket_table.trg_deal_ticket_fxoption_maturity_date_aupd'),
+      ('recon_settle_snapshot.trg_sync_market_impact_pnl_insert'),
+      ('subportfolio_product_mapping_table.subportfolio_product_mapping_bo_sync')),
+    c AS (
+      SELECT 'I09' AS issue, 'client_sub_account has rows' AS check_name,
+             CASE WHEN EXISTS (SELECT 1 FROM opera.client_sub_account WHERE tenant_id = :tenant) THEN 0 ELSE 1 END::bigint AS bad
+      UNION ALL
+      SELECT 'I07', 'client_information_table: client_business_unit filled (rows exist but none filled = 1)',
+             CASE WHEN EXISTS (SELECT 1 FROM opera.client_information_table WHERE tenant_id = :tenant)
+                   AND NOT EXISTS (SELECT 1 FROM opera.client_information_table WHERE tenant_id = :tenant AND client_business_unit IS NOT NULL) THEN 1 ELSE 0 END
+      UNION ALL
+      SELECT 'I11', 'product_master_table rows with status NULL (about 30 views filter status = Active)',
+             (SELECT count(*) FROM opera.product_master_table WHERE tenant_id = :tenant AND status IS NULL)
+      UNION ALL
+      SELECT 'I14', 'valuation_date_table rows with NULL business_unit',
+             (SELECT count(*) FROM opera.valuation_date_table WHERE tenant_id = :tenant AND business_unit IS NULL)
+      UNION ALL
+      SELECT 'I15', 'status_table rows with NULL business_unit',
+             (SELECT count(*) FROM opera.status_table WHERE tenant_id = :tenant AND business_unit IS NULL)
+      UNION ALL
+      SELECT 'I16', 'required triggers missing in the schema (count of the 11 in the list)',
+             (SELECT count(*) FROM req_trig r WHERE NOT EXISTS (
+                SELECT 1 FROM pg_trigger t JOIN pg_class k ON k.oid = t.tgrelid JOIN pg_namespace n ON n.oid = k.relnamespace
+                WHERE n.nspname = 'opera' AND NOT t.tgisinternal AND k.relname || '.' || t.tgname = r.trigger_name))
+      UNION ALL
+      SELECT 'I16', 'user triggers that are disabled',
+             (SELECT count(*) FROM pg_trigger t JOIN pg_class k ON k.oid = t.tgrelid JOIN pg_namespace n ON n.oid = k.relnamespace
+              WHERE n.nspname = 'opera' AND NOT t.tgisinternal AND t.tgenabled = 'D')
+      UNION ALL
+      SELECT 'I17', 'security_info_table: vol 1 only, strike set, strike1 NULL (strike function did not run)',
+             (SELECT count(*) FROM opera.security_info_table WHERE vol1_id IS NOT NULL AND vol2_id IS NULL AND strike IS NOT NULL AND strike1 IS NULL)
+      UNION ALL
+      SELECT 'I18', 'business_unit not UPPER in valuation_date_table, status_table, client_master_data, business_group_table',
+             (SELECT count(*) FROM opera.valuation_date_table WHERE tenant_id = :tenant AND business_unit <> upper(business_unit))
+           + (SELECT count(*) FROM opera.status_table WHERE tenant_id = :tenant AND business_unit <> upper(business_unit))
+           + (SELECT count(*) FROM opera.client_master_data WHERE tenant_id = :tenant AND business_unit <> upper(business_unit))
+           + (SELECT count(*) FROM opera.business_group_table WHERE tenant_id = :tenant AND business_unit <> upper(business_unit))
+      UNION ALL
+      SELECT 'I36', 'business_group_table group_code or group_name not UPPER',
+             (SELECT count(*) FROM opera.business_group_table WHERE tenant_id = :tenant AND (group_code <> upper(group_code) OR group_name <> upper(group_name)))
+      UNION ALL
+      SELECT 'I04', 'business units in valuation_date_table with no row in security_info_table or client_master_data (a BU the load skipped)',
+             (SELECT count(*) FROM (SELECT DISTINCT business_unit FROM opera.valuation_date_table WHERE tenant_id = :tenant AND business_unit IS NOT NULL) v
+              WHERE NOT EXISTS (SELECT 1 FROM opera.security_info_table s WHERE s.business_unit = v.business_unit)
+                 OR NOT EXISTS (SELECT 1 FROM opera.client_master_data m WHERE m.tenant_id = :tenant AND m.business_unit = v.business_unit))
+      UNION ALL
+      SELECT 'I20', 'latest_active_lot is empty',
+             CASE WHEN EXISTS (SELECT 1 FROM opera.latest_active_lot WHERE tenant_id = :tenant) THEN 0 ELSE 1 END
+      UNION ALL
+      SELECT 'I20', 'business units in valuation_date_table with no latest_active_lot row (heuristic: a BU with no active lots also counts)',
+             (SELECT count(*) FROM (SELECT DISTINCT business_unit FROM opera.valuation_date_table WHERE tenant_id = :tenant AND business_unit IS NOT NULL) v
+              WHERE NOT EXISTS (SELECT 1 FROM opera.latest_active_lot l WHERE l.tenant_id = :tenant AND l.business_unit = v.business_unit))
+      UNION ALL
+      SELECT 'I22', 'latest_active_lot.active_lots is not double precision',
+             (SELECT count(*) FROM information_schema.columns WHERE table_schema = 'opera' AND table_name = 'latest_active_lot'
+                AND column_name = 'active_lots' AND data_type <> 'double precision')
+      UNION ALL
+      SELECT 'I23', 'currency_spot_mapping_table.spot letter case differs from the price table',
+             (SELECT count(*) FROM opera.currency_spot_mapping_table m JOIN price p ON lower(p.underlying_id) = lower(m.spot) AND p.underlying_id <> m.spot WHERE m.tenant_id = :tenant)
+      UNION ALL
+      SELECT 'I23', 'product_master_table.curr_mult_factor letter case differs from the price table',
+             (SELECT count(*) FROM opera.product_master_table m JOIN price p ON lower(p.underlying_id) = lower(m.curr_mult_factor) AND p.underlying_id <> m.curr_mult_factor WHERE m.tenant_id = :tenant)
+      UNION ALL
+      SELECT 'I24', 'client_master_data.client_status in capitals (COMPLETED, PENDING)',
+             (SELECT count(*) FROM opera.client_master_data WHERE tenant_id = :tenant AND client_status IN ('COMPLETED', 'PENDING'))
+      UNION ALL
+      SELECT 'I25', 'client names or parents containing a question mark (encoding damage; a real question mark also counts)',
+             (SELECT count(*) FROM opera.client_master_data WHERE tenant_id = :tenant AND (client_name LIKE '%?%' OR counterparty_parent LIKE '%?%'))
+      UNION ALL
+      SELECT 'I27', 'recon_position_classification_input: RBA or RBC has no rows (recon fails: no effective Price/Hedge mapping)',
+             (SELECT count(*) FROM (VALUES ('RBA'), ('RBC')) b(bu)
+              WHERE NOT EXISTS (SELECT 1 FROM opera.recon_position_classification_input r WHERE r.tenant_id = :tenant AND upper(r.business_unit) = b.bu))
+      UNION ALL
+      SELECT 'I28', 'correl_product_mapping has no CFS rows (WP Greeks 0, OUAT-178)',
+             CASE WHEN EXISTS (SELECT 1 FROM opera.correl_product_mapping WHERE tenant_id = :tenant AND business_unit = 'CFS') THEN 0 ELSE 1 END
+      UNION ALL
+      SELECT 'I29', 'helper_var_mult_factor_view is empty (Combined VAR delta and gamma 0, XOGA-713)',
+             CASE WHEN EXISTS (SELECT 1 FROM opera.helper_var_mult_factor_view WHERE tenant_id = :tenant) THEN 0 ELSE 1 END
+      UNION ALL
+      SELECT 'I32', 'functions in the schema that still name opera_migration (body or search_path)',
+             (SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+              WHERE n.nspname = 'opera' AND p.prokind IN ('f', 'p')
+                AND (pg_get_functiondef(p.oid) ILIKE '%opera_migration%' OR coalesce(array_to_string(p.proconfig, ','), '') ILIKE '%opera_migration%'))
+      UNION ALL
+      SELECT 'I32', 'views in the schema that still name opera_migration',
+             (SELECT count(*) FROM pg_class k JOIN pg_namespace n ON n.oid = k.relnamespace
+              WHERE n.nspname = 'opera' AND k.relkind IN ('v', 'm') AND pg_get_viewdef(k.oid) ILIKE '%opera_migration%')
+    )
+    SELECT issue, check_name, bad, CASE WHEN bad = 0 THEN 'PASS' ELSE 'FAIL' END AS verdict
+    FROM c
+    ORDER BY issue, check_name
+  ]]></sql>
+
+  <sql id="checks-uat" db="postgres-uat" timeout="300" export="full"><![CDATA[
+    WITH RECURSIVE
+    price AS (
+      SELECT (SELECT min(u.underlying_id) FROM opera.underlying_settle_value_table u WHERE u.tenant_id = :tenant) AS underlying_id
+      UNION ALL
+      SELECT (SELECT min(u.underlying_id) FROM opera.underlying_settle_value_table u WHERE u.tenant_id = :tenant AND u.underlying_id > price.underlying_id)
+      FROM price WHERE price.underlying_id IS NOT NULL
+    ),
+    req_trig(trigger_name) AS (VALUES
+      ('deal_active_lots_table.trg_sync_latest_active_lot'),
+      ('deal_active_lots_table.trg_latest_active_lot_history_truncate'),
+      ('valuation_date_table.trg_latest_active_lot_valuation_date'),
+      ('valuation_date_table.trg_latest_active_lot_valuation_truncate'),
+      ('security_info_table.trg_populate_security_info_strikes'),
+      ('cloned_security_info_table.trg_populate_cloned_security_info_strikes'),
+      ('security_info_table.security_info_barrier_monitoring_aiu'),
+      ('deal_ticket_table.trg_deal_ticket_fxoption_maturity_date_ains'),
+      ('deal_ticket_table.trg_deal_ticket_fxoption_maturity_date_aupd'),
+      ('recon_settle_snapshot.trg_sync_market_impact_pnl_insert'),
+      ('subportfolio_product_mapping_table.subportfolio_product_mapping_bo_sync')),
+    c AS (
+      SELECT 'I09' AS issue, 'client_sub_account has rows' AS check_name,
+             CASE WHEN EXISTS (SELECT 1 FROM opera.client_sub_account WHERE tenant_id = :tenant) THEN 0 ELSE 1 END::bigint AS bad
+      UNION ALL
+      SELECT 'I07', 'client_information_table: client_business_unit filled (rows exist but none filled = 1)',
+             CASE WHEN EXISTS (SELECT 1 FROM opera.client_information_table WHERE tenant_id = :tenant)
+                   AND NOT EXISTS (SELECT 1 FROM opera.client_information_table WHERE tenant_id = :tenant AND client_business_unit IS NOT NULL) THEN 1 ELSE 0 END
+      UNION ALL
+      SELECT 'I11', 'product_master_table rows with status NULL (about 30 views filter status = Active)',
+             (SELECT count(*) FROM opera.product_master_table WHERE tenant_id = :tenant AND status IS NULL)
+      UNION ALL
+      SELECT 'I14', 'valuation_date_table rows with NULL business_unit',
+             (SELECT count(*) FROM opera.valuation_date_table WHERE tenant_id = :tenant AND business_unit IS NULL)
+      UNION ALL
+      SELECT 'I15', 'status_table rows with NULL business_unit',
+             (SELECT count(*) FROM opera.status_table WHERE tenant_id = :tenant AND business_unit IS NULL)
+      UNION ALL
+      SELECT 'I16', 'required triggers missing in the schema (count of the 11 in the list)',
+             (SELECT count(*) FROM req_trig r WHERE NOT EXISTS (
+                SELECT 1 FROM pg_trigger t JOIN pg_class k ON k.oid = t.tgrelid JOIN pg_namespace n ON n.oid = k.relnamespace
+                WHERE n.nspname = 'opera' AND NOT t.tgisinternal AND k.relname || '.' || t.tgname = r.trigger_name))
+      UNION ALL
+      SELECT 'I16', 'user triggers that are disabled',
+             (SELECT count(*) FROM pg_trigger t JOIN pg_class k ON k.oid = t.tgrelid JOIN pg_namespace n ON n.oid = k.relnamespace
+              WHERE n.nspname = 'opera' AND NOT t.tgisinternal AND t.tgenabled = 'D')
+      UNION ALL
+      SELECT 'I17', 'security_info_table: vol 1 only, strike set, strike1 NULL (strike function did not run)',
+             (SELECT count(*) FROM opera.security_info_table WHERE vol1_id IS NOT NULL AND vol2_id IS NULL AND strike IS NOT NULL AND strike1 IS NULL)
+      UNION ALL
+      SELECT 'I18', 'business_unit not UPPER in valuation_date_table, status_table, client_master_data, business_group_table',
+             (SELECT count(*) FROM opera.valuation_date_table WHERE tenant_id = :tenant AND business_unit <> upper(business_unit))
+           + (SELECT count(*) FROM opera.status_table WHERE tenant_id = :tenant AND business_unit <> upper(business_unit))
+           + (SELECT count(*) FROM opera.client_master_data WHERE tenant_id = :tenant AND business_unit <> upper(business_unit))
+           + (SELECT count(*) FROM opera.business_group_table WHERE tenant_id = :tenant AND business_unit <> upper(business_unit))
+      UNION ALL
+      SELECT 'I36', 'business_group_table group_code or group_name not UPPER',
+             (SELECT count(*) FROM opera.business_group_table WHERE tenant_id = :tenant AND (group_code <> upper(group_code) OR group_name <> upper(group_name)))
+      UNION ALL
+      SELECT 'I04', 'business units in valuation_date_table with no row in security_info_table or client_master_data (a BU the load skipped)',
+             (SELECT count(*) FROM (SELECT DISTINCT business_unit FROM opera.valuation_date_table WHERE tenant_id = :tenant AND business_unit IS NOT NULL) v
+              WHERE NOT EXISTS (SELECT 1 FROM opera.security_info_table s WHERE s.business_unit = v.business_unit)
+                 OR NOT EXISTS (SELECT 1 FROM opera.client_master_data m WHERE m.tenant_id = :tenant AND m.business_unit = v.business_unit))
+      UNION ALL
+      SELECT 'I20', 'latest_active_lot is empty',
+             CASE WHEN EXISTS (SELECT 1 FROM opera.latest_active_lot WHERE tenant_id = :tenant) THEN 0 ELSE 1 END
+      UNION ALL
+      SELECT 'I20', 'business units in valuation_date_table with no latest_active_lot row (heuristic: a BU with no active lots also counts)',
+             (SELECT count(*) FROM (SELECT DISTINCT business_unit FROM opera.valuation_date_table WHERE tenant_id = :tenant AND business_unit IS NOT NULL) v
+              WHERE NOT EXISTS (SELECT 1 FROM opera.latest_active_lot l WHERE l.tenant_id = :tenant AND l.business_unit = v.business_unit))
+      UNION ALL
+      SELECT 'I22', 'latest_active_lot.active_lots is not double precision',
+             (SELECT count(*) FROM information_schema.columns WHERE table_schema = 'opera' AND table_name = 'latest_active_lot'
+                AND column_name = 'active_lots' AND data_type <> 'double precision')
+      UNION ALL
+      SELECT 'I23', 'currency_spot_mapping_table.spot letter case differs from the price table',
+             (SELECT count(*) FROM opera.currency_spot_mapping_table m JOIN price p ON lower(p.underlying_id) = lower(m.spot) AND p.underlying_id <> m.spot WHERE m.tenant_id = :tenant)
+      UNION ALL
+      SELECT 'I23', 'product_master_table.curr_mult_factor letter case differs from the price table',
+             (SELECT count(*) FROM opera.product_master_table m JOIN price p ON lower(p.underlying_id) = lower(m.curr_mult_factor) AND p.underlying_id <> m.curr_mult_factor WHERE m.tenant_id = :tenant)
+      UNION ALL
+      SELECT 'I24', 'client_master_data.client_status in capitals (COMPLETED, PENDING)',
+             (SELECT count(*) FROM opera.client_master_data WHERE tenant_id = :tenant AND client_status IN ('COMPLETED', 'PENDING'))
+      UNION ALL
+      SELECT 'I25', 'client names or parents containing a question mark (encoding damage; a real question mark also counts)',
+             (SELECT count(*) FROM opera.client_master_data WHERE tenant_id = :tenant AND (client_name LIKE '%?%' OR counterparty_parent LIKE '%?%'))
+      UNION ALL
+      SELECT 'I27', 'recon_position_classification_input: RBA or RBC has no rows (recon fails: no effective Price/Hedge mapping)',
+             (SELECT count(*) FROM (VALUES ('RBA'), ('RBC')) b(bu)
+              WHERE NOT EXISTS (SELECT 1 FROM opera.recon_position_classification_input r WHERE r.tenant_id = :tenant AND upper(r.business_unit) = b.bu))
+      UNION ALL
+      SELECT 'I28', 'correl_product_mapping has no CFS rows (WP Greeks 0, OUAT-178)',
+             CASE WHEN EXISTS (SELECT 1 FROM opera.correl_product_mapping WHERE tenant_id = :tenant AND business_unit = 'CFS') THEN 0 ELSE 1 END
+      UNION ALL
+      SELECT 'I29', 'helper_var_mult_factor_view is empty (Combined VAR delta and gamma 0, XOGA-713)',
+             CASE WHEN EXISTS (SELECT 1 FROM opera.helper_var_mult_factor_view WHERE tenant_id = :tenant) THEN 0 ELSE 1 END
+      UNION ALL
+      SELECT 'I32', 'functions in the schema that still name opera_migration (body or search_path)',
+             (SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+              WHERE n.nspname = 'opera' AND p.prokind IN ('f', 'p')
+                AND (pg_get_functiondef(p.oid) ILIKE '%opera_migration%' OR coalesce(array_to_string(p.proconfig, ','), '') ILIKE '%opera_migration%'))
+      UNION ALL
+      SELECT 'I32', 'views in the schema that still name opera_migration',
+             (SELECT count(*) FROM pg_class k JOIN pg_namespace n ON n.oid = k.relnamespace
+              WHERE n.nspname = 'opera' AND k.relkind IN ('v', 'm') AND pg_get_viewdef(k.oid) ILIKE '%opera_migration%')
+    )
+    SELECT issue, check_name, bad, CASE WHEN bad = 0 THEN 'PASS' ELSE 'FAIL' END AS verdict
+    FROM c
+    ORDER BY issue, check_name
+  ]]></sql>
+
+  <expect ref="checks-dev" rows=">=20" reason="the check list ran on dev (23 checks)"/>
+  <expect ref="checks-uat" rows=">=20" reason="the check list ran on UAT (23 checks)"/>
+  <expect expr="#size(#rows('checks-dev').?[verdict == 'FAIL']) == 0" reason="no known migration problem is present on dev"/>
+  <expect expr="#size(#rows('checks-uat').?[verdict == 'FAIL']) == 0" reason="no known migration problem is present on UAT"/>
+
+  <compress id="bundle" file="migration-checks-01-dev-uat.zip"><include ref="checks-dev"/><include ref="checks-uat"/></compress>
+</rules>
