@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- BUE cash page: new prints 1,475,936.96, legacy and the statement GRAND TOTAL row 1,475,936.97.
+     Hypothesis: ClientStatementPdfMapper.tableGrandTotal returns null for BUE because the cash block currency (the
+     client threshold currency, fn_statement_cash_summary_cached_v2) is not USD, so the SQL exact total stays.
+     1. BUE threshold row. 2. threshold currency distribution over the CFS clients. 3. the clients with a non-USD
+     threshold currency (the ones whose cash page would change if the currency guard is dropped). -->
+<rules name="cs-29-bue-cash-threshold-currency-cfs">
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+    <param name="client" type="string" value="BUE"/>
+  </parameters>
+  <sql id="bue" db="target" timeout="120" export="full"><![CDATA[
+SELECT t.client_code, t.business_unit, t.currency, t.threshold, t.independant_amount, t.final_threshold, t.double_currency
+FROM opera.client_threshold_master t
+WHERE t.client_code = :client AND t.business_unit = 'CFS' AND t.tenant_id = :tenant
+  ]]></sql>
+  <sql id="bydistribution" db="target" timeout="120" export="full"><![CDATA[
+SELECT coalesce(nullif(btrim(t.currency), ''), '(blank)') AS threshold_currency, count(*) AS clients
+FROM opera.client_threshold_master t
+WHERE t.business_unit = 'CFS' AND t.tenant_id = :tenant
+GROUP BY 1
+ORDER BY clients DESC
+  ]]></sql>
+  <sql id="nonusd" db="target" timeout="120" export="full"><![CDATA[
+SELECT t.client_code, t.currency, t.double_currency
+FROM opera.client_threshold_master t
+WHERE t.business_unit = 'CFS' AND t.tenant_id = :tenant
+  AND upper(btrim(coalesce(t.currency, ''))) NOT IN ('USD', '')
+ORDER BY t.currency, t.client_code
+  ]]></sql>
+  <expect ref="bue" rows=">=0" reason="Informational: no row means BUE has no threshold row and the cash currency falls back to USD"/>
+  <compress id="bundle" file="cs-29-bue-cash-threshold-currency-cfs.zip">
+    <include ref="bue"/>
+    <include ref="bydistribution"/>
+    <include ref="nonusd"/>
+  </compress>
+</rules>
