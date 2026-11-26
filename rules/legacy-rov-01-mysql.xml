@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Does the legacy MySQL hold data for business unit ROV? 26 Nov 2026, read-only.
+     PG (dev and UAT) has a ROV valuation date but no security info, clients, active lots or deal lots for ROV.
+     tables: every ROV table in dbsystemuat with its row estimate and last update (information_schema, no table scan).
+     counts: exact counts for the two main tables (deal and security info).
+     status: legacy status_table rows that name a rov table, latest first (shows whether ROV was ever refreshed).
+     Run: compare.ps1 with rules rules\legacy-rov-01-mysql.xml and export none (datasource mysql-oprdb02). -->
+<rules name="legacy-rov-01-mysql">
+  <sql id="tables" db="mysql-oprdb02" export="full" timeout="300"><![CDATA[
+    SELECT TABLE_NAME, TABLE_TYPE, TABLE_ROWS AS row_estimate, UPDATE_TIME, CREATE_TIME
+    FROM information_schema.TABLES
+    WHERE TABLE_SCHEMA = 'dbsystemuat' AND RIGHT(TABLE_NAME, 4) = '_rov'
+    ORDER BY TABLE_ROWS DESC, TABLE_NAME
+  ]]></sql>
+
+  <sql id="counts" db="mysql-oprdb02" export="full" timeout="300"><![CDATA[
+    SELECT 'deal_ticket_table_rov' AS table_name, COUNT(*) AS row_count FROM dbsystemuat.deal_ticket_table_rov
+    UNION ALL
+    SELECT 'security_info_table_rov', COUNT(*) FROM dbsystemuat.security_info_table_rov
+  ]]></sql>
+
+  <sql id="status" db="mysql-oprdb02" export="full" timeout="300"><![CDATA[
+    SELECT tablename, valuation_date, status_type, status, updated_by, updated_timestamp
+    FROM dbsystemuat.status_table
+    WHERE RIGHT(tablename, 4) = '_rov'
+    ORDER BY updated_timestamp DESC
+    LIMIT 100
+  ]]></sql>
+
+  <expect ref="tables" rows=">=0" reason="ROV tables in the legacy schema (0 rows = ROV does not exist there)"/>
+  <expect ref="counts" rows=">=0" reason="exact counts of the two main ROV tables"/>
+  <expect ref="status" rows=">=0" reason="legacy refresh history of ROV"/>
+
+  <compress id="bundle" file="legacy-rov-01-mysql.zip"><include ref="tables"/><include ref="counts"/><include ref="status"/></compress>
+</rules>
