@@ -6,11 +6,12 @@
     catalog reads; the one wide scan is security_info_table, a few hundred thousand rows).
     The catalogue with every issue, where it is checked and what is not in this rule:
     analysis/liquibase-ref/MIGRATION_CHECK_CATALOGUE.md
-    A FAIL on I20 (latest_active_lot BU heuristic) can be a BU that really has no active lots: look at the row.
+    empty_bus: business units that are empty in the legacy MySQL too and are skipped by I04 and I20 (ROV: all legacy ROV tables hold 0 rows except the valuation date, checked 26 Nov 2026 with legacy-rov-01-mysql). A FAIL on I20 can also be a BU that really has no deals.
     Use: compare.ps1 with the rules flag pointing at this file and the export flag set to none.
   -->
   <parameters>
     <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+    <param name="empty_bus" type="string" value="ROV"/>
   </parameters>
 
   <sql id="checks-dev" db="postgres-dev" timeout="300" export="full"><![CDATA[
@@ -71,15 +72,15 @@
       SELECT 'I36', 'business_group_table group_code or group_name not UPPER',
              (SELECT count(*) FROM opera.business_group_table WHERE tenant_id = :tenant AND (group_code <> upper(group_code) OR group_name <> upper(group_name)))
       UNION ALL
-      SELECT 'I04', 'business units in valuation_date_table with no row in security_info_table (26 Nov 2026: ROV on dev and UAT)',
-             (SELECT count(*) FROM (SELECT DISTINCT business_unit FROM opera.valuation_date_table WHERE tenant_id = :tenant AND business_unit IS NOT NULL) v
+      SELECT 'I04', 'business units in valuation_date_table with no row in security_info_table (BUs listed in empty_bus are skipped)',
+             (SELECT count(*) FROM (SELECT DISTINCT business_unit FROM opera.valuation_date_table WHERE tenant_id = :tenant AND business_unit IS NOT NULL AND business_unit <> ALL (string_to_array(:empty_bus, ','))) v
               WHERE NOT EXISTS (SELECT 1 FROM opera.security_info_table s WHERE s.business_unit = v.business_unit))
       UNION ALL
       SELECT 'I20', 'latest_active_lot is empty',
              CASE WHEN EXISTS (SELECT 1 FROM opera.latest_active_lot WHERE tenant_id = :tenant) THEN 0 ELSE 1 END
       UNION ALL
-      SELECT 'I20', 'business units in valuation_date_table with no latest_active_lot row (a BU with no deals also counts; ROV on 26 Nov 2026)',
-             (SELECT count(*) FROM (SELECT DISTINCT business_unit FROM opera.valuation_date_table WHERE tenant_id = :tenant AND business_unit IS NOT NULL) v
+      SELECT 'I20', 'business units in valuation_date_table with no latest_active_lot row (a BU with no deals also counts; BUs in empty_bus are skipped)',
+             (SELECT count(*) FROM (SELECT DISTINCT business_unit FROM opera.valuation_date_table WHERE tenant_id = :tenant AND business_unit IS NOT NULL AND business_unit <> ALL (string_to_array(:empty_bus, ','))) v
               WHERE NOT EXISTS (SELECT 1 FROM opera.latest_active_lot l WHERE l.tenant_id = :tenant AND l.business_unit = v.business_unit))
       UNION ALL
       SELECT 'I22', 'latest_active_lot.active_lots is not double precision',
@@ -180,15 +181,15 @@
       SELECT 'I36', 'business_group_table group_code or group_name not UPPER',
              (SELECT count(*) FROM opera.business_group_table WHERE tenant_id = :tenant AND (group_code <> upper(group_code) OR group_name <> upper(group_name)))
       UNION ALL
-      SELECT 'I04', 'business units in valuation_date_table with no row in security_info_table (26 Nov 2026: ROV on dev and UAT)',
-             (SELECT count(*) FROM (SELECT DISTINCT business_unit FROM opera.valuation_date_table WHERE tenant_id = :tenant AND business_unit IS NOT NULL) v
+      SELECT 'I04', 'business units in valuation_date_table with no row in security_info_table (BUs listed in empty_bus are skipped)',
+             (SELECT count(*) FROM (SELECT DISTINCT business_unit FROM opera.valuation_date_table WHERE tenant_id = :tenant AND business_unit IS NOT NULL AND business_unit <> ALL (string_to_array(:empty_bus, ','))) v
               WHERE NOT EXISTS (SELECT 1 FROM opera.security_info_table s WHERE s.business_unit = v.business_unit))
       UNION ALL
       SELECT 'I20', 'latest_active_lot is empty',
              CASE WHEN EXISTS (SELECT 1 FROM opera.latest_active_lot WHERE tenant_id = :tenant) THEN 0 ELSE 1 END
       UNION ALL
-      SELECT 'I20', 'business units in valuation_date_table with no latest_active_lot row (a BU with no deals also counts; ROV on 26 Nov 2026)',
-             (SELECT count(*) FROM (SELECT DISTINCT business_unit FROM opera.valuation_date_table WHERE tenant_id = :tenant AND business_unit IS NOT NULL) v
+      SELECT 'I20', 'business units in valuation_date_table with no latest_active_lot row (a BU with no deals also counts; BUs in empty_bus are skipped)',
+             (SELECT count(*) FROM (SELECT DISTINCT business_unit FROM opera.valuation_date_table WHERE tenant_id = :tenant AND business_unit IS NOT NULL AND business_unit <> ALL (string_to_array(:empty_bus, ','))) v
               WHERE NOT EXISTS (SELECT 1 FROM opera.latest_active_lot l WHERE l.tenant_id = :tenant AND l.business_unit = v.business_unit))
       UNION ALL
       SELECT 'I22', 'latest_active_lot.active_lots is not double precision',
