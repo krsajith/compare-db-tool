@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rules name="ice-atm-01-underlying-bbg-blank-dev">
+  <!-- Read only. ICE ATM Vol: are the blank bbg_underlying_id rows in the output caused by underlying_list_table rows whose bbg_underlying_id is empty (cause 2), or by underlying_ids with no row at all (cause 1, needs the input file)? This rule covers cause 2 and the table's size per product. -->
+  <sql id="blank-by-product" db="postgres-dev" timeout="60" export="full"><![CDATA[
+    SELECT u.invenio_product_code,
+           count(*) AS rows_in_table,
+           count(*) FILTER (WHERE u.bbg_underlying_id IS NULL OR btrim(u.bbg_underlying_id) = '') AS rows_blank_bbg,
+           count(DISTINCT u.underlying_id) AS distinct_underlying_ids
+    FROM opera.underlying_list_table u
+    WHERE u.tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113'
+    GROUP BY u.invenio_product_code
+    ORDER BY rows_blank_bbg DESC, u.invenio_product_code
+  ]]></sql>
+  <sql id="blank-rows" db="postgres-dev" timeout="60" export="full"><![CDATA[
+    SELECT u.invenio_product_code, u.underlying_id, u.bbg_underlying_id, u.asset_class, u.expiry_date
+    FROM opera.underlying_list_table u
+    WHERE u.tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113'
+      AND (u.bbg_underlying_id IS NULL OR btrim(u.bbg_underlying_id) = '')
+    ORDER BY u.invenio_product_code, u.underlying_id
+  ]]></sql>
+  <expect ref="blank-by-product" rows="&gt;=1" reason="the tenant's underlying list"/>
+  <compress id="bundle" file="ice-atm-01-underlying-bbg-blank-dev.zip"><include ref="blank-by-product"/><include ref="blank-rows"/></compress>
+</rules>
