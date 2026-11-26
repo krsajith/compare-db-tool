@@ -598,6 +598,9 @@ Use it for a data fix that is an UPDATE, a DELETE or one free statement. It does
 ### 6.10 Report templates
 `--template-export rules\export.json` writes the template files, row metadata and an upload rule; `--template-import rules\upload.json` previews a replacement (SHA-256 guarded) and `--apply` commits it; production needs `--allow-prod`. See `rules/template-export.example.json`, `template-import.example.json`, `template-upload.example.json`.
 
+### 6.10b Replace a stored file (master Excel files)
+`--template-import rules\xoga750-fix5-documents-dev.json` (same option as templates). A rule with a `documents` list replaces files in `opera.oga_document_repository` by tenant, business application and document name. The file sits under `documents\` in the project (never inside the rule). The stored MD5 must equal `expectedOldMd5` or nothing is changed. Preview by default; `--apply` saves the old file and an undo rule under `documents\.backups\doc-...\undo.json`, writes the new bytes, reads them back and compares, then commits. Undo: `--template-import documents\.backups\doc-...\undo.json --apply`. Only documents stored in the database (storage_type DB). Production needs `--allow-prod`. Class: DocumentUploader.
+
 ### 6.11 Interactive menu
 `.\compare.ps1` with no arguments in a terminal opens a menu: recent runs, favourites, all rules, parameter prompts with type checks, export/limit/parallel options, validate-only and check-only modes, the equivalent command shown before running, typed confirmation for production and for `APPLY`, the result with verdict, and "Preview restore" when a rule suggests one. Keys: arrows, type to filter, `/` lists commands (`/rules /restore /open /history /datasources /help /quit`), Enter selects, Esc goes back. State: `out\.history.json` (no passwords).
 
