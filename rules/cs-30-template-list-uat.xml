@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Which ClientStatement templates exist and for which business unit / application (read-only).
+     The DBeaver view of opera.oga_doctemplatemaster_doctemplatemaster shows three rows each for
+     ClientStatement, ClientStatement_header and ClientStatement_footer plus ClientStatement_ORM; the unique key is
+     tenant + business_unit + business_application + doc_template_name, so the rows differ by business unit or application.
+     This lists them with a content hash so the export rule can name the CFS rows exactly. -->
+<rules name="cs-30-template-list-uat">
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+  </parameters>
+  <sql id="templates" db="target" timeout="120" export="full"><![CDATA[
+SELECT t.business_unit, t.business_application, t.doc_template_name, t.uuid::text AS uuid, t.status,
+       t.template_engine, t.template_file_name, t.mime_type,
+       length(t.document_content) AS bytes, encode(sha256(t.document_content), 'hex') AS sha256,
+       t.updated_by, t.updated_timestamp
+FROM opera.oga_doctemplatemaster_doctemplatemaster t
+WHERE t.tenant_id = :tenant
+  AND lower(t.doc_template_name) LIKE 'clientstatement%'
+ORDER BY t.doc_template_name, t.business_unit, t.business_application
+  ]]></sql>
+  <expect ref="templates" rows=">=1" reason="ClientStatement templates exist"/>
+  <compress id="bundle" file="cs-30-template-list-uat.zip">
+    <include ref="templates"/>
+  </compress>
+</rules>
