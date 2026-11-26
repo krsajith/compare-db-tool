@@ -1,0 +1,23 @@
+{
+  "name": "xoga754-02-neovest-filename-cfs-dev",
+  "db": "postgres-dev",
+  "backupSchema": "parity_work",
+  "ticket": "XOGA-754",
+  "description": "Neovest pipeline output file name: hardcode the BU prefix CFS instead of the BU chosen on screen. Only workflowConfig.output.options.fileNamePattern of the Neovest PIPELINE CONFIG row (dev tenant) changes.",
+  "steps": [
+    {
+      "id": "neovest-filename-cfs",
+      "action": "update",
+      "table": "opera.oga_configservice_uploadrules",
+      "where": "tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND template_name = 'Neovest' AND code = 'PIPELINE CONFIG' AND rule_data->'workflowConfig'->'output'->'options'->>'fileNamePattern' = '${neovestBuName}_Neovest_TR_Dump_${neovestFileDate}.xlsx'",
+      "key": ["uuid"],
+      "set": {
+        "rule_data": "jsonb_set(rule_data, '{workflowConfig,output,options,fileNamePattern}', to_jsonb('CFS_Neovest_TR_Dump_${neovestFileDate}.xlsx'::text))",
+        "updated_by": "'xoga754'",
+        "updated_timestamp": "now()"
+      },
+      "expect": { "targetBefore": "1", "affected": "1", "targetAfter": "0" }
+    }
+  ],
+  "verify": [ { "rule": "verify-xoga754-neovest-filename-cfs-dev.xml" } ]
+}

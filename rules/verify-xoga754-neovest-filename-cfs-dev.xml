@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rules name="verify-xoga754-neovest-filename-cfs-dev">
+  <!-- After xoga754-02 on dev: the Neovest pipeline pattern is CFS_Neovest_TR_Dump_${neovestFileDate}.xlsx; rule_bytes goes from 7168 to 7155 (the 16 characters of the BU placeholder become the 3 of CFS). -->
+  <sql id="pattern" db="postgres-dev" timeout="60" export="full"><![CDATA[
+    SELECT c.uuid, c.code,
+           c.rule_data->'workflowConfig'->'output'->'options'->>'fileNamePattern' AS file_name_pattern,
+           length(c.rule_data::text) AS rule_bytes
+    FROM opera.oga_configservice_uploadrules c
+    WHERE c.tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113'
+      AND c.template_name = 'Neovest' AND c.code = 'PIPELINE CONFIG'
+  ]]></sql>
+  <expect ref="pattern" rows="1" reason="the Neovest pipeline config row"/>
+  <compress id="bundle" file="verify-xoga754-neovest-filename-cfs-dev.zip"><include ref="pattern"/></compress>
+</rules>
