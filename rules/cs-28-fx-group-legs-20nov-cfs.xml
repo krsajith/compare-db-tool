@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- cs-27 found the two groups: GBS buys / ORM sells value date 2027-06-23 (nominal 644,537.477, exact weighted price
-     5.8429496, legacy printed 5.8430, new 5.8429) and SOR buys / ORM sells value date 2027-10-27 (nominal 98,831.03,
+     5.8429496, legacy printed 5.8430, new 5.8429). Legacy MySQL legs are in query 'legacy' (same trades expected). and SOR buys / ORM sells value date 2027-10-27 (nominal 98,831.03,
      exact 6.0096504, legacy 6.0096, new 6.0097). Exact rounding gives the NEW values, so legacy used something else.
      This rule lists just those legs (8 rows) to test: leg price/lot rounding, double rounding, weight rounding. -->
 <rules name="cs-28-fx-group-legs-20nov-cfs">
@@ -26,8 +26,21 @@ WHERE s.tenant_id = :tenant AND upper(s.business_unit) = 'CFS'
   AND upper(split_part(cd.contract_number, '_', 1)) IN ('GBS', 'SOR', 'ORM')
 ORDER BY client, value_date, cd.contract_number
   ]]></sql>
+  <sql id="legacy" db="mysql-oprdb02" timeout="300" export="full"><![CDATA[
+SELECT upper(substring_index(cd.contract_number, '_', 1)) AS client, lower(cd.market_action) AS side,
+       s.maturity_date AS value_date, cd.contract_number, cd.trade_id, cd.transaction_date,
+       cast(cd.original_lots AS char) AS original_lots_text, cast(cd.premium AS char) AS price_text,
+       cd.fixing_date, s.derivative_type
+FROM dbsystemuat.cloned_security_info_table_cfs s
+JOIN dbsystemuat.cloned_deal_ticket_table_cfs cd ON cd.security_id = s.security_id
+WHERE s.maturity_date IN ('2027-06-23', '2027-10-27')
+  AND s.derivative_type LIKE 'fx_forward%'
+  AND upper(substring_index(cd.contract_number, '_', 1)) IN ('GBS', 'SOR', 'ORM')
+ORDER BY client, value_date, cd.contract_number
+  ]]></sql>
   <expect ref="legs" rows=">=16" reason="4 legs in each of the 4 groups"/>
   <compress id="bundle" file="cs-28-fx-group-legs-20nov-cfs.zip">
     <include ref="legs"/>
+    <include ref="legacy"/>
   </compress>
 </rules>
