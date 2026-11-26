@@ -26,8 +26,8 @@ LEFT JOIN (SELECT trade_id, max(premium) AS premium
 WHERE cd.tenant_id = :tenant AND upper(cd.business_unit) = 'CFS'
   AND cd.is_latest_version = 1
   AND upper(split_part(cd.contract_number, '_', 1)) = ANY (string_to_array(:fxClients, ','))
-  AND (dt.premium::text ~ '^(5\.8429|5\.843|6\.0096|6\.0097)'
-       OR cd.premium::text ~ '^(5\.8429|5\.843|6\.0096|6\.0097)')
+  AND (dt.premium::text ~ '^(5[.]8429|5[.]843|6[.]0096|6[.]0097)'
+       OR cd.premium::text ~ '^(5[.]8429|5[.]843|6[.]0096|6[.]0097)')
 ORDER BY cd.contract_number
   ]]></sql>
   <expect ref="fxties" rows=">=0" reason="Informational: rows are the candidate trades; none means the trades are not in this database"/>
