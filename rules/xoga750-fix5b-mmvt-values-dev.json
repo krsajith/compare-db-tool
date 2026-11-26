@@ -1,0 +1,13 @@
+{
+  "db": "postgres-dev",
+  "schema": "opera",
+  "tenantId": "227cd5f5-4498-4dba-bda9-05b8edc41113",
+  "businessApplication": "WEB XTR",
+  "documents": [
+    {
+      "documentName": "MMVT_MissingDeals_Master.xlsx",
+      "file": "xoga750/v2/MMVT_MissingDeals_Master.xlsx",
+      "expectedOldMd5": "40d69b875c66dc3b8506a90b792a75be"
+    }
+  ]
+}

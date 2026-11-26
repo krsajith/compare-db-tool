@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rules name="verify-xoga750-fix5b-mmvt-values-dev">
+  <!-- After fix 5b on dev: MMVT master is the rebuilt file with plain values in place of formulas, 29612 bytes, md5 381b1755f52f8a2408eef11806fed0c2. The alias master stays as after fix 5. -->
+  <sql id="docs" db="postgres-dev" timeout="60" export="full"><![CDATA[
+    SELECT d.document_name, d.size_bytes, length(d.document) AS db_bytes, md5(d.document) AS db_md5, d.updated_timestamp
+    FROM opera.oga_document_repository d
+    WHERE d.tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND d.business_application_name = 'WEB XTR'
+      AND d.document_name IN ('XTRFills_Broker_CurrentUser_Master.xlsx','MMVT_MissingDeals_Master.xlsx')
+    ORDER BY d.document_name
+  ]]></sql>
+  <expect ref="docs" rows="2" reason="the two masters"/>
+  <compress id="bundle" file="verify-xoga750-fix5b-mmvt-values-dev.zip"><include ref="docs"/></compress>
+</rules>
