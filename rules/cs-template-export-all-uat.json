@@ -1,0 +1,39 @@
+{
+  "db": "postgres-uat",
+  "schema": "opera",
+  "tenantId": "227cd5f5-4498-4dba-bda9-05b8edc41113",
+  "businessApplication": "ClientStatement",
+  "businessUnit": "CFS",
+  "templates": [
+    {
+      "uuid": "76f1877d-365b-4a66-be6c-8ba58deb3f77"
+    },
+    {
+      "uuid": "689c8fe4-1179-43db-8ad9-5557fe7d678d"
+    },
+    {
+      "uuid": "d64cc84f-e542-4236-b998-3f89508b11dd"
+    },
+    {
+      "uuid": "dd52236a-722b-4653-a695-7ec11445609c"
+    },
+    {
+      "uuid": "f40fe113-3f64-4801-9661-d1f2b4256e8a"
+    },
+    {
+      "uuid": "3c501a89-dbe0-4da2-9360-2e8d76df804a"
+    },
+    {
+      "uuid": "5644ca53-133a-477e-843b-9503b9acd9c7"
+    },
+    {
+      "uuid": "e6452aaf-b0fe-4f12-a1d7-9491f0369945"
+    },
+    {
+      "uuid": "6bceaf8a-11e3-472d-92af-03c0a71f9bf7"
+    },
+    {
+      "uuid": "b3ee9e6e-6fff-48ad-92e0-44c9d161799a"
+    }
+  ]
+}
