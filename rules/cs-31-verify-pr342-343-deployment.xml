@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Did the core deployment with PR 342 (FX price print rule, swap REF MONTH from booking) and PR 343 (cash page total) reach this database?
+     Read-only, one run per environment (target-env postgres-uat or postgres-dev).
+       problems   a row only when something is wrong (expect 0 rows): the position summaries function must carry v9 (bookingContractMonth).
+                  PR 343 and the FX print rule are Java only and cannot be seen in the database.
+       cache      CFS statement cache date and size: the statements to test are generated for THIS date (do not refresh to 20-Nov).
+       smh        the three SMH swaps of the 20-Nov difference with the booking text they must print (first word OU).
+       cashbu     the clients whose cash page changes with PR 343 (threshold currency not a currency code). -->
+<rules name="cs-31-verify-pr342-343-deployment">
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+  </parameters>
+  <sql id="problems" db="target" timeout="120" export="full"><![CDATA[
+SELECT 'fn_statement_position_summaries_v2 is not v9 (no bookingContractMonth): the Liquibase changeset fn_statement_position_summaries_v2-v9 did not run' AS problem
+ WHERE NOT EXISTS (SELECT 1 FROM pg_proc WHERE pronamespace = 'opera'::regnamespace AND proname = 'fn_statement_position_summaries_v2'
+                     AND position('bookingContractMonth' in prosrc) > 0)
+  ]]></sql>
+  <sql id="cache" db="target" timeout="120" export="full"><![CDATA[
+SELECT count(*) AS rows_in_cache, min(value_date) AS min_value_date, max(value_date) AS max_value_date
+FROM opera.helper_client_statement_report_view_cache_table
+WHERE tenant_id = :tenant AND business_unit = 'CFS'
+  ]]></sql>
+  <sql id="smh" db="target" timeout="120" export="full"><![CDATA[
+SELECT b.contract_number, b.contract_month AS booking_contract_month, c.product_code, c.contract_month AS cache_contract_month,
+       c.active_lots
+FROM opera.client_statement_booking_order_information_table b
+LEFT JOIN opera.helper_client_statement_report_view_cache_table c
+       ON c.contract_number = b.contract_number AND c.tenant_id = b.tenant_id AND c.business_unit = b.business_unit
+WHERE b.contract_number IN ('SMH_OU_056', 'SMH_OU_057', 'SMH_OU_060')
+  AND b.business_unit = 'CFS' AND b.tenant_id = :tenant
+ORDER BY b.contract_number
+  ]]></sql>
+  <sql id="cashbu" db="target" timeout="120" export="full"><![CDATA[
+SELECT t.client_code, t.currency AS threshold_currency
+FROM opera.client_threshold_master t
+WHERE t.business_unit = 'CFS' AND t.tenant_id = :tenant
+  AND NOT (upper(btrim(coalesce(t.currency, ''))) ~ '^[A-Z]{3}$')
+ORDER BY t.client_code
+  ]]></sql>
+  <expect ref="problems" rows="0" reason="Position summaries function must be v9"/>
+  <expect ref="cache" rows="1" reason="One cache summary row"/>
+  <compress id="bundle" file="cs-31-verify-pr342-343-deployment.zip">
+    <include ref="problems"/>
+    <include ref="cache"/>
+    <include ref="smh"/>
+    <include ref="cashbu"/>
+  </compress>
+</rules>
