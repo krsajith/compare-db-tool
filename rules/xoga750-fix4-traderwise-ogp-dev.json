@@ -1,0 +1,34 @@
+{
+  "name": "xoga750-fix4-traderwise-ogp-dev",
+  "db": "postgres-dev",
+  "backupSchema": "parity_work",
+  "ticket": "XOGA-750",
+  "description": "DEV ONLY. Adds the two rows legacy MySQL holds in web_xtr_handle_portfolio_traderwise_table (ogp/asinghal, ogp/FVaipel, seen 26 Nov) to the OGA table, which is empty. Without them an OGP Web XTR run does not apply the TextTT rule for those two traders (.m:504-520 / resolve-xtr-portfolio.js). No CFS row exists in legacy, so the CFS extra rows of XOGA-750 are NOT affected by this. Two rows inserted, nothing else touched.",
+  "steps": [
+    {
+      "id": "traderwise-ogp-rows",
+      "table": "opera.web_xtr_handle_portfolio_traderwise_table",
+      "where": "tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND created_by = 'xoga750'",
+      "key": ["uuid"],
+      "source": {
+        "db": "postgres-dev",
+        "sql": "SELECT CAST(md5('xoga750-traderwise-' || v.bu || '-' || v.trader) AS uuid) AS uuid, '227cd5f5-4498-4dba-bda9-05b8edc41113' AS tenant_id, v.bu AS bu_name, v.trader AS trade_name FROM (VALUES ('ogp','asinghal'),('ogp','FVaipel')) AS v(bu, trader)"
+      },
+      "constants": {
+        "created_by": "xoga750",
+        "created_timestamp": "$now",
+        "updated_by": "xoga750",
+        "updated_timestamp": "$now"
+      },
+      "preconditions": [
+        {
+          "sql": "SELECT count(*) FROM opera.web_xtr_handle_portfolio_traderwise_table WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113'",
+          "expect": "0",
+          "reason": "the table is still empty on dev, so nothing is duplicated"
+        }
+      ],
+      "expect": { "targetBefore": "0", "source": "2", "inserted": "2", "targetAfter": "2" }
+    }
+  ],
+  "verify": [ { "rule": "verify-xoga750-fix4-traderwise-ogp-dev.xml" } ]
+}
