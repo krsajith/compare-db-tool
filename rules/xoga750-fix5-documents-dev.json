@@ -1,0 +1,18 @@
+{
+  "db": "postgres-dev",
+  "schema": "opera",
+  "tenantId": "227cd5f5-4498-4dba-bda9-05b8edc41113",
+  "businessApplication": "WEB XTR",
+  "documents": [
+    {
+      "documentName": "XTRFills_Broker_CurrentUser_Master.xlsx",
+      "file": "xoga750/XTRFills_Broker_CurrentUser_Master.xlsx",
+      "expectedOldMd5": "182ab21fbaa9105f9e3200420722e5ca"
+    },
+    {
+      "documentName": "MMVT_MissingDeals_Master.xlsx",
+      "file": "xoga750/MMVT_MissingDeals_Master.xlsx",
+      "expectedOldMd5": "49bc8685e26ebe647f0d835356835e69"
+    }
+  ]
+}

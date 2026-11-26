@@ -269,7 +269,11 @@ public final class Cli {
         }
         if (options.menu) return Menu.launch(settings, options);
         if (options.templateExport != null) return new TemplateExporter(settings).execute(options);
-        if (options.templateUpload != null) return new TemplateUploader(settings).execute(options);
+        if (options.templateUpload != null) {
+            // A rule with a "documents" list replaces stored files such as the Web XTR master Excel files (DocumentUploader).
+            if (DocumentUploader.isDocumentRule(Files.readString(options.templateUpload))) return new DocumentUploader(settings).execute(options);
+            return new TemplateUploader(settings).execute(options);
+        }
         if (options.restore != null) {
             try { return new DataRestorer(settings).execute(options); }
             catch (ToolException e) { throw e; }
