@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 20-Nov FX subtotal rows (B/S '-'): nominal 644,537.48 (GBS sells, ORM buys, old 5.8430 new 5.8429) and
+     98,831.03 (SOR sells, ORM buys, old 6.0096 new 6.0097). cs-26 found no single trade at 5.84295 or 6.00965,
+     so these are groups of several legs. Reads the base deal tables (history kept), not the cache.
+     Group = client, side, value date (security maturity date). Nominal = sum of original_lots
+     (new trades, so no amendments assumed; the result shows the legs so that can be checked). -->
+<rules name="cs-27-fx-group-weighted-20nov-cfs">
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+    <param name="fxClients" type="string" value="GBS,SOR,ORM"/>
+  </parameters>
+  <sql id="groups" db="target" timeout="300" export="full"><![CDATA[
+WITH legs AS (
+  SELECT upper(split_part(cd.contract_number, '_', 1)) AS client, lower(cd.market_action) AS side,
+         s.maturity_date AS value_date, cd.contract_number, cd.trade_id, cd.transaction_date,
+         abs(cd.original_lots) AS lots, dt.premium AS price
+  FROM opera.cloned_deal_ticket_table cd
+  JOIN opera.cloned_security_info_table s
+    ON s.tenant_id = cd.tenant_id AND s.business_unit = cd.business_unit AND s.security_id = cd.security_id
+  LEFT JOIN (SELECT trade_id, max(premium) AS premium
+             FROM opera.deal_ticket_table
+             WHERE tenant_id = :tenant AND is_latest_version = 1 AND premium IS NOT NULL
+             GROUP BY trade_id) dt ON dt.trade_id = cd.trade_id
+  WHERE cd.tenant_id = :tenant AND upper(cd.business_unit) = 'CFS' AND cd.is_latest_version = 1
+    AND s.derivative_type LIKE 'fx_forward%'
+    AND upper(split_part(cd.contract_number, '_', 1)) = ANY (string_to_array(:fxClients, ','))
+), g AS (
+  SELECT client, side, value_date, count(*) AS legs, sum(lots) AS nominal,
+         sum(lots * price) / nullif(sum(lots), 0) AS wavg_exact,
+         round((sum(lots * price) / nullif(sum(lots), 0))::numeric, 4) AS wavg_4dp,
+         round((sum(lots * price) / nullif(sum(lots), 0))::numeric, 6) AS wavg_6dp,
+         round((sum(lots * round(price::numeric, 4)) / nullif(sum(lots), 0))::numeric, 8) AS wavg_leg4_8dp,
+         min(transaction_date) AS first_trade, max(transaction_date) AS last_trade
+  FROM legs GROUP BY client, side, value_date
+)
+SELECT * FROM g
+WHERE abs(nominal - 644537.48) < 0.5 OR abs(nominal - 98831.03) < 0.5
+ORDER BY client, nominal
+  ]]></sql>
+  <sql id="legs" db="target" timeout="300" export="full" after="groups"><![CDATA[
+SELECT upper(split_part(cd.contract_number, '_', 1)) AS client, lower(cd.market_action) AS side,
+       s.maturity_date AS value_date, cd.contract_number, cd.trade_id, cd.transaction_date,
+       cd.original_lots, dt.premium::text AS price_text, cd.premium::text AS clone_price_text
+FROM opera.cloned_deal_ticket_table cd
+JOIN opera.cloned_security_info_table s
+  ON s.tenant_id = cd.tenant_id AND s.business_unit = cd.business_unit AND s.security_id = cd.security_id
+LEFT JOIN (SELECT trade_id, max(premium) AS premium
+           FROM opera.deal_ticket_table
+           WHERE tenant_id = :tenant AND is_latest_version = 1 AND premium IS NOT NULL
+           GROUP BY trade_id) dt ON dt.trade_id = cd.trade_id
+WHERE cd.tenant_id = :tenant AND upper(cd.business_unit) = 'CFS' AND cd.is_latest_version = 1
+  AND s.derivative_type LIKE 'fx_forward%'
+  AND upper(split_part(cd.contract_number, '_', 1)) = ANY (string_to_array(:fxClients, ','))
+  AND cd.transaction_date >= DATE '2026-11-05'
+ORDER BY client, value_date, cd.contract_number
+  ]]></sql>
+  <expect ref="groups" rows=">=0" reason="Informational: rows are the groups that hit the printed nominals"/>
+  <compress id="bundle" file="cs-27-fx-group-weighted-20nov-cfs.zip">
+    <include ref="groups"/>
+    <include ref="legs"/>
+  </compress>
+</rules>
