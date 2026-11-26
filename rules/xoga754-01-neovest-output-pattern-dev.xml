@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rules name="xoga754-01-neovest-output-pattern-dev">
+  <!-- Read only. Shows the Neovest pipeline output block (file name pattern) so the CFS prefix can be hardcoded by a later update rule. -->
+  <sql id="neovest" db="postgres-dev" timeout="60" export="full"><![CDATA[
+    SELECT c.uuid, c.tenant_id, c.template_name, c.code, c.status,
+           c.rule_data -> 'workflowConfig' -> 'output' AS output_block,
+           c.rule_data -> 'workflowConfig' ->> 'workFlowName' AS wf_name,
+           (SELECT string_agg(m[1], ' | ') FROM regexp_matches(c.rule_data::text, '"([^"]*neovestBuName[^"]*)"', 'g') AS m) AS neovest_patterns,
+           length(c.rule_data::text) AS rule_bytes, md5(c.rule_data::text) AS rule_md5
+    FROM opera.oga_configservice_uploadrules c
+    WHERE c.tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113'
+      AND c.template_name IN ('Neovest')
+    ORDER BY c.created_timestamp
+  ]]></sql>
+  <expect ref="neovest" rows="&gt;=1" reason="Neovest rows (2 expected: fields row and workflowConfig row)"/>
+  <compress id="bundle" file="xoga754-01-neovest-output-pattern-dev.zip"><include ref="neovest"/></compress>
+</rules>
