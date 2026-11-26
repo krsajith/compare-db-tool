@@ -1,0 +1,111 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Quick follow-up to cs-24 (UAT cache was on 06-Nov, so 20-Nov could not be proven).
+     Run on UAT and on DEV; the freshness row says which one holds the 20-Nov cache.
+       B  FX subtotal price: find the value-date groups whose nominal is 644,537.48 (GBS buy, ORM)
+          and 98,831.03 (SOR, ORM) and show the exact nominal-weighted price. Legs have <= 4 dp prices
+          (cs-24), so only the weights decide 5.8429 vs 5.8430 and 6.0096 vs 6.0097.
+       C  BUE totals: exact, rounded-sum, sum-of-leg-rounded (only meaningful when freshness = 1).
+       D  SMH_OU_056/057/060: contract_month text in the booking-order table (MATLAB REF_MONTH source).
+     Nothing here fails on freshness; read column cache_on_value_date first. -->
+<rules name="cs-25-diff-quick-20nov-cfs">
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+    <param name="valueDate" type="date" value="2026-11-20"/>
+    <param name="fxClients" type="string" value="GBS,SOR,ORM"/>
+    <param name="totalClient" type="string" value="BUE"/>
+  </parameters>
+
+  <sql id="fresh" db="target" timeout="120" export="full"><![CDATA[
+SELECT count(*) AS rows_in_cache, min(value_date) AS min_value_date, max(value_date) AS max_value_date,
+       CASE WHEN min(value_date) = :valueDate AND max(value_date) = :valueDate THEN 1 ELSE 0 END AS cache_on_value_date
+FROM opera.helper_client_statement_report_view_cache_table
+WHERE tenant_id = :tenant AND upper(business_unit) = 'CFS'
+  ]]></sql>
+
+  <!-- B: groups by client, side, fixing date and by settlement date; keep the ones that hit the printed nominals -->
+  <sql id="fxgroups" db="target" timeout="300" export="full" after="fresh"><![CDATA[
+SELECT g.* FROM (
+  SELECT upper(split_part(c.contract_number, '_', 1)) AS client,
+         lower(c.market_action) AS market_action,
+         'fixing_date' AS group_key, c.fixing_date AS group_date,
+         count(*) AS legs,
+         sum(abs(c.active_lots)) AS nominal,
+         sum(abs(c.active_lots) * c.traded_price) / nullif(sum(abs(c.active_lots)), 0) AS wavg_exact,
+         round((sum(abs(c.active_lots) * c.traded_price) / nullif(sum(abs(c.active_lots)), 0))::numeric, 4) AS wavg_4dp,
+         round((sum(abs(c.active_lots) * c.traded_price) / nullif(sum(abs(c.active_lots)), 0))::numeric, 6) AS wavg_6dp,
+         round((sum(abs(c.active_lots) * round(c.traded_price::numeric, 4)) / nullif(sum(abs(c.active_lots)), 0))::numeric, 8) AS wavg_leg4_8dp,
+         round((sum(round(abs(c.active_lots)::numeric, 2) * c.traded_price) / nullif(sum(round(abs(c.active_lots)::numeric, 2)), 0))::numeric, 8) AS wavg_nominal2_8dp
+  FROM opera.helper_client_statement_report_view_cache_table c
+  WHERE c.tenant_id = :tenant AND upper(c.business_unit) = 'CFS'
+    AND c.derivative_type LIKE 'fx_forward%'
+    AND upper(split_part(c.contract_number, '_', 1)) = ANY (string_to_array(:fxClients, ','))
+  GROUP BY 1, 2, 3, 4
+  UNION ALL
+  SELECT upper(split_part(c.contract_number, '_', 1)), lower(c.market_action),
+         'settlement_date', c.settlement_date, count(*), sum(abs(c.active_lots)),
+         sum(abs(c.active_lots) * c.traded_price) / nullif(sum(abs(c.active_lots)), 0),
+         round((sum(abs(c.active_lots) * c.traded_price) / nullif(sum(abs(c.active_lots)), 0))::numeric, 4),
+         round((sum(abs(c.active_lots) * c.traded_price) / nullif(sum(abs(c.active_lots)), 0))::numeric, 6),
+         round((sum(abs(c.active_lots) * round(c.traded_price::numeric, 4)) / nullif(sum(abs(c.active_lots)), 0))::numeric, 8),
+         round((sum(round(abs(c.active_lots)::numeric, 2) * c.traded_price) / nullif(sum(round(abs(c.active_lots)::numeric, 2)), 0))::numeric, 8)
+  FROM opera.helper_client_statement_report_view_cache_table c
+  WHERE c.tenant_id = :tenant AND upper(c.business_unit) = 'CFS'
+    AND c.derivative_type LIKE 'fx_forward%'
+    AND upper(split_part(c.contract_number, '_', 1)) = ANY (string_to_array(:fxClients, ','))
+  GROUP BY 1, 2, 3, 4
+) g
+WHERE abs(g.nominal - 644537.48) < 0.5 OR abs(g.nominal - 98831.03) < 0.5
+ORDER BY g.client, g.nominal, g.group_key
+  ]]></sql>
+
+  <!-- when no group hits, show the biggest groups so we can see how nominals look in this environment -->
+  <sql id="fxtop" db="target" timeout="300" export="full" after="fresh"><![CDATA[
+SELECT upper(split_part(c.contract_number, '_', 1)) AS client, lower(c.market_action) AS market_action,
+       c.fixing_date, count(*) AS legs, sum(abs(c.active_lots)) AS nominal
+FROM opera.helper_client_statement_report_view_cache_table c
+WHERE c.tenant_id = :tenant AND upper(c.business_unit) = 'CFS'
+  AND c.derivative_type LIKE 'fx_forward%'
+  AND upper(split_part(c.contract_number, '_', 1)) = ANY (string_to_array(:fxClients, ','))
+GROUP BY 1, 2, 3
+ORDER BY sum(abs(c.active_lots)) DESC
+LIMIT 10
+  ]]></sql>
+
+  <sql id="buetotals" db="target" timeout="300" export="full" after="fresh"><![CDATA[
+SELECT c.derivative_type, count(*) AS legs,
+       sum(c.mtm_usd) AS sum_exact,
+       round(sum(c.mtm_usd)::numeric, 2) AS rounded_sum,
+       sum(round(c.mtm_usd::numeric, 2)) AS sum_of_leg_rounded
+FROM opera.helper_client_statement_report_view_cache_table c
+WHERE c.tenant_id = :tenant AND upper(c.business_unit) = 'CFS'
+  AND upper(split_part(c.contract_number, '_', 1)) = upper(:totalClient)
+GROUP BY c.derivative_type
+ORDER BY c.derivative_type
+  ]]></sql>
+
+  <!-- D: booking-order table text that MATLAB turns into REF_MONTH -->
+  <sql id="smhbooking" db="target" timeout="120" export="full" after="fresh"><![CDATA[
+SELECT b.contract_number, b.contract_month, b.client_code, b.sub_account, b.structure_name, b.trade_date
+FROM opera.client_statement_booking_order_information_table b
+WHERE b.tenant_id = :tenant AND upper(b.business_unit) = 'CFS'
+  AND b.contract_number IN ('SMH_OU_056', 'SMH_OU_057', 'SMH_OU_060')
+ORDER BY b.contract_number
+  ]]></sql>
+  <sql id="smhmysql" db="mysql-oprdb02" timeout="120" export="full"><![CDATA[
+SELECT b.contract_number, b.contract_month, b.client_code, b.sub_account, b.structure_name, b.trade_date
+FROM dbsystemuat.client_statement_booking_order_information_table_cfs b
+WHERE b.contract_number IN ('SMH_OU_056', 'SMH_OU_057', 'SMH_OU_060')
+ORDER BY b.contract_number
+  ]]></sql>
+
+  <expect ref="fresh" rows="1" reason="One cache summary row"/>
+  <expect ref="smhbooking" rows=">=0" reason="Informational: empty means the booking-order row is missing in the new database"/>
+  <compress id="bundle" file="cs-25-diff-quick-20nov-cfs.zip">
+    <include ref="fresh"/>
+    <include ref="fxgroups"/>
+    <include ref="fxtop"/>
+    <include ref="buetotals"/>
+    <include ref="smhbooking"/>
+    <include ref="smhmysql"/>
+  </compress>
+</rules>
