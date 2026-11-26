@@ -1,0 +1,12 @@
+{
+  "db": "postgres-uat",
+  "schema": "opera",
+  "tenantId": "227cd5f5-4498-4dba-bda9-05b8edc41113",
+  "businessApplication": "ClientStatement",
+  "businessUnit": "CFS",
+  "templates": [
+    { "docTemplateName": "ClientStatement" },
+    { "docTemplateName": "ClientStatement_header" },
+    { "docTemplateName": "ClientStatement_footer" }
+  ]
+}
