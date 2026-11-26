@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rules name="verify-xoga750-fix6-gpc-master-dev">
+  <!-- After fix 6 on dev: the GPC master has 10 portfolio rows (the oil_hedge row for Jimmy-Hedge is gone), 7814 bytes, md5 fd58073784fac21a2a0bfc9607aa7528. -->
+  <sql id="docs" db="postgres-dev" timeout="60" export="full"><![CDATA[
+    SELECT d.document_name, d.size_bytes, length(d.document) AS db_bytes, md5(d.document) AS db_md5, d.updated_timestamp
+    FROM opera.oga_document_repository d
+    WHERE d.tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND d.business_application_name = 'GPC Trade'
+      AND d.document_name = 'GPC_Master_Mapping_Files.xlsx'
+  ]]></sql>
+  <expect ref="docs" rows="1" reason="the GPC master"/>
+  <compress id="bundle" file="verify-xoga750-fix6-gpc-master-dev.zip"><include ref="docs"/></compress>
+</rules>
