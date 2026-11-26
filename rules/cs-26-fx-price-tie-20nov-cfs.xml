@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 20-Nov FX subtotal prices: old 5.8430 / 6.0096, new 5.8429 / 6.0097 (GBS, SOR, ORM).
+     Hypothesis from the printed MTM: the legs are 5-decimal ties (5.84295 and 6.00965).
+     Reads the base deal tables (history kept), not the cache, so it works on any cache date.
+     Shows the price as stored in deal_ticket_table (double) and in cloned_deal_ticket_table (numeric 4 dp),
+     and the 4 dp result of three methods. -->
+<rules name="cs-26-fx-price-tie-20nov-cfs">
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+    <param name="fxClients" type="string" value="GBS,SOR,ORM"/>
+  </parameters>
+  <sql id="fxties" db="target" timeout="300" export="full"><![CDATA[
+SELECT upper(split_part(cd.contract_number, '_', 1)) AS client, cd.contract_number, cd.trade_id,
+       cd.market_action, cd.transaction_date, cd.original_lots,
+       dt.premium::text                         AS deal_ticket_price_text,
+       cd.premium::text                         AS clone_price_text,
+       round(dt.premium::numeric, 4)            AS r4_decimal_half_away,
+       (floor(dt.premium * 10000 + 0.5) / 10000)::numeric(18,4) AS r4_matlab_product,
+       to_char(dt.premium, 'FM9999999990.0000') AS r4_printf_like,
+       (round(dt.premium::numeric, 4) = cd.premium) AS clone_equals_rounded_deal_ticket
+FROM opera.cloned_deal_ticket_table cd
+LEFT JOIN (SELECT trade_id, max(premium) AS premium
+           FROM opera.deal_ticket_table
+           WHERE tenant_id = :tenant AND is_latest_version = 1 AND premium IS NOT NULL
+           GROUP BY trade_id) dt ON dt.trade_id = cd.trade_id
+WHERE cd.tenant_id = :tenant AND upper(cd.business_unit) = 'CFS'
+  AND cd.is_latest_version = 1
+  AND upper(split_part(cd.contract_number, '_', 1)) = ANY (string_to_array(:fxClients, ','))
+  AND (dt.premium::text ~ '^(5\.8429|5\.843|6\.0096|6\.0097)'
+       OR cd.premium::text ~ '^(5\.8429|5\.843|6\.0096|6\.0097)')
+ORDER BY cd.contract_number
+  ]]></sql>
+  <expect ref="fxties" rows=">=0" reason="Informational: rows are the candidate trades; none means the trades are not in this database"/>
+  <compress id="bundle" file="cs-26-fx-price-tie-20nov-cfs.zip">
+    <include ref="fxties"/>
+  </compress>
+</rules>
