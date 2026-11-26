@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- After the 20-Nov regeneration on the deployed build, ORM options print EDSP 468.25 (C JUL-27) where legacy printed 464.25, and
+     BUE's accumulator MTM changed (26,993.17 vs 6,389.69), although the original 06:30 run on 20-Nov matched legacy.
+     Hypothesis: the 20-Nov settle prices were changed after 20-Nov (data drift), not by the code. This lists the corn JUL-27 / SEP-27 settle
+     prices around 20-Nov with who wrote them and when. Uses the (tenant, underlying_id, value_date) index. -->
+<rules name="cs-32-price-drift-20nov-cfs">
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+  </parameters>
+  <sql id="prices" db="target" timeout="120" export="full"><![CDATA[
+SELECT u.underlying_id, u.value_date, u.settlement_date, u.settle_value,
+       u.created_by, u.created_timestamp, u.updated_by, u.updated_timestamp
+FROM opera.underlying_settle_value_table u
+WHERE u.tenant_id = :tenant
+  AND u.underlying_id IN ('CM C N27', 'CM C U27', 'CM KW Z26')
+  AND u.value_date BETWEEN DATE '2026-11-18' AND DATE '2026-11-24'
+ORDER BY u.underlying_id, u.value_date, u.updated_timestamp
+  ]]></sql>
+  <expect ref="prices" rows=">=1" reason="Informational"/>
+  <compress id="bundle" file="cs-32-price-drift-20nov-cfs.zip">
+    <include ref="prices"/>
+  </compress>
+</rules>
