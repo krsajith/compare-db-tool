@@ -6,25 +6,22 @@
 <rules name="cs-28-fx-group-legs-20nov-cfs">
   <parameters>
     <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+    <param name="contracts" type="string" value="GBS_FX_12203,GBS_FX_12263,GBS_FX_12322,GBS_FX_12348,ORM_FX_084,ORM_FX_288,ORM_FX_404,ORM_FX_450,ORM_FX_400,ORM_FX_402,ORM_FX_417,ORM_FX_434,SOR_FX_072,SOR_FX_074,SOR_FX_076,SOR_FX_080"/>
   </parameters>
-  <sql id="legs" db="target" timeout="600" export="full"><![CDATA[
-SELECT upper(split_part(cd.contract_number, '_', 1)) AS client, lower(cd.market_action) AS side,
-       s.maturity_date AS value_date, cd.contract_number, cd.trade_id, cd.transaction_date,
+  <sql id="legs" db="target" timeout="120" export="full"><![CDATA[
+SELECT cd.contract_number, cd.trade_id, cd.market_action, cd.transaction_date,
        cd.original_lots::text AS original_lots_text, dt.premium::text AS price_text, cd.premium::text AS clone_price_text,
-       cd.fixing_date, s.derivative_type
-FROM opera.cloned_security_info_table s
-JOIN opera.cloned_deal_ticket_table cd
-  ON cd.tenant_id = s.tenant_id AND cd.business_unit = s.business_unit AND cd.security_id = s.security_id
-LEFT JOIN (SELECT trade_id, max(premium) AS premium
-           FROM opera.deal_ticket_table
-           WHERE tenant_id = :tenant AND is_latest_version = 1 AND premium IS NOT NULL
-           GROUP BY trade_id) dt ON dt.trade_id = cd.trade_id
-WHERE s.tenant_id = :tenant AND upper(s.business_unit) = 'CFS'
-  AND s.maturity_date IN (DATE '2027-06-23', DATE '2027-10-27')
-  AND s.derivative_type LIKE 'fx_forward%'
+       cd.fixing_date, s.maturity_date AS value_date, s.derivative_type
+FROM opera.cloned_deal_ticket_table cd
+JOIN opera.cloned_security_info_table s
+  ON s.security_id = cd.security_id AND s.business_unit = cd.business_unit AND s.tenant_id = cd.tenant_id
+LEFT JOIN LATERAL (SELECT max(d.premium) AS premium FROM opera.deal_ticket_table d
+                   WHERE d.trade_id = cd.trade_id AND d.business_unit = 'CFS' AND d.tenant_id = :tenant
+                     AND d.is_latest_version = 1) dt ON true
+WHERE cd.contract_number = ANY (string_to_array(:contracts, ','))
+  AND cd.business_unit = 'CFS' AND cd.tenant_id = :tenant
   AND cd.is_latest_version = 1
-  AND upper(split_part(cd.contract_number, '_', 1)) IN ('GBS', 'SOR', 'ORM')
-ORDER BY client, value_date, cd.contract_number
+ORDER BY cd.contract_number
   ]]></sql>
   <sql id="legacy" db="mysql-oprdb02" timeout="300" export="full"><![CDATA[
 SELECT upper(substring_index(cd.contract_number, '_', 1)) AS client, lower(cd.market_action) AS side,
