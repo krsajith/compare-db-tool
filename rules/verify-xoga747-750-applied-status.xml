@@ -9,10 +9,10 @@
            coalesce((SELECT settlement_date::text || ' / ' || value_date::text FROM opera.valuation_date_table WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND business_unit = 'GPC'), 'no row') AS actual,
            CASE WHEN (SELECT settlement_date::text || value_date::text FROM opera.valuation_date_table WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND business_unit = 'GPC') = '2026-11-052026-11-06' THEN 'APPLIED' ELSE 'NOT APPLIED' END AS status
     UNION ALL
-    SELECT 2, 'XOGA-750 fix2 GPC trade-id counter', 'one GPC sequence row, last_sequence_id >= 54983',
+    SELECT 2, 'XOGA-750 fix2 GPC trade-id counter', 'one GPC sequence row, last_sequence_id >= 54193',
            coalesce((SELECT count(*)::text || ' row(s), last_sequence_id ' || max(last_sequence_id)::text FROM opera.oga_transaction_id_sequence_criteria WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND sequence_criteria ->> 'businessUnit' ILIKE 'gpc'), 'no row'),
            CASE WHEN (SELECT count(*) FROM opera.oga_transaction_id_sequence_criteria WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND sequence_criteria ->> 'businessUnit' ILIKE 'gpc') = 1
-                 AND (SELECT max(last_sequence_id) FROM opera.oga_transaction_id_sequence_criteria WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND sequence_criteria ->> 'businessUnit' ILIKE 'gpc') >= 54983 THEN 'APPLIED' ELSE 'NOT APPLIED' END
+                 AND (SELECT max(last_sequence_id) FROM opera.oga_transaction_id_sequence_criteria WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND sequence_criteria ->> 'businessUnit' ILIKE 'gpc') >= 54193 THEN 'APPLIED' ELSE 'NOT APPLIED' END
     UNION ALL
     SELECT 3, 'XOGA-750 fix5 alias master (ig, Ssundaram removed)', 'md5 8b11ade9b20e2a562474115908342694',
            coalesce((SELECT length(document)::text || ' bytes, ' || md5(document) FROM opera.oga_document_repository WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND business_application_name = 'WEB XTR' AND document_name = 'XTRFills_Broker_CurrentUser_Master.xlsx'), 'missing'),
@@ -50,10 +50,10 @@
            coalesce((SELECT settlement_date::text || ' / ' || value_date::text FROM opera.valuation_date_table WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND business_unit = 'GPC'), 'no row') AS actual,
            CASE WHEN (SELECT settlement_date::text || value_date::text FROM opera.valuation_date_table WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND business_unit = 'GPC') = '2026-11-052026-11-06' THEN 'APPLIED' ELSE 'NOT APPLIED' END AS status
     UNION ALL
-    SELECT 2, 'XOGA-750 fix2 GPC trade-id counter', 'one GPC sequence row, last_sequence_id >= 54983',
+    SELECT 2, 'XOGA-750 fix2 GPC trade-id counter', 'one GPC sequence row, last_sequence_id >= 54193',
            coalesce((SELECT count(*)::text || ' row(s), last_sequence_id ' || max(last_sequence_id)::text FROM opera.oga_transaction_id_sequence_criteria WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND sequence_criteria ->> 'businessUnit' ILIKE 'gpc'), 'no row'),
            CASE WHEN (SELECT count(*) FROM opera.oga_transaction_id_sequence_criteria WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND sequence_criteria ->> 'businessUnit' ILIKE 'gpc') = 1
-                 AND (SELECT max(last_sequence_id) FROM opera.oga_transaction_id_sequence_criteria WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND sequence_criteria ->> 'businessUnit' ILIKE 'gpc') >= 54983 THEN 'APPLIED' ELSE 'NOT APPLIED' END
+                 AND (SELECT max(last_sequence_id) FROM opera.oga_transaction_id_sequence_criteria WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND sequence_criteria ->> 'businessUnit' ILIKE 'gpc') >= 54193 THEN 'APPLIED' ELSE 'NOT APPLIED' END
     UNION ALL
     SELECT 3, 'XOGA-750 fix5 alias master (ig, Ssundaram removed)', 'md5 8b11ade9b20e2a562474115908342694',
            coalesce((SELECT length(document)::text || ' bytes, ' || md5(document) FROM opera.oga_document_repository WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND business_application_name = 'WEB XTR' AND document_name = 'XTRFills_Broker_CurrentUser_Master.xlsx'), 'missing'),
