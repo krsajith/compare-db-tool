@@ -598,6 +598,9 @@ Use it for a data fix that is an UPDATE, a DELETE or one free statement. It does
 ### 6.10 Report templates
 `--template-export rules\export.json` writes the template files, row metadata and an upload rule; `--template-import rules\upload.json` previews a replacement (SHA-256 guarded) and `--apply` commits it; production needs `--allow-prod`. See `rules/template-export.example.json`, `template-import.example.json`, `template-upload.example.json`.
 
+### 6.10c Copy stored documents between databases (`copyFromDb`)
+Use it to put the master Excel files of one environment into another where they are missing (insert only). Rule keys: `copyFromDb`, `db`, `schema`, `tenantId`, `businessApplications` (list), `expectedMd5` (document name to the MD5 the source must have). Run with `--template-import RULE` (preview), then `--apply`. Rows already present with the same bytes are skipped; a different MD5 in the target is refused (use the replace rule of 6.10b). On `--apply` an `undo.sql` (DELETE by uuid) is written under `documents\.backups\copy-...`. Example: `rules\xoga750-uat-masters-copy-from-dev.json`.
+
 ### 6.10b Replace a stored file (master Excel files)
 `--template-import rules\xoga750-fix5-documents-dev.json` (same option as templates). A rule with a `documents` list replaces files in `opera.oga_document_repository` by tenant, business application and document name. The file sits under `documents\` in the project (never inside the rule). The stored MD5 must equal `expectedOldMd5` or nothing is changed. Preview by default; `--apply` saves the old file and an undo rule under `documents\.backups\doc-...\undo.json`, writes the new bytes, reads them back and compares, then commits. Undo: `--template-import documents\.backups\doc-...\undo.json --apply`. Only documents stored in the database (storage_type DB). Production needs `--allow-prod`. Class: DocumentUploader.
 
