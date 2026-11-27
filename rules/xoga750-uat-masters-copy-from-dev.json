@@ -1,0 +1,12 @@
+{
+  "copyFromDb": "postgres-dev",
+  "db": "postgres-uat",
+  "schema": "opera",
+  "tenantId": "227cd5f5-4498-4dba-bda9-05b8edc41113",
+  "businessApplications": ["WEB XTR", "GPC Trade", "Neovest"],
+  "expectedMd5": {
+    "XTRFills_Broker_CurrentUser_Master.xlsx": "8b11ade9b20e2a562474115908342694",
+    "MMVT_MissingDeals_Master.xlsx": "381b1755f52f8a2408eef11806fed0c2",
+    "GPC_Master_Mapping_Files.xlsx": "fd58073784fac21a2a0bfc9607aa7528"
+  }
+}

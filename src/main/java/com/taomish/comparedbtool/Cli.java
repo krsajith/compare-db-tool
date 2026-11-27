@@ -271,6 +271,7 @@ public final class Cli {
         if (options.templateExport != null) return new TemplateExporter(settings).execute(options);
         if (options.templateUpload != null) {
             // A rule with a "documents" list replaces stored files such as the Web XTR master Excel files (DocumentUploader).
+            if (DocumentCopier.isCopyRule(Files.readString(options.templateUpload))) return new DocumentCopier(settings).execute(options);
             if (DocumentUploader.isDocumentRule(Files.readString(options.templateUpload))) return new DocumentUploader(settings).execute(options);
             return new TemplateUploader(settings).execute(options);
         }
