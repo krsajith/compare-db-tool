@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 20-Nov regeneration (after PR 345): CFS OTC OPTIONS (18 of 18 rows) and OTC ACCUMULATORS (43 of 44) section totals differ from legacy, while OTC SWAPS (62/62)
+     and FX SWAPS (14/14) are identical; the original 20-Nov run matched legacy on options (3 of 215 rows differed). Examples: BEG options 28,250 -> 397,550, ADP accumulators -65,025 -> -1,035,000.
+     Hypothesis: the option/accumulator inputs for value date 20-Nov were rewritten after the original run (the 21-Nov reload, or the calculation engine).
+     The statement cache reads these per security and value date: security_settlement_value_table (settle_price, delta, vega ...), security_last_actual_value_table,
+     underlying_settle_value_table. This lists, for value dates 06/19/20-Nov: who wrote them and when (a 21-Nov or later write date on 20-Nov rows = changed after the run),
+     then the actual rows for two small clients (BEG options, ADP accumulators). Read-only. Index shapes: tenant_id, business_unit, value_date / tenant_id, underlying_id. -->
+<rules name="cs-35-options-inputs-updated-after-20nov-cfs">
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+  </parameters>
+  <sql id="ssv_writers" db="target" timeout="300" export="full"><![CDATA[
+SELECT x.value_date, x.created_by, x.updated_by,
+       CAST(coalesce(x.updated_timestamp, x.created_timestamp) AS date) AS written_on,
+       count(*) AS rows, min(coalesce(x.updated_timestamp, x.created_timestamp)) AS first_write, max(coalesce(x.updated_timestamp, x.created_timestamp)) AS last_write
+FROM opera.security_settlement_value_table x
+WHERE x.tenant_id = :tenant AND x.business_unit = 'CFS'
+  AND x.value_date IN (DATE '2026-11-06', DATE '2026-11-19', DATE '2026-11-20')
+GROUP BY x.value_date, x.created_by, x.updated_by, CAST(coalesce(x.updated_timestamp, x.created_timestamp) AS date)
+ORDER BY x.value_date, written_on, rows DESC
+  ]]></sql>
+  <sql id="actual_writers" db="target" timeout="300" export="full"><![CDATA[
+SELECT x.value_date, x.created_by, x.updated_by,
+       CAST(coalesce(x.updated_timestamp, x.created_timestamp) AS date) AS written_on,
+       count(*) AS rows, min(coalesce(x.updated_timestamp, x.created_timestamp)) AS first_write, max(coalesce(x.updated_timestamp, x.created_timestamp)) AS last_write
+FROM opera.security_last_actual_value_table x
+WHERE x.tenant_id = :tenant AND x.business_unit = 'CFS'
+  AND x.value_date IN (DATE '2026-11-06', DATE '2026-11-19', DATE '2026-11-20')
+GROUP BY x.value_date, x.created_by, x.updated_by, CAST(coalesce(x.updated_timestamp, x.created_timestamp) AS date)
+ORDER BY x.value_date, written_on, rows DESC
+  ]]></sql>
+  <sql id="sample_securities" db="target" timeout="300" export="full"><![CDATA[
+SELECT DISTINCT upper(split_part(cd.contract_number, '_', 1)) AS client, cd.contract_number, cd.security_id, s.derivative_type, s.underlying1_id, s.maturity_date
+FROM opera.cloned_deal_ticket_table cd
+JOIN opera.cloned_security_info_table s
+  ON s.tenant_id = cd.tenant_id AND s.business_unit = cd.business_unit AND s.security_id = cd.security_id
+WHERE cd.tenant_id = :tenant AND cd.business_unit = 'CFS' AND cd.is_latest_version = 1
+  AND upper(split_part(cd.contract_number, '_', 1)) IN ('BEG', 'ADP')
+ORDER BY client, cd.contract_number
+  ]]></sql>
+  <sql id="sample_ssv" db="target" timeout="300" export="full" after="sample_securities"><![CDATA[
+SELECT x.security_id, x.value_date, x.settle_price, x.settle_delta_1, x.settle_vega_1,
+       x.created_by, x.created_timestamp, x.updated_by, x.updated_timestamp
+FROM opera.security_settlement_value_table x
+WHERE x.tenant_id = :tenant AND x.business_unit = 'CFS'
+  AND x.value_date IN (DATE '2026-11-06', DATE '2026-11-19', DATE '2026-11-20')
+  AND x.security_id IN (SELECT DISTINCT cd.security_id FROM opera.cloned_deal_ticket_table cd
+                        WHERE cd.tenant_id = :tenant AND cd.business_unit = 'CFS' AND cd.is_latest_version = 1
+                          AND upper(split_part(cd.contract_number, '_', 1)) IN ('BEG', 'ADP'))
+ORDER BY x.security_id, x.value_date
+  ]]></sql>
+  <sql id="sample_underlying" db="target" timeout="300" export="full" after="sample_securities"><![CDATA[
+SELECT u.underlying_id, u.value_date, u.settlement_date, u.settle_value,
+       u.created_by, u.created_timestamp, u.updated_by, u.updated_timestamp
+FROM opera.underlying_settle_value_table u
+WHERE u.tenant_id = :tenant
+  AND u.underlying_id IN (SELECT DISTINCT s.underlying1_id
+                          FROM opera.cloned_deal_ticket_table cd
+                          JOIN opera.cloned_security_info_table s
+                            ON s.tenant_id = cd.tenant_id AND s.business_unit = cd.business_unit AND s.security_id = cd.security_id
+                          WHERE cd.tenant_id = :tenant AND cd.business_unit = 'CFS' AND cd.is_latest_version = 1
+                            AND upper(split_part(cd.contract_number, '_', 1)) IN ('BEG', 'ADP'))
+  AND u.value_date BETWEEN DATE '2026-11-18' AND DATE '2026-11-24'
+ORDER BY u.underlying_id, u.value_date, u.updated_timestamp
+  ]]></sql>
+  <sql id="sample_cache" db="target" timeout="120" export="full"><![CDATA[
+SELECT c.contract_number, c.derivative_type, c.trade_id, c.value_date, c.settle_price, c.mtm_usd, c.created_timestamp, c.updated_timestamp
+FROM opera.helper_client_statement_report_view_cache_table c
+WHERE c.tenant_id = :tenant AND c.business_unit = 'CFS' AND c.value_date = DATE '2026-11-20'
+  AND upper(split_part(c.contract_number, '_', 1)) IN ('BEG', 'ADP')
+  AND lower(c.derivative_type) <> 'future'
+ORDER BY c.contract_number
+  ]]></sql>
+  <expect ref="ssv_writers" rows=">=0" reason="Informational"/>
+  <compress id="bundle" file="cs-35-options-inputs-updated-after-20nov-cfs.zip">
+    <include ref="ssv_writers"/>
+    <include ref="actual_writers"/>
+    <include ref="sample_securities"/>
+    <include ref="sample_ssv"/>
+    <include ref="sample_underlying"/>
+    <include ref="sample_cache"/>
+  </compress>
+</rules>
