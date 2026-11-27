@@ -1,0 +1,79 @@
+{
+  "name": "xoga750-fix2-gpc-trade-id-counter-uat",
+  "db": "postgres-uat",
+  "backupSchema": "parity_work",
+  "ticket": "XOGA-750",
+  "description": "UAT ONLY. UAT facts (discovery 27 Nov): no GPC row, OGP is the template (counter 232326), highest existing GPC trade id suffix is 54193, so the counter starts at 54193 (old Opera rule: highest suffix of the BU plus 1). Gives business unit GPC a trade id counter, so a GPC Trade run gets TR-FY-2026-54194 and up like old Opera instead of the fallback TRN000001. Today GPC has no row in oga_transaction_id_sequence_criteria (9 of 27 BUs have one), reserveTradeIds throws 'No sequence row found' and assign-trade-ids.js falls back to TRN000001. Old Opera took the highest existing suffix of the BU plus 1; its first id on 25-Nov was 54194, so the counter starts at 54193. Two rows are added, copied from the OGP rows (the template BU) so the shape is the one the UI writes: a tradeId format row and a sequence row whose parent_uuid points at it. In the copied rows the businessUnit is replaced, in the format row also the embedded parentUuid (it points at the new format row), and last_sequence_id is set. The source SELECTs return no row when GPC already has a sequence row, which stops the load (expect source 1). Read the preview rows (the step csv files in the zip) before --apply: the JSON copied from OGP must look right for GPC.",
+  "params": {
+    "tenant": {
+      "type": "string",
+      "value": "227cd5f5-4498-4dba-bda9-05b8edc41113"
+    },
+    "bu": {
+      "type": "string",
+      "value": "GPC"
+    },
+    "templateBu": {
+      "type": "string",
+      "value": "OGP"
+    },
+    "lastId": {
+      "type": "integer",
+      "value": "54193"
+    }
+  },
+  "steps": [
+    {
+      "id": "gpc-format-row",
+      "table": "opera.oga_configservice_transactionidformatmaster",
+      "where": "tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND created_by = 'xoga750-gpc'",
+      "key": [
+        "uuid"
+      ],
+      "source": {
+        "db": "postgres-uat",
+        "sql": "SELECT CAST(md5('xoga750-gpc-tradeid-format') AS uuid) AS uuid, f.tenant_id, f.name, f.number_of_digits, f.reference_format, f.reset_value, f.transaction_reference_description, f.transaction_status, f.transaction_type, f.periodicity, f.split_sequence, (SELECT jsonb_agg(jsonb_set(jsonb_set(e.elem, '{parentUuid}', to_jsonb(CAST(CAST(md5('xoga750-gpc-tradeid-format') AS uuid) AS text))), '{sequenceCriteria,businessUnit}', to_jsonb(CAST(:bu AS text)))) FROM jsonb_array_elements(f.transaction_sequence_criteria) AS e(elem))::text AS transaction_sequence_criteria, f.created_timestamp FROM opera.oga_configservice_transactionidformatmaster f WHERE f.tenant_id = :tenant AND f.transaction_type = 'tradeId' AND f.uuid::text IN (SELECT t.parent_uuid FROM opera.oga_transaction_id_sequence_criteria t WHERE t.tenant_id = :tenant AND upper(t.sequence_criteria ->> 'businessUnit') = upper(:templateBu)) AND NOT EXISTS (SELECT 1 FROM opera.oga_transaction_id_sequence_criteria g WHERE g.tenant_id = :tenant AND g.sequence_criteria ->> 'businessUnit' ILIKE :bu)"
+      },
+      "constants": {
+        "created_by": "xoga750-gpc",
+        "updated_by": "xoga750-gpc",
+        "updated_timestamp": "$now"
+      },
+      "expect": {
+        "targetBefore": "0",
+        "source": "1",
+        "inserted": "1",
+        "targetAfter": "1"
+      }
+    },
+    {
+      "id": "gpc-sequence-row",
+      "table": "opera.oga_transaction_id_sequence_criteria",
+      "where": "tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND created_by = 'xoga750-gpc'",
+      "key": [
+        "uuid"
+      ],
+      "source": {
+        "db": "postgres-uat",
+        "sql": "SELECT CAST(md5('xoga750-gpc-tradeid-sequence') AS uuid) AS uuid, s.tenant_id, CAST(CAST(md5('xoga750-gpc-tradeid-format') AS uuid) AS text) AS parent_uuid, s.start_value, s.end_value, CAST(:lastId AS integer) AS last_sequence_id, s.sequence_type, jsonb_set(s.sequence_criteria, '{businessUnit}', to_jsonb(CAST(:bu AS text)))::text AS sequence_criteria FROM opera.oga_transaction_id_sequence_criteria s WHERE s.tenant_id = :tenant AND upper(s.sequence_criteria ->> 'businessUnit') = upper(:templateBu) AND NOT EXISTS (SELECT 1 FROM opera.oga_transaction_id_sequence_criteria g WHERE g.tenant_id = :tenant AND g.sequence_criteria ->> 'businessUnit' ILIKE :bu)"
+      },
+      "constants": {
+        "created_by": "xoga750-gpc",
+        "created_timestamp": "$now",
+        "updated_by": "xoga750-gpc",
+        "updated_timestamp": "$now"
+      },
+      "expect": {
+        "targetBefore": "0",
+        "source": "1",
+        "inserted": "1",
+        "targetAfter": "1"
+      }
+    }
+  ],
+  "verify": [
+    {
+      "rule": "verify-xoga750-fix2-gpc-trade-id-counter-uat.xml"
+    }
+  ]
+}
