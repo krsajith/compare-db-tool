@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rules name="verify-xoga750-fix1-gpc-valuation-date-uat">
+  <!-- After fix 1 on UAT: GPC has value 2026-11-06 and settlement 2026-11-05, the other business units are as before. -->
+  <sql id="gpc" db="postgres-uat" timeout="60" export="full"><![CDATA[
+    SELECT business_unit, value_date, settlement_date, updated_by, updated_timestamp
+    FROM opera.valuation_date_table
+    WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND business_unit = 'GPC'
+  ]]></sql>
+  <sql id="others-changed" db="postgres-uat" timeout="60" export="full"><![CDATA[
+    SELECT business_unit, value_date, settlement_date, updated_by, updated_timestamp
+    FROM opera.valuation_date_table
+    WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND updated_by = 'xoga750' AND business_unit <> 'GPC'
+  ]]></sql>
+  <expect ref="gpc" rows="1" reason="one GPC row"/>
+  <expect ref="gpc" column="settlement_date" equals="2026-11-05" reason="Transaction Date of a GPC fill run is the settlement date"/>
+  <expect ref="gpc" column="value_date" equals="2026-11-06" reason="value date is the next business day of the settlement date, as for CFS"/>
+  <expect ref="gpc" column="updated_by" equals="xoga750" reason="the change is attributed"/>
+  <expect ref="others-changed" rows="0" reason="no other business unit was touched"/>
+  <compress id="bundle" file="verify-xoga750-fix1-gpc-valuation-date-uat.zip"><include ref="gpc"/><include ref="others-changed"/></compress>
+</rules>

@@ -1,0 +1,31 @@
+{
+  "name": "xoga750-fix1-gpc-valuation-date-uat",
+  "db": "postgres-uat",
+  "backupSchema": "parity_work",
+  "ticket": "XOGA-750",
+  "description": "UAT ONLY. Copy of the dev rule; on UAT the GPC row holds the same migration values (value 2026-11-23, settlement 2026-11-20). Sets the GPC valuation date to value 2026-11-06 and settlement 2026-11-05 so a GPC Trade run with fill files gives Transaction Date 05-Nov-2026, as old Opera did. Today the GPC row holds value 2026-11-23 and settlement 2026-11-20, written by the 21-Nov migration load (updated_by migration); the GPC pipeline reads settlement_date of this row (reference valuationDate in the GPC - All config). One row changes; every other business unit is untouched. Side effect to know: anything on dev that reads the GPC valuation date (reports, caches) sees 05-Nov until the undo rule is applied.",
+  "steps": [
+    {
+      "id": "gpc-valuation-date",
+      "action": "update",
+      "table": "opera.valuation_date_table",
+      "where": "tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND business_unit = 'GPC'",
+      "key": ["tenant_id", "business_unit"],
+      "set": {
+        "value_date": "DATE '2026-11-06'",
+        "settlement_date": "DATE '2026-11-05'",
+        "updated_by": "'xoga750'",
+        "updated_timestamp": "now()"
+      },
+      "preconditions": [
+        {
+          "sql": "SELECT count(*) FROM opera.valuation_date_table WHERE {{where}} AND value_date = DATE '2026-11-23' AND settlement_date = DATE '2026-11-20'",
+          "expect": "1",
+          "reason": "the GPC row still has the migration values, so nobody changed it since this rule was written"
+        }
+      ],
+      "expect": { "targetBefore": "1", "affected": "1", "targetAfter": "1" }
+    }
+  ],
+  "verify": [ { "rule": "verify-xoga750-fix1-gpc-valuation-date-uat.xml" } ]
+}
