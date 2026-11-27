@@ -1,0 +1,17 @@
+{
+  "name": "ws-leg-rounding-off-uat",
+  "db": "postgres-uat",
+  "backupSchema": "parity_work",
+  "ticket": "client-statement-workbook-step2",
+  "description": "Removes exactly the rows ws-leg-rounding-on-uat.json added (created_by = workbook-test-20261127). Rows that existed before (for example BFA) are untouched.",
+  "steps": [
+    {
+      "id": "remove-test-clients",
+      "action": "delete",
+      "table": "opera.client_statement_leg_rounding_table",
+      "where": "tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND business_unit = 'CFS' AND created_by = 'workbook-test-20261127'",
+      "key": ["tenant_id", "business_unit", "client_code"],
+      "expect": { "targetBefore": "76", "affected": "76", "targetAfter": "0" }
+    }
+  ]
+}

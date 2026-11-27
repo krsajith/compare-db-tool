@@ -1,0 +1,21 @@
+{
+  "name": "ws-leg-rounding-on-uat",
+  "db": "postgres-uat",
+  "backupSchema": "parity_work",
+  "ticket": "client-statement-workbook-step2",
+  "description": "TEMPORARY test: lists every CFS client that has swaps in client_statement_leg_rounding_table so the statement function rounds swap legs to cents before summing (client workbook step 2). Rows are tagged created_by = workbook-test-20261127; ws-leg-rounding-off-uat.json removes exactly those rows.",
+  "steps": [
+    {
+      "id": "add-clients",
+      "action": "sql",
+      "table": "opera.client_statement_leg_rounding_table",
+      "where": "tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND business_unit = 'CFS'",
+      "key": ["tenant_id", "business_unit", "client_code"],
+      "sql": "INSERT INTO opera.client_statement_leg_rounding_table (tenant_id, business_unit, client_code, created_by, created_timestamp) SELECT DISTINCT c.tenant_id, c.business_unit, upper(split_part(c.contract_number, '_', 1)), 'workbook-test-20261127', now() FROM opera.helper_client_statement_report_view_cache_table c WHERE c.tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND c.business_unit = 'CFS' AND c.value_date = DATE '2026-11-06' AND lower(c.derivative_type) = 'future' AND NOT EXISTS (SELECT 1 FROM opera.client_statement_leg_rounding_table l WHERE l.tenant_id = c.tenant_id AND l.business_unit = c.business_unit AND lower(btrim(l.client_code)) = lower(split_part(c.contract_number, '_', 1)))",
+      "preconditions": [
+        { "sql": "SELECT count(*) FROM opera.client_statement_leg_rounding_table WHERE created_by = 'workbook-test-20261127'", "expect": "0", "reason": "the test rows are not there yet" }
+      ],
+      "expect": { "affected": "76" }
+    }
+  ]
+}
