@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Impact of the client workbook (Newclient_statement_round_format_All_Final_1.xlsx, step 2: swap MTM rounded 2 dp per trade BEFORE
+     consolidating) against what the main block prints today (round the SUM of the legs).
+     Per printed swap row (approximated as client, contract_number, future_price, maturity_date) it computes
+       sum_then_round = round(sum(mtm_usd), 2)         (today, main block)
+       leg_then_sum   = sum(round(mtm_usd, 2))         (workbook step 2)
+     and the same for mtm_nc. Only swaps (derivative_type = 'future'), CFS, one cache value date.
+     Clients listed in client_statement_leg_rounding_table already round per leg and are excluded.
+     Sub-account blocks already round per leg; the cache has no sub-account, so a row of a sub-account client can show a difference here
+     that is not a difference in the PDF. Read it as an upper bound for the main block.
+     Index shape: tenant_id, business_unit, value_date lead the WHERE. -->
+<rules name="cs-33-swap-mtm-leg-vs-sum-rounding-cfs">
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+    <param name="valueDate" type="string" value="2026-11-06"/>
+  </parameters>
+  <sql id="rows_changed" db="target" timeout="300" export="full"><![CDATA[
+WITH legs AS (
+  SELECT upper(split_part(c.contract_number, '_', 1)) AS client, c.contract_number, c.future_price, c.maturity_date,
+         c.mtm_usd::numeric AS mtm_usd, c.mtm_nc::numeric AS mtm_nc
+  FROM opera.helper_client_statement_report_view_cache_table c
+  WHERE c.tenant_id = :tenant AND c.business_unit = 'CFS' AND c.value_date = CAST(:valueDate AS date)
+    AND lower(c.derivative_type) = 'future'
+    AND NOT EXISTS (SELECT 1 FROM opera.client_statement_leg_rounding_table l
+                    WHERE l.tenant_id = :tenant AND l.business_unit = 'CFS'
+                      AND lower(btrim(l.client_code)) = lower(split_part(c.contract_number, '_', 1)))
+), r AS (
+  SELECT client, contract_number, future_price, maturity_date, count(*) AS legs,
+         round(sum(mtm_usd), 2) AS usd_sum_then_round, sum(round(mtm_usd, 2)) AS usd_leg_then_sum,
+         round(sum(mtm_nc), 2) AS nc_sum_then_round, sum(round(mtm_nc, 2)) AS nc_leg_then_sum
+  FROM legs GROUP BY client, contract_number, future_price, maturity_date
+)
+SELECT client, contract_number, maturity_date, legs, usd_sum_then_round, usd_leg_then_sum,
+       usd_leg_then_sum - usd_sum_then_round AS usd_diff, nc_sum_then_round, nc_leg_then_sum,
+       nc_leg_then_sum - nc_sum_then_round AS nc_diff
+FROM r
+WHERE usd_sum_then_round IS DISTINCT FROM usd_leg_then_sum OR nc_sum_then_round IS DISTINCT FROM nc_leg_then_sum
+ORDER BY abs(usd_leg_then_sum - usd_sum_then_round) DESC NULLS LAST, client, contract_number
+LIMIT 500
+  ]]></sql>
+  <sql id="per_client" db="target" timeout="300" export="full"><![CDATA[
+WITH legs AS (
+  SELECT upper(split_part(c.contract_number, '_', 1)) AS client, c.contract_number, c.future_price, c.maturity_date,
+         c.mtm_usd::numeric AS mtm_usd
+  FROM opera.helper_client_statement_report_view_cache_table c
+  WHERE c.tenant_id = :tenant AND c.business_unit = 'CFS' AND c.value_date = CAST(:valueDate AS date)
+    AND lower(c.derivative_type) = 'future'
+    AND NOT EXISTS (SELECT 1 FROM opera.client_statement_leg_rounding_table l
+                    WHERE l.tenant_id = :tenant AND l.business_unit = 'CFS'
+                      AND lower(btrim(l.client_code)) = lower(split_part(c.contract_number, '_', 1)))
+), r AS (
+  SELECT client, contract_number, future_price, maturity_date, count(*) AS legs,
+         round(sum(mtm_usd), 2) AS s, sum(round(mtm_usd, 2)) AS l
+  FROM legs GROUP BY client, contract_number, future_price, maturity_date
+)
+SELECT client, count(*) AS printed_rows, count(*) FILTER (WHERE s IS DISTINCT FROM l) AS rows_changed,
+       sum(s) AS total_today, sum(l) AS total_workbook, sum(l) - sum(s) AS total_diff,
+       max(abs(l - s)) AS max_row_diff, max(legs) AS max_legs_in_row
+FROM r GROUP BY client ORDER BY rows_changed DESC, client
+  ]]></sql>
+  <sql id="cache_freshness" db="target" timeout="60" export="full"><![CDATA[
+SELECT c.value_date, count(*) AS rows
+FROM opera.helper_client_statement_report_view_cache_table c
+WHERE c.tenant_id = :tenant AND c.business_unit = 'CFS' AND c.value_date >= DATE '2026-11-01'
+GROUP BY c.value_date ORDER BY c.value_date
+  ]]></sql>
+  <expect ref="per_client" rows=">=1" reason="Informational: if 0 rows, the cache is not on the requested value date (see cache_freshness)"/>
+  <compress id="bundle" file="cs-33-swap-mtm-leg-vs-sum-rounding-cfs.zip">
+    <include ref="per_client"/>
+    <include ref="rows_changed"/>
+    <include ref="cache_freshness"/>
+  </compress>
+</rules>
