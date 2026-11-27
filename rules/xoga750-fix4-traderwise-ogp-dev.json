@@ -20,13 +20,6 @@
         "updated_by": "xoga750",
         "updated_timestamp": "$now"
       },
-      "preconditions": [
-        {
-          "sql": "SELECT count(*) FROM opera.web_xtr_handle_portfolio_traderwise_table WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113'",
-          "expect": "0",
-          "reason": "the table is still empty on dev, so nothing is duplicated"
-        }
-      ],
       "expect": { "targetBefore": "0", "source": "2", "inserted": "2", "targetAfter": "2" }
     }
   ],

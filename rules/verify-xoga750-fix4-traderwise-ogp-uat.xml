@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rules name="verify-xoga750-fix4-traderwise-ogp-uat">
+  <!-- After fix 4 on UAT: the trader-wise table holds exactly the two legacy OGP rows. -->
+  <sql id="rows" db="postgres-uat" timeout="60" export="full"><![CDATA[
+    SELECT bu_name, trade_name, created_by
+    FROM opera.web_xtr_handle_portfolio_traderwise_table
+    WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113'
+    ORDER BY bu_name, trade_name
+  ]]></sql>
+  <expect ref="rows" rows="2" reason="ogp/asinghal and ogp/FVaipel, as in legacy MySQL"/>
+  <compress id="bundle" file="verify-xoga750-fix4-traderwise-ogp-uat.zip"><include ref="rows"/></compress>
+</rules>
