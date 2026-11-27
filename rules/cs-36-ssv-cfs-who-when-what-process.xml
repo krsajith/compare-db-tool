@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Follow-up to cs-35. cs-35 showed security_settlement_value_table holds CFS rows for 06-Nov only among 06/19/20-Nov (329,787 rows, one write at 2026-11-26 06:53:47 by srujan).
+     The calculation engine's batch pricing run (pricing_output_repo.write_results) deletes the whole tenant + business unit table and inserts one value date, and writes a row to status_table.
+     This rule shows (1) every value date now in the CFS table with its writer and time, (2) the same for the other business units (is only CFS replaced?),
+     (3) the engine run log in status_table around 26-Nov, (4) the CFS valuation date row (the engine prices for that date),
+     (5) who wrote the 18-24 Nov underlying settle rows and when. Read-only. -->
+<rules name="cs-36-ssv-cfs-who-when-what-process">
+  <parameters>
+    <param name="tenant" type="string" value="227cd5f5-4498-4dba-bda9-05b8edc41113"/>
+  </parameters>
+  <sql id="ssv_cfs_all_dates" db="target" timeout="300" export="full"><![CDATA[
+SELECT x.value_date, x.created_by, x.updated_by, count(*) AS rows,
+       min(coalesce(x.updated_timestamp, x.created_timestamp)) AS first_write, max(coalesce(x.updated_timestamp, x.created_timestamp)) AS last_write
+FROM opera.security_settlement_value_table x
+WHERE x.tenant_id = :tenant AND x.business_unit = 'CFS'
+GROUP BY x.value_date, x.created_by, x.updated_by
+ORDER BY x.value_date
+  ]]></sql>
+  <sql id="ssv_other_business_units" db="target" timeout="300" export="full"><![CDATA[
+SELECT x.business_unit, x.value_date, x.created_by, count(*) AS rows,
+       min(x.created_timestamp) AS first_write, max(x.created_timestamp) AS last_write
+FROM opera.security_settlement_value_table x
+WHERE x.tenant_id = :tenant AND x.business_unit <> 'CFS'
+GROUP BY x.business_unit, x.value_date, x.created_by
+ORDER BY x.business_unit, x.value_date
+  ]]></sql>
+  <sql id="engine_runs" db="target" timeout="120" export="full"><![CDATA[
+SELECT s.tablename, s.business_unit, s.valuation_date, s.status_type, s.status, s.settle_type,
+       s.created_by, s.created_timestamp, s.updated_by, s.updated_timestamp
+FROM opera.status_table s
+WHERE s.tenant_id = :tenant AND upper(s.business_unit) = 'CFS'
+  AND s.created_timestamp >= TIMESTAMP '2026-11-18 00:00:00'
+ORDER BY s.created_timestamp
+  ]]></sql>
+  <sql id="valuation_date_cfs" db="target" timeout="60" export="full"><![CDATA[
+SELECT v.business_unit, v.value_date, v.settlement_date, v.created_by, v.created_timestamp, v.updated_by, v.updated_timestamp
+FROM opera.valuation_date_table v
+WHERE v.tenant_id = :tenant AND upper(v.business_unit) = 'CFS'
+  ]]></sql>
+  <sql id="underlying_writers_18_24nov" db="target" timeout="300" export="full"><![CDATA[
+SELECT u.value_date, u.created_by, CAST(u.created_timestamp AS date) AS created_on, count(*) AS rows,
+       min(u.created_timestamp) AS first_write, max(u.created_timestamp) AS last_write
+FROM opera.underlying_settle_value_table u
+WHERE u.tenant_id = :tenant AND u.value_date BETWEEN DATE '2026-11-18' AND DATE '2026-11-24'
+GROUP BY u.value_date, u.created_by, CAST(u.created_timestamp AS date)
+ORDER BY u.value_date, created_on
+  ]]></sql>
+  <expect ref="ssv_cfs_all_dates" rows=">=1" reason="Informational"/>
+  <compress id="bundle" file="cs-36-ssv-cfs-who-when-what-process.zip">
+    <include ref="ssv_cfs_all_dates"/>
+    <include ref="ssv_other_business_units"/>
+    <include ref="engine_runs"/>
+    <include ref="valuation_date_cfs"/>
+    <include ref="underlying_writers_18_24nov"/>
+  </compress>
+</rules>
