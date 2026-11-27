@@ -1,0 +1,89 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rules name="verify-xoga747-750-applied-status">
+  <!-- One table per environment: item, expected, actual, status (APPLIED / NOT APPLIED) for every XOGA-750 and XOGA-747 data/config change.
+       Read-only. Run: compare.ps1 rules\verify-xoga747-750-applied-status.xml . XOGA-750 changes were made on dev only, so UAT is expected to show NOT APPLIED for them.
+       Code deploys (bulk-uploader PRs 127 to 129) are not visible in the database. -->
+  <sql id="dev" db="postgres-dev" timeout="120" export="full"><![CDATA[
+    SELECT * FROM (
+    SELECT 1 AS n, 'XOGA-750 fix1 GPC valuation date' AS item, 'settlement 2026-11-05, value 2026-11-06' AS expected,
+           coalesce((SELECT settlement_date::text || ' / ' || value_date::text FROM opera.valuation_date_table WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND business_unit = 'GPC'), 'no row') AS actual,
+           CASE WHEN (SELECT settlement_date::text || value_date::text FROM opera.valuation_date_table WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND business_unit = 'GPC') = '2026-11-052026-11-06' THEN 'APPLIED' ELSE 'NOT APPLIED' END AS status
+    UNION ALL
+    SELECT 2, 'XOGA-750 fix2 GPC trade-id counter', 'one GPC sequence row, last_sequence_id >= 54983',
+           coalesce((SELECT count(*)::text || ' row(s), last_sequence_id ' || max(last_sequence_id)::text FROM opera.oga_transaction_id_sequence_criteria WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND sequence_criteria ->> 'businessUnit' ILIKE 'gpc'), 'no row'),
+           CASE WHEN (SELECT count(*) FROM opera.oga_transaction_id_sequence_criteria WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND sequence_criteria ->> 'businessUnit' ILIKE 'gpc') = 1
+                 AND (SELECT max(last_sequence_id) FROM opera.oga_transaction_id_sequence_criteria WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND sequence_criteria ->> 'businessUnit' ILIKE 'gpc') >= 54983 THEN 'APPLIED' ELSE 'NOT APPLIED' END
+    UNION ALL
+    SELECT 3, 'XOGA-750 fix5 alias master (ig, Ssundaram removed)', 'md5 8b11ade9b20e2a562474115908342694',
+           coalesce((SELECT length(document)::text || ' bytes, ' || md5(document) FROM opera.oga_document_repository WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND business_application_name = 'WEB XTR' AND document_name = 'XTRFills_Broker_CurrentUser_Master.xlsx'), 'missing'),
+           CASE WHEN (SELECT md5(document) FROM opera.oga_document_repository WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND business_application_name = 'WEB XTR' AND document_name = 'XTRFills_Broker_CurrentUser_Master.xlsx') = '8b11ade9b20e2a562474115908342694' THEN 'APPLIED' ELSE 'NOT APPLIED' END
+    UNION ALL
+    SELECT 4, 'XOGA-750 fix5b MMVT master (81 rows removed, values only)', '29612 bytes, md5 381b1755f52f8a2408eef11806fed0c2',
+           coalesce((SELECT length(document)::text || ' bytes, ' || md5(document) FROM opera.oga_document_repository WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND business_application_name = 'WEB XTR' AND document_name = 'MMVT_MissingDeals_Master.xlsx'), 'missing'),
+           CASE WHEN (SELECT md5(document) FROM opera.oga_document_repository WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND business_application_name = 'WEB XTR' AND document_name = 'MMVT_MissingDeals_Master.xlsx') = '381b1755f52f8a2408eef11806fed0c2' THEN 'APPLIED'
+                WHEN (SELECT md5(document) FROM opera.oga_document_repository WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND business_application_name = 'WEB XTR' AND document_name = 'MMVT_MissingDeals_Master.xlsx') = '40d69b875c66dc3b8506a90b792a75be' THEN 'PARTLY (fix5 only, formulas lost)'
+                ELSE 'NOT APPLIED' END
+    UNION ALL
+    SELECT 5, 'XOGA-750 fix6 GPC master (Jimmy-Hedge row removed)', '7814 bytes, md5 fd58073784fac21a2a0bfc9607aa7528',
+           coalesce((SELECT length(document)::text || ' bytes, ' || md5(document) FROM opera.oga_document_repository WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND business_application_name = 'GPC Trade' AND document_name = 'GPC_Master_Mapping_Files.xlsx'), 'missing'),
+           CASE WHEN (SELECT md5(document) FROM opera.oga_document_repository WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND business_application_name = 'GPC Trade' AND document_name = 'GPC_Master_Mapping_Files.xlsx') = 'fd58073784fac21a2a0bfc9607aa7528' THEN 'APPLIED' ELSE 'NOT APPLIED' END
+    UNION ALL
+    SELECT 6, 'XOGA-750 fix4 OGP trader-wise rows (optional)', 'ogp/asinghal and ogp/FVaipel present',
+           (SELECT count(*)::text || ' ogp row(s) of ' || (SELECT count(*) FROM opera.web_xtr_handle_portfolio_traderwise_table WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113')::text || ' total' FROM opera.web_xtr_handle_portfolio_traderwise_table WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND lower(bu_name) = 'ogp'),
+           CASE WHEN (SELECT count(*) FROM opera.web_xtr_handle_portfolio_traderwise_table WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND lower(bu_name) = 'ogp' AND trade_name IN ('asinghal','FVaipel')) = 2 THEN 'APPLIED' ELSE 'NOT APPLIED' END
+    UNION ALL
+    SELECT 7, 'XOGA-747 China Vol - Options embedIntermediateSheets=false', 'false, no additional outputs',
+           coalesce((SELECT coalesce(rule_data #>> '{workflowConfig,output,options,embedIntermediateSheets}', 'unset') FROM opera.oga_configservice_uploadrules WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND code = 'PIPELINE CONFIG' AND template_name = 'China Vol - Options'), 'config missing'),
+           CASE WHEN (SELECT rule_data #>> '{workflowConfig,output,options,embedIntermediateSheets}' FROM opera.oga_configservice_uploadrules WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND code = 'PIPELINE CONFIG' AND template_name = 'China Vol - Options') = 'false' THEN 'APPLIED' ELSE 'NOT APPLIED' END
+    UNION ALL
+    SELECT 8 + o, 'XOGA-747 Missing_Option_Maturities skip flag: ' || tn, 'skipWhenFlag + headerWhenEmpty on the output',
+           coalesce((SELECT count(*)::text || ' output(s) flagged' FROM opera.oga_configservice_uploadrules c, jsonb_array_elements(c.rule_data #> '{workflowConfig,additionalOutputs}') x
+                      WHERE c.tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND c.code = 'PIPELINE CONFIG' AND c.template_name = tn AND x->>'source' = 'intermediateSheets.MissingOptionMaturities' AND x->>'skipWhenFlag' = 'noMissingOptionCandidates' AND x #>> '{options,headerWhenEmpty}' = 'true'), '0'),
+           CASE WHEN (SELECT count(*) FROM opera.oga_configservice_uploadrules c, jsonb_array_elements(c.rule_data #> '{workflowConfig,additionalOutputs}') x
+                      WHERE c.tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND c.code = 'PIPELINE CONFIG' AND c.template_name = tn AND x->>'source' = 'intermediateSheets.MissingOptionMaturities' AND x->>'skipWhenFlag' = 'noMissingOptionCandidates' AND x #>> '{options,headerWhenEmpty}' = 'true') = 1 THEN 'APPLIED' ELSE 'NOT APPLIED' END
+    FROM (VALUES (0, 'Financial - Options'), (1, 'Normal - Options')) AS v(o, tn)
+    ) t ORDER BY n
+  ]]></sql>
+  <sql id="uat" db="postgres-uat" timeout="120" export="full"><![CDATA[
+    SELECT * FROM (
+    SELECT 1 AS n, 'XOGA-750 fix1 GPC valuation date' AS item, 'settlement 2026-11-05, value 2026-11-06' AS expected,
+           coalesce((SELECT settlement_date::text || ' / ' || value_date::text FROM opera.valuation_date_table WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND business_unit = 'GPC'), 'no row') AS actual,
+           CASE WHEN (SELECT settlement_date::text || value_date::text FROM opera.valuation_date_table WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND business_unit = 'GPC') = '2026-11-052026-11-06' THEN 'APPLIED' ELSE 'NOT APPLIED' END AS status
+    UNION ALL
+    SELECT 2, 'XOGA-750 fix2 GPC trade-id counter', 'one GPC sequence row, last_sequence_id >= 54983',
+           coalesce((SELECT count(*)::text || ' row(s), last_sequence_id ' || max(last_sequence_id)::text FROM opera.oga_transaction_id_sequence_criteria WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND sequence_criteria ->> 'businessUnit' ILIKE 'gpc'), 'no row'),
+           CASE WHEN (SELECT count(*) FROM opera.oga_transaction_id_sequence_criteria WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND sequence_criteria ->> 'businessUnit' ILIKE 'gpc') = 1
+                 AND (SELECT max(last_sequence_id) FROM opera.oga_transaction_id_sequence_criteria WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND sequence_criteria ->> 'businessUnit' ILIKE 'gpc') >= 54983 THEN 'APPLIED' ELSE 'NOT APPLIED' END
+    UNION ALL
+    SELECT 3, 'XOGA-750 fix5 alias master (ig, Ssundaram removed)', 'md5 8b11ade9b20e2a562474115908342694',
+           coalesce((SELECT length(document)::text || ' bytes, ' || md5(document) FROM opera.oga_document_repository WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND business_application_name = 'WEB XTR' AND document_name = 'XTRFills_Broker_CurrentUser_Master.xlsx'), 'missing'),
+           CASE WHEN (SELECT md5(document) FROM opera.oga_document_repository WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND business_application_name = 'WEB XTR' AND document_name = 'XTRFills_Broker_CurrentUser_Master.xlsx') = '8b11ade9b20e2a562474115908342694' THEN 'APPLIED' ELSE 'NOT APPLIED' END
+    UNION ALL
+    SELECT 4, 'XOGA-750 fix5b MMVT master (81 rows removed, values only)', '29612 bytes, md5 381b1755f52f8a2408eef11806fed0c2',
+           coalesce((SELECT length(document)::text || ' bytes, ' || md5(document) FROM opera.oga_document_repository WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND business_application_name = 'WEB XTR' AND document_name = 'MMVT_MissingDeals_Master.xlsx'), 'missing'),
+           CASE WHEN (SELECT md5(document) FROM opera.oga_document_repository WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND business_application_name = 'WEB XTR' AND document_name = 'MMVT_MissingDeals_Master.xlsx') = '381b1755f52f8a2408eef11806fed0c2' THEN 'APPLIED'
+                WHEN (SELECT md5(document) FROM opera.oga_document_repository WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND business_application_name = 'WEB XTR' AND document_name = 'MMVT_MissingDeals_Master.xlsx') = '40d69b875c66dc3b8506a90b792a75be' THEN 'PARTLY (fix5 only, formulas lost)'
+                ELSE 'NOT APPLIED' END
+    UNION ALL
+    SELECT 5, 'XOGA-750 fix6 GPC master (Jimmy-Hedge row removed)', '7814 bytes, md5 fd58073784fac21a2a0bfc9607aa7528',
+           coalesce((SELECT length(document)::text || ' bytes, ' || md5(document) FROM opera.oga_document_repository WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND business_application_name = 'GPC Trade' AND document_name = 'GPC_Master_Mapping_Files.xlsx'), 'missing'),
+           CASE WHEN (SELECT md5(document) FROM opera.oga_document_repository WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND business_application_name = 'GPC Trade' AND document_name = 'GPC_Master_Mapping_Files.xlsx') = 'fd58073784fac21a2a0bfc9607aa7528' THEN 'APPLIED' ELSE 'NOT APPLIED' END
+    UNION ALL
+    SELECT 6, 'XOGA-750 fix4 OGP trader-wise rows (optional)', 'ogp/asinghal and ogp/FVaipel present',
+           (SELECT count(*)::text || ' ogp row(s) of ' || (SELECT count(*) FROM opera.web_xtr_handle_portfolio_traderwise_table WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113')::text || ' total' FROM opera.web_xtr_handle_portfolio_traderwise_table WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND lower(bu_name) = 'ogp'),
+           CASE WHEN (SELECT count(*) FROM opera.web_xtr_handle_portfolio_traderwise_table WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND lower(bu_name) = 'ogp' AND trade_name IN ('asinghal','FVaipel')) = 2 THEN 'APPLIED' ELSE 'NOT APPLIED' END
+    UNION ALL
+    SELECT 7, 'XOGA-747 China Vol - Options embedIntermediateSheets=false', 'false, no additional outputs',
+           coalesce((SELECT coalesce(rule_data #>> '{workflowConfig,output,options,embedIntermediateSheets}', 'unset') FROM opera.oga_configservice_uploadrules WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND code = 'PIPELINE CONFIG' AND template_name = 'China Vol - Options'), 'config missing'),
+           CASE WHEN (SELECT rule_data #>> '{workflowConfig,output,options,embedIntermediateSheets}' FROM opera.oga_configservice_uploadrules WHERE tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND code = 'PIPELINE CONFIG' AND template_name = 'China Vol - Options') = 'false' THEN 'APPLIED' ELSE 'NOT APPLIED' END
+    UNION ALL
+    SELECT 8 + o, 'XOGA-747 Missing_Option_Maturities skip flag: ' || tn, 'skipWhenFlag + headerWhenEmpty on the output',
+           coalesce((SELECT count(*)::text || ' output(s) flagged' FROM opera.oga_configservice_uploadrules c, jsonb_array_elements(c.rule_data #> '{workflowConfig,additionalOutputs}') x
+                      WHERE c.tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND c.code = 'PIPELINE CONFIG' AND c.template_name = tn AND x->>'source' = 'intermediateSheets.MissingOptionMaturities' AND x->>'skipWhenFlag' = 'noMissingOptionCandidates' AND x #>> '{options,headerWhenEmpty}' = 'true'), '0'),
+           CASE WHEN (SELECT count(*) FROM opera.oga_configservice_uploadrules c, jsonb_array_elements(c.rule_data #> '{workflowConfig,additionalOutputs}') x
+                      WHERE c.tenant_id = '227cd5f5-4498-4dba-bda9-05b8edc41113' AND c.code = 'PIPELINE CONFIG' AND c.template_name = tn AND x->>'source' = 'intermediateSheets.MissingOptionMaturities' AND x->>'skipWhenFlag' = 'noMissingOptionCandidates' AND x #>> '{options,headerWhenEmpty}' = 'true') = 1 THEN 'APPLIED' ELSE 'NOT APPLIED' END
+    FROM (VALUES (0, 'Financial - Options'), (1, 'Normal - Options')) AS v(o, tn)
+    ) t ORDER BY n
+  ]]></sql>
+  <compress id="bundle" file="verify-xoga747-750-applied-status.zip"><include ref="dev"/><include ref="uat"/></compress>
+</rules>
